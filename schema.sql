@@ -104,9 +104,21 @@ ALTER TABLE public.payments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.expenses ENABLE ROW LEVEL SECURITY;
 
 -- Allow all operations for anon / authenticated users (Single Shop Admin setup)
+DROP POLICY IF EXISTS "Allow full access to customers" ON public.customers;
 CREATE POLICY "Allow full access to customers" ON public.customers FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow full access to products" ON public.products;
 CREATE POLICY "Allow full access to products" ON public.products FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow full access to bills" ON public.bills;
 CREATE POLICY "Allow full access to bills" ON public.bills FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow full access to bill_items" ON public.bill_items;
 CREATE POLICY "Allow full access to bill_items" ON public.bill_items FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow full access to payments" ON public.payments;
 CREATE POLICY "Allow full access to payments" ON public.payments FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow full access to expenses" ON public.expenses;
 CREATE POLICY "Allow full access to expenses" ON public.expenses FOR ALL USING (true) WITH CHECK (true);
+
