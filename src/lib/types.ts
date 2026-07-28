@@ -79,6 +79,7 @@ export interface Bill {
   payment_method: string;
   loyalty_points_earned: number;
   loyalty_points_redeemed: number;
+  loyalty_discount_applied?: number;
   edited_at?: string | null;
   edited_by?: string | null;
   edit_reason?: string | null;
@@ -167,7 +168,7 @@ export interface DashboardStats {
   top_products: { name: string; quantity: number; revenue: number }[];
 }
 
-// Loyalty Rule Engine Models
+// Loyalty Rule Engine & Dynamic Redemption Models
 export interface LoyaltyRule {
   id: string;
   user_id?: string | null;
@@ -181,13 +182,19 @@ export interface LoyaltyRule {
   created_at?: string;
 }
 
+export interface LoyaltyRedemptionRule {
+  id: string;
+  user_id?: string | null;
+  points_required: number;
+  discount_amount: number;
+  enabled: boolean;
+  created_at?: string;
+}
+
 export interface LoyaltySettings {
   enabled: boolean;
-  min_points_to_redeem: number;
-  max_points_per_bill: number;
-  max_discount_per_bill: number;
-  allow_partial_redemption: boolean;
-  amount_per_point: number;
+  points_required: number; // Fallback
+  discount_value: number;  // Fallback
 }
 
 // System Settings Models

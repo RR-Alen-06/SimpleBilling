@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { ApiService, DEFAULT_SETTINGS } from '@/lib/services/api';
-import { AllSettings, RoundingMethod, SequenceConfig, LoyaltyRule } from '@/lib/types';
+import { AllSettings, RoundingMethod, SequenceConfig, LoyaltyRule, LoyaltyRedemptionRule } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { 
   Settings as SettingsIcon, 
@@ -28,10 +28,11 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<AllSettings>(DEFAULT_SETTINGS);
   const [sequences, setSequences] = useState<SequenceConfig[]>([]);
   const [loyaltyRules, setLoyaltyRules] = useState<LoyaltyRule[]>([]);
+  const [redemptionRules, setRedemptionRules] = useState<LoyaltyRedemptionRule[]>([]);
   const [activeTab, setActiveTab] = useState<'shop' | 'billing' | 'sequence' | 'loyalty' | 'whatsapp' | 'security' | 'backup'>('shop');
   const [loading, setLoading] = useState(true);
 
-  // Loyalty Rule Modal state
+  // Loyalty Earning Rule Modal state
   const [showRuleModal, setShowRuleModal] = useState(false);
   const [editingRule, setEditingRule] = useState<LoyaltyRule | null>(null);
   const [ruleName, setRuleName] = useState('');
@@ -40,6 +41,12 @@ export default function SettingsPage() {
   const [rewardType, setRewardType] = useState<'FLAT' | 'PERCENTAGE'>('PERCENTAGE');
   const [rewardValue, setRewardValue] = useState<number | ''>(1);
   const [sortOrder, setSortOrder] = useState<number>(1);
+
+  // Loyalty Redemption Rule Modal state
+  const [showRedemptionModal, setShowRedemptionModal] = useState(false);
+  const [editingRedemptionRule, setEditingRedemptionRule] = useState<LoyaltyRedemptionRule | null>(null);
+  const [ptsRequiredInput, setPtsRequiredInput] = useState<number | ''>(10);
+  const [discAmountInput, setDiscAmountInput] = useState<number | ''>(5);
 
   // Super Admin Purge Modal
   const [showPurgeModal, setShowPurgeModal] = useState(false);
@@ -54,14 +61,16 @@ export default function SettingsPage() {
   const loadSettings = async () => {
     setLoading(true);
     try {
-      const [data, seqList, ruleList] = await Promise.all([
+      const [data, seqList, ruleList, redList] = await Promise.all([
         ApiService.getSettings(),
         ApiService.getSequences(),
-        ApiService.getLoyaltyRules()
+        ApiService.getLoyaltyRules(),
+        ApiService.getLoyaltyRedemptionRules()
       ]);
       setSettings(data);
       setSequences(seqList);
       setLoyaltyRules(ruleList);
+      setRedemptionRules(redList);
     } catch (err) {
       console.error('Error loading settings:', err);
     } finally {
@@ -101,7 +110,7 @@ export default function SettingsPage() {
     try {
       await ApiService.updateSequenceConfig(seq.key, seq.prefix, seq.padding);
       setSuccessMsg(`Sequence counter for ${seq.key} updated.`);
-      loadSettings();
+      await loadSettings();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to update sequence');
     } finally {
@@ -109,7 +118,7 @@ export default function SettingsPage() {
     }
   };
 
-  // Loyalty Rule Handlers
+  // Loyalty Earning Rule Handlers
   const handleOpenAddRule = () => {
     setEditingRule(null);
     setRuleName('');
@@ -187,7 +196,7 @@ export default function SettingsPage() {
         setSuccessMsg('Loyalty earning rule created.');
       }
       setShowRuleModal(false);
-      loadSettings();
+      await loadSettings();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to save loyalty rule');
     } finally {
@@ -198,7 +207,7 @@ export default function SettingsPage() {
   const handleToggleRule = async (rule: LoyaltyRule) => {
     try {
       await ApiService.updateLoyaltyRule(rule.id, { enabled: !rule.enabled });
-      loadSettings();
+      await loadSettings();
     } catch (err) {
       console.error('Failed to toggle rule:', err);
     }
@@ -208,9 +217,88 @@ export default function SettingsPage() {
     try {
       await ApiService.deleteLoyaltyRule(id);
       setSuccessMsg('Loyalty rule deleted.');
-      loadSettings();
+      await loadSettings();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to delete rule');
+    }
+  };
+
+  // Loyalty Redemption Rule Handlers
+  const handleOpenAddRedemptionRule = () => {
+    setEditingRedemptionRule(null);
+    setPtsRequiredInput(10);
+    setDiscAmountInput(5);
+    setErrorMsg('');
+    setShowRedemptionModal(true);
+  };
+
+  const handleOpenEditRedemptionRule = (rule: LoyaltyRedemptionRule) => {
+    setEditingRedemptionRule(rule);
+    setPtsRequiredInput(rule.points_required);
+    setDiscAmountInput(rule.discount_amount);
+    setErrorMsg('');
+    setShowRedemptionModal(true);
+  };
+
+  const handleSaveRedemptionSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    const pts = Number(ptsRequiredInput);
+    const disc = Number(discAmountInput);
+
+    if (isNaN(pts) || pts <= 0) {
+      setErrorMsg('Points required must be greater than 0.');
+      return;
+    }
+
+    if (isNaN(disc) || disc <= 0) {
+      setErrorMsg('Discount amount must be greater than 0.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      if (editingRedemptionRule) {
+        await ApiService.updateLoyaltyRedemptionRule(editingRedemptionRule.id, {
+          points_required: pts,
+          discount_amount: disc
+        });
+        setSuccessMsg('Redemption rule updated.');
+      } else {
+        await ApiService.addLoyaltyRedemptionRule({
+          points_required: pts,
+          discount_amount: disc,
+          enabled: true
+        });
+        setSuccessMsg('Redemption rule added.');
+      }
+      setShowRedemptionModal(false);
+      await loadSettings();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to save redemption rule');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggleRedemptionRule = async (rule: LoyaltyRedemptionRule) => {
+    try {
+      await ApiService.updateLoyaltyRedemptionRule(rule.id, { enabled: !rule.enabled });
+      await loadSettings();
+    } catch (err) {
+      console.error('Failed to toggle redemption rule:', err);
+    }
+  };
+
+  const handleDeleteRedemptionRule = async (id: string) => {
+    try {
+      await ApiService.deleteLoyaltyRedemptionRule(id);
+      setSuccessMsg('Redemption rule deleted.');
+      await loadSettings();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to delete redemption rule');
     }
   };
 
@@ -227,6 +315,7 @@ export default function SettingsPage() {
         settings,
         sequences,
         loyaltyRules,
+        redemptionRules,
         customers,
         products,
         bills,
@@ -289,7 +378,7 @@ export default function SettingsPage() {
             <SettingsIcon className="text-blue-600" size={26} />
             <span>System Settings & Loyalty Engine</span>
           </h1>
-          <p className="text-sm text-slate-500 mt-0.5">Shop details, atomic database sequences, dynamic loyalty rules, and security</p>
+          <p className="text-sm text-slate-500 mt-0.5">Shop details, atomic database sequences, point redemption rules, and security</p>
         </div>
       </div>
 
@@ -551,21 +640,12 @@ export default function SettingsPage() {
               </div>
             )}
 
-            {/* 4. DYNAMIC LOYALTY RULE ENGINE TAB */}
+            {/* 4. DYNAMIC LOYALTY EARNING & REDEMPTION RULES TAB */}
             {activeTab === 'loyalty' && (
               <div className="space-y-6">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b pb-3">
-                  <div>
-                    <h2 className="text-lg font-bold text-slate-900">Database-Driven Loyalty Rule Engine</h2>
-                    <p className="text-xs text-slate-500 mt-0.5">Manage unlimited earning rules, range criteria, flat/percentage rewards & redemption rules</p>
-                  </div>
-                  <button
-                    onClick={handleOpenAddRule}
-                    className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-4 py-2 rounded-lg shadow transition flex items-center space-x-1 self-start sm:self-auto"
-                  >
-                    <Plus size={16} />
-                    <span>+ Add Earning Rule</span>
-                  </button>
+                <div className="border-b pb-3">
+                  <h2 className="text-lg font-bold text-slate-900">Loyalty Program & Dynamic Redemption Rules</h2>
+                  <p className="text-xs text-slate-500 mt-0.5">Manage unlimited earning rules & redemption rules stored directly in database</p>
                 </div>
 
                 <div className="flex items-center space-x-3 bg-purple-50 p-4 rounded-xl border border-purple-200">
@@ -581,13 +661,97 @@ export default function SettingsPage() {
                   </label>
                 </div>
 
-                {/* EARNING RULES TABLE */}
-                <div className="space-y-3">
-                  <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Active Loyalty Earning Rules</h3>
-                  <div className="overflow-x-auto">
+                {/* DYNAMIC LOYALTY REDEMPTION RULES TABLE */}
+                <div className="space-y-3 pt-2">
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
+                        <Gift size={16} className="text-purple-600" />
+                        <span>Loyalty Point Redemption Rules</span>
+                      </h3>
+                      <p className="text-[11px] text-slate-500">Super Admin can configure unlimited points-to-discount rules stored in database</p>
+                    </div>
+                    <button
+                      onClick={handleOpenAddRedemptionRule}
+                      className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-3.5 py-2 rounded-lg shadow transition flex items-center space-x-1"
+                    >
+                      <Plus size={14} />
+                      <span>+ Add Redemption Rule</span>
+                    </button>
+                  </div>
+
+                  <div className="overflow-x-auto border border-slate-200 rounded-xl">
                     <table className="w-full text-left text-sm border-collapse">
                       <thead>
-                        <tr className="bg-slate-50 text-slate-700 uppercase text-xs font-bold border-b">
+                        <tr className="bg-slate-100 text-slate-700 uppercase text-xs font-bold border-b">
+                          <th className="py-2.5 px-4">Points Required</th>
+                          <th className="py-2.5 px-4 text-right">Discount Amount (₹)</th>
+                          <th className="py-2.5 px-4 text-center">Rule Format</th>
+                          <th className="py-2.5 px-4 text-center">Status</th>
+                          <th className="py-2.5 px-4 text-center w-28">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {redemptionRules.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} className="py-8 text-center text-slate-400 text-xs">No redemption rules configured yet.</td>
+                          </tr>
+                        ) : (
+                          redemptionRules.map((rRule) => (
+                            <tr key={rRule.id} className="hover:bg-slate-50">
+                              <td className="py-3 px-4 font-mono font-extrabold text-slate-900">
+                                {rRule.points_required} Points
+                              </td>
+                              <td className="py-3 px-4 text-right font-extrabold text-emerald-600">
+                                ₹{Number(rRule.discount_amount).toFixed(2)}
+                              </td>
+                              <td className="py-3 px-4 text-center font-mono text-xs font-bold text-purple-700">
+                                {rRule.points_required} Points = ₹{rRule.discount_amount} Discount
+                              </td>
+                              <td className="py-3 px-4 text-center">
+                                <button onClick={() => handleToggleRedemptionRule(rRule)}>
+                                  {rRule.enabled ? (
+                                    <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full">Active</span>
+                                  ) : (
+                                    <span className="bg-slate-100 text-slate-500 text-[10px] font-bold px-2 py-0.5 rounded-full">Inactive</span>
+                                  )}
+                                </button>
+                              </td>
+                              <td className="py-3 px-4 text-center">
+                                <div className="flex items-center justify-center space-x-2">
+                                  <button onClick={() => handleOpenEditRedemptionRule(rRule)} className="p-1 text-slate-500 hover:text-blue-600">
+                                    <Edit2 size={16} />
+                                  </button>
+                                  <button onClick={() => handleDeleteRedemptionRule(rRule.id)} className="p-1 text-slate-500 hover:text-rose-600">
+                                    <Trash2 size={16} />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* EARNING RULES TABLE */}
+                <div className="space-y-3 pt-4 border-t">
+                  <div className="flex justify-between items-center">
+                    <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Active Loyalty Earning Rules</h3>
+                    <button
+                      onClick={handleOpenAddRule}
+                      className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-3 py-1.5 rounded-lg shadow transition flex items-center space-x-1"
+                    >
+                      <Plus size={14} />
+                      <span>+ Add Earning Rule</span>
+                    </button>
+                  </div>
+
+                  <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                    <table className="w-full text-left text-sm border-collapse">
+                      <thead>
+                        <tr className="bg-slate-100 text-slate-700 uppercase text-xs font-bold border-b">
                           <th className="py-2.5 px-4">Order</th>
                           <th className="py-2.5 px-4">Rule Name</th>
                           <th className="py-2.5 px-4">Bill Amount Range</th>
@@ -641,43 +805,6 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
-                {/* REDEMPTION CONFIGURATION */}
-                <div className="pt-4 border-t space-y-4">
-                  <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Redemption Limits & Rules</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">Min Points Required to Redeem</label>
-                      <input
-                        type="number"
-                        min="1"
-                        value={settings.loyalty.min_points_to_redeem}
-                        onChange={(e) => setSettings({ ...settings, loyalty: { ...settings.loyalty, min_points_to_redeem: Number(e.target.value) } })}
-                        className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">Max Points Redeemable Per Bill</label>
-                      <input
-                        type="number"
-                        min="1"
-                        value={settings.loyalty.max_points_per_bill}
-                        onChange={(e) => setSettings({ ...settings, loyalty: { ...settings.loyalty, max_points_per_bill: Number(e.target.value) } })}
-                        className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">Max Discount Allowed Per Bill (₹)</label>
-                      <input
-                        type="number"
-                        min="1"
-                        value={settings.loyalty.max_discount_per_bill}
-                        onChange={(e) => setSettings({ ...settings, loyalty: { ...settings.loyalty, max_discount_per_bill: Number(e.target.value) } })}
-                        className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold"
-                      />
-                    </div>
-                  </div>
-                </div>
-
                 <div className="pt-3 border-t flex justify-end">
                   <button
                     onClick={() => handleSaveSection('loyalty')}
@@ -685,7 +812,7 @@ export default function SettingsPage() {
                     className="bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold px-5 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5"
                   >
                     <Save size={16} />
-                    <span>Save Loyalty Engine Config</span>
+                    <span>Save Loyalty Config</span>
                   </button>
                 </div>
               </div>
@@ -766,7 +893,73 @@ export default function SettingsPage() {
         )}
       </div>
 
-      {/* ADD / EDIT LOYALTY RULE MODAL */}
+      {/* ADD / EDIT LOYALTY REDEMPTION RULE MODAL */}
+      {showRedemptionModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-200 pb-3">
+              <h2 className="text-lg font-bold text-slate-900">
+                {editingRedemptionRule ? 'Edit Redemption Rule' : 'Add New Redemption Rule'}
+              </h2>
+              <button onClick={() => setShowRedemptionModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveRedemptionSubmit} className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Points Required *</label>
+                <input
+                  type="number"
+                  required
+                  min="1"
+                  placeholder="e.g. 10"
+                  value={ptsRequiredInput}
+                  onChange={(e) => setPtsRequiredInput(e.target.value === '' ? '' : Number(e.target.value))}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-extrabold"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Discount Amount (₹) *</label>
+                <input
+                  type="number"
+                  required
+                  min="0.5"
+                  step="0.5"
+                  placeholder="e.g. 5"
+                  value={discAmountInput}
+                  onChange={(e) => setDiscAmountInput(e.target.value === '' ? '' : Number(e.target.value))}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-extrabold text-emerald-700"
+                />
+              </div>
+
+              <div className="bg-purple-50 p-3 rounded-lg text-xs font-mono font-bold text-purple-900">
+                Preview: {ptsRequiredInput || 0} Points = ₹{discAmountInput || 0} Discount
+              </div>
+
+              <div className="flex justify-end space-x-2 pt-3 border-t">
+                <button
+                  type="button"
+                  onClick={() => setShowRedemptionModal(false)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="px-5 py-2 text-xs font-bold bg-purple-600 hover:bg-purple-500 text-white rounded-lg shadow disabled:opacity-50"
+                >
+                  {saving ? 'Saving...' : editingRedemptionRule ? 'Update Rule' : 'Add Rule'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ADD / EDIT LOYALTY EARNING RULE MODAL */}
       {showRuleModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4">

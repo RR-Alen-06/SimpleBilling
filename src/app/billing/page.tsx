@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '@/lib/services/api';
-import { Customer, Product, Bill, RoundingMethod, AllSettings } from '@/lib/types';
+import { Customer, Product, Bill, RoundingMethod, AllSettings, LoyaltyRedemptionRule } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { InvoiceModal } from '@/components/InvoiceModal';
 import { 
@@ -15,7 +15,8 @@ import {
   AlertTriangle, 
   Calculator,
   Gift,
-  Sparkles
+  Sparkles,
+  Percent
 } from 'lucide-react';
 
 interface CartItem {
@@ -30,6 +31,7 @@ export default function BillingPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [settings, setSettings] = useState<AllSettings | null>(null);
+  const [redemptionRules, setRedemptionRules] = useState<LoyaltyRedemptionRule[]>([]);
 
   // Form State
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
@@ -43,8 +45,9 @@ export default function BillingPage() {
   // Catalog search
   const [productSearch, setProductSearch] = useState('');
 
-  // Discount & Rounding
-  const [discount, setDiscount] = useState<number>(0);
+  // Discount (Flat vs Percentage) & Rounding
+  const [discountType, setDiscountType] = useState<'FLAT' | 'PERCENTAGE'>('FLAT');
+  const [discountValue, setDiscountValue] = useState<number>(0);
   const [roundingMethod, setRoundingMethod] = useState<RoundingMethod>('None');
 
   // Split Payment Amounts
@@ -70,14 +73,16 @@ export default function BillingPage() {
 
   const fetchInitialData = async () => {
     try {
-      const [custList, prodList, shopSettings] = await Promise.all([
+      const [custList, prodList, shopSettings, redRules] = await Promise.all([
         ApiService.getCustomers(),
         ApiService.getProducts(),
-        ApiService.getSettings()
+        ApiService.getSettings(),
+        ApiService.getLoyaltyRedemptionRules()
       ]);
       setCustomers(custList);
       setProducts(prodList);
       setSettings(shopSettings);
+      setRedemptionRules(redRules);
       setRoundingMethod(shopSettings.billing.rounding_method);
     } catch (err) {
       console.error('Error loading data:', err);
@@ -97,10 +102,19 @@ export default function BillingPage() {
 
   const selectedCustomer = customers.find(c => c.id === selectedCustomerId);
 
-  // Dynamic Earning Recalculation
+  // Subtotal & Discount Math (Flat vs Percentage)
   const subtotal = cart.reduce((sum, item) => sum + item.total, 0);
-  const loyaltyDiscount = (pointsToRedeem * (settings?.loyalty.amount_per_point || 1));
-  const totalAfterDiscount = Math.max(0, subtotal - Number(discount || 0) - loyaltyDiscount);
+
+  const manualDiscountApplied = discountType === 'PERCENTAGE'
+    ? Number(((subtotal * (discountValue || 0)) / 100).toFixed(2))
+    : Number(discountValue || 0);
+
+  const activeRedemptionRules = redemptionRules.filter(r => r.enabled);
+  const loyaltyDiscount = settings 
+    ? ApiService.calculateLoyaltyDiscount(pointsToRedeem, settings.loyalty, activeRedemptionRules) 
+    : 0;
+
+  const totalAfterDiscount = Math.max(0, subtotal - manualDiscountApplied - loyaltyDiscount);
   const { roundedTotal, roundingAdjustment } = ApiService.calculateRounding(totalAfterDiscount, roundingMethod);
 
   useEffect(() => {
@@ -218,29 +232,14 @@ export default function BillingPage() {
       return;
     }
 
-    if (advanceVal > (selectedCustomer?.advance_balance || 0)) {
-      setErrorMsg(`Customer only has ₹${(selectedCustomer?.advance_balance || 0).toFixed(2)} advance balance available.`);
+    if (selectedCustomer && pointsToRedeem > selectedCustomer.loyalty_points) {
+      setErrorMsg(`Customer only has ${selectedCustomer.loyalty_points} loyalty points available.`);
       return;
     }
 
-    // Dynamic Redemption Limits Check
-    if (pointsToRedeem > 0) {
-      const minPointsReq = settings?.loyalty.min_points_to_redeem || 1;
-      const maxPointsLimit = settings?.loyalty.max_points_per_bill || 500;
-      const maxDiscountLimit = settings?.loyalty.max_discount_per_bill || 500;
-
-      if (pointsToRedeem < minPointsReq) {
-        setErrorMsg(`Minimum ${minPointsReq} loyalty points required for redemption.`);
-        return;
-      }
-      if (pointsToRedeem > maxPointsLimit) {
-        setErrorMsg(`Maximum ${maxPointsLimit} loyalty points redeemable per bill.`);
-        return;
-      }
-      if (loyaltyDiscount > maxDiscountLimit) {
-        setErrorMsg(`Maximum loyalty discount allowed per bill is ₹${maxDiscountLimit}.`);
-        return;
-      }
+    if (advanceVal > (selectedCustomer?.advance_balance || 0)) {
+      setErrorMsg(`Customer only has ₹${(selectedCustomer?.advance_balance || 0).toFixed(2)} advance balance available.`);
+      return;
     }
 
     setSaving(true);
@@ -248,7 +247,7 @@ export default function BillingPage() {
       const createdBill = await ApiService.createBill({
         customer_id: selectedCustomerId || null,
         total: subtotal,
-        discount: Number(discount || 0),
+        discount: manualDiscountApplied,
         rounding_method: roundingMethod,
         cash_paid: cashVal,
         upi_paid: upiVal,
@@ -263,7 +262,7 @@ export default function BillingPage() {
 
       // Reset form
       setCart([]);
-      setDiscount(0);
+      setDiscountValue(0);
       setCashPaid('');
       setUpiPaid('');
       setCardPaid('');
@@ -271,7 +270,7 @@ export default function BillingPage() {
       setPointsToRedeem(0);
       setSelectedCustomerId('');
 
-      fetchInitialData();
+      await fetchInitialData();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to generate bill');
     } finally {
@@ -292,9 +291,9 @@ export default function BillingPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900 flex items-center space-x-2">
             <Receipt className="text-blue-600" size={26} />
-            <span>POS Billing & Loyalty Engine Integration</span>
+            <span>POS Billing & Flexible Discounts</span>
           </h1>
-          <p className="text-sm text-slate-500 mt-0.5">Xerox page rates, stationery catalog, multi-mode split payments & dynamic loyalty rules</p>
+          <p className="text-sm text-slate-500 mt-0.5">Flat (₹) or Percentage (%) discounts, split payments & dynamic loyalty point redemptions</p>
         </div>
       </div>
 
@@ -323,7 +322,10 @@ export default function BillingPage() {
             <div className="flex gap-2">
               <select
                 value={selectedCustomerId}
-                onChange={(e) => setSelectedCustomerId(e.target.value)}
+                onChange={(e) => {
+                  setSelectedCustomerId(e.target.value);
+                  setPointsToRedeem(0);
+                }}
                 className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">Walk-in Customer</option>
@@ -351,7 +353,7 @@ export default function BillingPage() {
                   <span className="font-bold text-emerald-700">₹{selectedCustomer.advance_balance.toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-500">Loyalty Points:</span>
+                  <span className="text-slate-500">Loyalty Balance:</span>
                   <span className="font-bold text-purple-700">⭐ {selectedCustomer.loyalty_points} Points</span>
                 </div>
               </div>
@@ -513,33 +515,104 @@ export default function BillingPage() {
               <span className="font-bold text-slate-900">₹{subtotal.toFixed(2)}</span>
             </div>
 
+            {/* DISCOUNT TYPE SELECTOR (FLAT ₹ vs PERCENTAGE %) */}
             <div className="flex justify-between items-center text-xs">
-              <span className="text-slate-600">Discount (₹):</span>
-              <input
-                type="number"
-                min="0"
-                placeholder="0"
-                value={discount === 0 ? '' : discount}
-                onChange={(e) => setDiscount(Math.max(0, Number(e.target.value)))}
-                className="w-24 text-right bg-white border border-slate-300 rounded px-2 py-1 text-xs font-semibold text-slate-900 focus:ring-1 focus:ring-blue-500"
-              />
-            </div>
+              <div className="flex items-center space-x-2">
+                <span className="text-slate-600 font-medium">Discount:</span>
+                <div className="bg-white border border-slate-300 rounded p-0.5 flex">
+                  <button
+                    type="button"
+                    onClick={() => setDiscountType('FLAT')}
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition ${
+                      discountType === 'FLAT' ? 'bg-blue-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    Flat ₹
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDiscountType('PERCENTAGE')}
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition flex items-center space-x-0.5 ${
+                      discountType === 'PERCENTAGE' ? 'bg-blue-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span>Percent</span>
+                    <Percent size={10} />
+                  </button>
+                </div>
+              </div>
 
-            {/* Loyalty Points Redemption Input */}
-            {selectedCustomer && selectedCustomer.loyalty_points > 0 && settings?.loyalty.enabled && (
-              <div className="flex justify-between items-center text-xs bg-purple-50 p-2 rounded border border-purple-200">
-                <span className="text-purple-800 font-bold flex items-center space-x-1">
-                  <Gift size={14} />
-                  <span>Redeem Points (Max: {selectedCustomer.loyalty_points} pts):</span>
-                </span>
+              <div className="flex items-center space-x-1">
                 <input
                   type="number"
                   min="0"
-                  max={selectedCustomer.loyalty_points}
-                  value={pointsToRedeem === 0 ? '' : pointsToRedeem}
-                  onChange={(e) => setPointsToRedeem(Math.min(selectedCustomer.loyalty_points, Math.max(0, Number(e.target.value))))}
-                  className="w-20 text-right bg-white border border-purple-300 rounded px-2 py-1 text-xs font-bold text-purple-900 focus:ring-1 focus:ring-purple-500"
+                  max={discountType === 'PERCENTAGE' ? 100 : undefined}
+                  placeholder="0"
+                  value={discountValue === 0 ? '' : discountValue}
+                  onChange={(e) => setDiscountValue(Math.max(0, Number(e.target.value)))}
+                  className="w-24 text-right bg-white border border-slate-300 rounded px-2 py-1 text-xs font-bold text-slate-900 focus:ring-1 focus:ring-blue-500"
                 />
+                <span className="text-xs font-bold text-slate-500 w-4">
+                  {discountType === 'FLAT' ? '₹' : '%'}
+                </span>
+              </div>
+            </div>
+
+            {/* Calculated Discount Feedback */}
+            {discountType === 'PERCENTAGE' && discountValue > 0 && (
+              <div className="flex justify-between text-xs text-blue-700 font-bold bg-blue-50 px-2 py-1 rounded">
+                <span>Calculated {discountValue}% Discount:</span>
+                <span>-₹{manualDiscountApplied.toFixed(2)}</span>
+              </div>
+            )}
+
+            {/* Dynamic Active Redemption Rules Selector & Points Input */}
+            {selectedCustomer && selectedCustomer.loyalty_points > 0 && settings?.loyalty.enabled && (
+              <div className="space-y-2 bg-purple-50 p-3 rounded-lg border border-purple-200">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-purple-900 font-bold flex items-center space-x-1">
+                    <Gift size={14} />
+                    <span>Redeem Loyalty Points:</span>
+                  </span>
+                  <input
+                    type="number"
+                    min="0"
+                    max={selectedCustomer.loyalty_points}
+                    value={pointsToRedeem === 0 ? '' : pointsToRedeem}
+                    onChange={(e) => {
+                      const inputPts = Math.max(0, Number(e.target.value));
+                      setPointsToRedeem(Math.min(selectedCustomer.loyalty_points, inputPts));
+                    }}
+                    className="w-20 text-right bg-white border border-purple-300 rounded px-2 py-1 text-xs font-extrabold text-purple-900 focus:ring-1 focus:ring-purple-500"
+                  />
+                </div>
+
+                {/* Quick Active Redemption Rules Buttons */}
+                {activeRedemptionRules.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {activeRedemptionRules.map((rRule) => (
+                      <button
+                        key={rRule.id}
+                        type="button"
+                        onClick={() => {
+                          if (selectedCustomer.loyalty_points >= rRule.points_required) {
+                            setPointsToRedeem(rRule.points_required);
+                          }
+                        }}
+                        disabled={selectedCustomer.loyalty_points < rRule.points_required}
+                        className={`text-[10px] px-2 py-1 rounded font-bold transition border ${
+                          pointsToRedeem === rRule.points_required
+                            ? 'bg-purple-700 text-white border-purple-800'
+                            : selectedCustomer.loyalty_points >= rRule.points_required
+                            ? 'bg-white text-purple-800 border-purple-300 hover:bg-purple-100'
+                            : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                        }`}
+                      >
+                        {rRule.points_required} Pts = ₹{rRule.discount_amount}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -549,7 +622,7 @@ export default function BillingPage() {
                 <div className="flex justify-between items-center border-b border-purple-800 pb-1.5 font-bold">
                   <span className="flex items-center space-x-1 text-purple-200">
                     <Sparkles size={14} />
-                    <span>Loyalty Engine Calculation</span>
+                    <span>Loyalty Summary</span>
                   </span>
                   <span className="text-emerald-400 font-mono">
                     +{estimatedPointsEarned} pts Earned
@@ -557,19 +630,19 @@ export default function BillingPage() {
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-[11px]">
                   <div>
-                    <span className="text-purple-300 block">Current Balance:</span>
+                    <span className="text-purple-300 block">Current Loyalty Points:</span>
                     <span className="font-extrabold">{selectedCustomer.loyalty_points} Points</span>
                   </div>
                   <div>
-                    <span className="text-purple-300 block">Redeem Discount:</span>
+                    <span className="text-purple-300 block">Discount Applied:</span>
                     <span className="font-extrabold text-emerald-300">-₹{loyaltyDiscount.toFixed(2)}</span>
                   </div>
                   <div>
-                    <span className="text-purple-300 block">Redeemed Points:</span>
+                    <span className="text-purple-300 block">Points Redeemed:</span>
                     <span className="font-extrabold">{pointsToRedeem} Points</span>
                   </div>
                   <div>
-                    <span className="text-purple-300 block">Net Balance After Bill:</span>
+                    <span className="text-purple-300 block">Remaining Loyalty Points:</span>
                     <span className="font-extrabold text-purple-200">
                       {Math.max(0, selectedCustomer.loyalty_points - pointsToRedeem + estimatedPointsEarned)} Points
                     </span>

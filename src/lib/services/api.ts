@@ -15,7 +15,9 @@ import {
   DateFilterOption,
   SequenceConfig,
   PaymentSummary,
-  LoyaltyRule
+  LoyaltyRule,
+  LoyaltyRedemptionRule,
+  LoyaltySettings
 } from '../types';
 
 export const DEFAULT_SETTINGS: AllSettings = {
@@ -42,11 +44,8 @@ export const DEFAULT_SETTINGS: AllSettings = {
   },
   loyalty: {
     enabled: true,
-    min_points_to_redeem: 10,
-    max_points_per_bill: 500,
-    max_discount_per_bill: 500,
-    allow_partial_redemption: true,
-    amount_per_point: 1
+    points_required: 10,
+    discount_value: 5
   },
   whatsapp: {
     enabled: true,
@@ -124,7 +123,98 @@ export class ApiService {
     });
   }
 
-  // --- DYNAMIC LOYALTY RULE ENGINE ---
+  // --- DYNAMIC LOYALTY REDEMPTION RULES CRUD ---
+  static async getLoyaltyRedemptionRules(): Promise<LoyaltyRedemptionRule[]> {
+    if (!isSupabaseConfigured) return [
+      { id: 'red-1', points_required: 10, discount_amount: 5.00, enabled: true },
+      { id: 'red-2', points_required: 20, discount_amount: 10.00, enabled: true },
+      { id: 'red-3', points_required: 50, discount_amount: 25.00, enabled: true }
+    ];
+
+    const { data, error } = await supabase
+      .from('loyalty_redemption_rules')
+      .select('*')
+      .order('points_required', { ascending: true });
+
+    if (error) return [];
+    return data || [];
+  }
+
+  static async addLoyaltyRedemptionRule(rule: Omit<LoyaltyRedemptionRule, 'id' | 'created_at'>, userName = 'Super Admin'): Promise<LoyaltyRedemptionRule> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const { data, error } = await supabase.from('loyalty_redemption_rules').insert([rule]).select().single();
+    if (error) throw new Error(error.message);
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'ADD_LOYALTY_REDEMPTION_RULE',
+      entity: `Redemption Rule (${rule.points_required} pts = ₹${rule.discount_amount})`,
+      new_value: JSON.stringify(data)
+    });
+
+    return data;
+  }
+
+  static async updateLoyaltyRedemptionRule(id: string, rule: Partial<Omit<LoyaltyRedemptionRule, 'id' | 'created_at'>>, userName = 'Super Admin'): Promise<LoyaltyRedemptionRule> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const { data, error } = await supabase.from('loyalty_redemption_rules').update(rule).eq('id', id).select().single();
+    if (error) throw new Error(error.message);
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'UPDATE_LOYALTY_REDEMPTION_RULE',
+      entity: `Redemption Rule ID ${id}`,
+      new_value: JSON.stringify(data)
+    });
+
+    return data;
+  }
+
+  static async deleteLoyaltyRedemptionRule(id: string, userName = 'Super Admin'): Promise<void> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const { error } = await supabase.from('loyalty_redemption_rules').delete().eq('id', id);
+    if (error) throw new Error(error.message);
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'DELETE_LOYALTY_REDEMPTION_RULE',
+      entity: `Redemption Rule ID ${id}`
+    });
+  }
+
+  static calculateLoyaltyDiscount(pointsToRedeem: number, loyaltySettings: LoyaltySettings, activeRedemptionRules: LoyaltyRedemptionRule[] = []): number {
+    if (pointsToRedeem <= 0) return 0;
+
+    const enabledRules = activeRedemptionRules.filter(r => r.enabled).sort((a, b) => b.points_required - a.points_required);
+
+    if (enabledRules.length > 0) {
+      // Find exact or closest matching rule tier
+      let remainingPts = pointsToRedeem;
+      let totalDiscount = 0;
+
+      for (const rule of enabledRules) {
+        if (remainingPts >= rule.points_required) {
+          const multiplier = Math.floor(remainingPts / rule.points_required);
+          totalDiscount += multiplier * Number(rule.discount_amount);
+          remainingPts -= multiplier * rule.points_required;
+        }
+      }
+
+      if (totalDiscount > 0) return Number(totalDiscount.toFixed(2));
+      
+      // Fallback rate from best active tier
+      const bestRule = enabledRules[0];
+      const rate = Number(bestRule.discount_amount) / Number(bestRule.points_required);
+      return Number((pointsToRedeem * rate).toFixed(2));
+    }
+
+    const req = loyaltySettings.points_required > 0 ? loyaltySettings.points_required : 10;
+    const disc = loyaltySettings.discount_value > 0 ? loyaltySettings.discount_value : 5;
+    const ratePerPoint = disc / req;
+    return Number((pointsToRedeem * ratePerPoint).toFixed(2));
+  }
+
+  // --- DYNAMIC LOYALTY EARNING RULE ENGINE ---
   static async getLoyaltyRules(): Promise<LoyaltyRule[]> {
     if (!isSupabaseConfigured) return [
       { id: 'rule-1', rule_name: 'Standard Earning Rule', min_bill_amount: 0, max_bill_amount: 500, reward_type: 'PERCENTAGE', reward_value: 1, enabled: true, sort_order: 1 },
@@ -195,7 +285,6 @@ export class ApiService {
       }
     }
 
-    // Default fallback: 1 point per 100
     return Math.floor(billAmount / 100);
   }
 
@@ -443,6 +532,7 @@ export class ApiService {
 
       return {
         id: cust.id,
+        user_id: cust.user_id,
         customer_code: cust.customer_code,
         name: cust.name,
         mobile: cust.mobile,
@@ -456,7 +546,7 @@ export class ApiService {
     });
   }
 
-  // --- BILLING WITH DYNAMIC LOYALTY RULE ENGINE ---
+  // --- BILLING WITH DYNAMIC REDEMPTION RULES ---
   static async createBill(billData: {
     customer_id?: string | null;
     total: number;
@@ -477,10 +567,13 @@ export class ApiService {
   }, userName = 'Admin'): Promise<Bill> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
 
-    const settings = await this.getSettings();
+    const [settings, activeRedemptionRules] = await Promise.all([
+      this.getSettings(),
+      this.getLoyaltyRedemptionRules()
+    ]);
 
-    // 1. Calculate Loyalty Redemption Discount
-    const redemptionDiscount = billData.points_to_redeem * (settings.loyalty.amount_per_point || 1);
+    // 1. Calculate Loyalty Redemption Discount from active rules
+    const redemptionDiscount = this.calculateLoyaltyDiscount(billData.points_to_redeem, settings.loyalty, activeRedemptionRules);
     const totalDiscountApplied = billData.discount + redemptionDiscount;
 
     // 2. Calculate Rounding
@@ -584,7 +677,7 @@ export class ApiService {
           bill_id: bill.id,
           points: billData.points_to_redeem,
           type: 'REDEEM',
-          notes: `Loyalty points redeemed on bill ${bill.bill_number}`
+          notes: `Loyalty points redeemed for ₹${redemptionDiscount} discount on bill ${bill.bill_number}`
         }]);
       }
 
@@ -604,7 +697,7 @@ export class ApiService {
       user_name: userName,
       action: 'CREATE_BILL',
       entity: `Bill ${bill.bill_number}`,
-      new_value: JSON.stringify({ grand_total: roundedTotal, payment_method, pointsEarned })
+      new_value: JSON.stringify({ grand_total: roundedTotal, payment_method, pointsEarned, pointsRedeemed: billData.points_to_redeem, redemptionDiscount })
     });
 
     return { ...bill, items: billData.items };
