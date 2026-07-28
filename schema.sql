@@ -1,6 +1,6 @@
 -- ==========================================
 -- PrintPro ERP / Xerox & Stationery Billing System Database Schema
--- Supabase / PostgreSQL Script (Updated with Sequence Management)
+-- Supabase / PostgreSQL Script (Idempotent & Safe for re-running)
 -- ==========================================
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -165,7 +165,7 @@ CREATE INDEX IF NOT EXISTS idx_bill_items_bill_id ON public.bill_items(bill_id);
 CREATE INDEX IF NOT EXISTS idx_payments_customer_id ON public.payments(customer_id);
 CREATE INDEX IF NOT EXISTS idx_expenses_created_at ON public.expenses(created_at);
 
--- Enable RLS Policies
+-- Enable RLS Policies safely
 ALTER TABLE public.sequences ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.customers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
@@ -177,6 +177,19 @@ ALTER TABLE public.settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.loyalty_transactions ENABLE ROW LEVEL SECURITY;
 
+-- Drop Policies if they already exist to ensure idempotency
+DROP POLICY IF EXISTS "Allow full access to sequences" ON public.sequences;
+DROP POLICY IF EXISTS "Allow full access to customers" ON public.customers;
+DROP POLICY IF EXISTS "Allow full access to products" ON public.products;
+DROP POLICY IF EXISTS "Allow full access to bills" ON public.bills;
+DROP POLICY IF EXISTS "Allow full access to bill_items" ON public.bill_items;
+DROP POLICY IF EXISTS "Allow full access to payments" ON public.payments;
+DROP POLICY IF EXISTS "Allow full access to expenses" ON public.expenses;
+DROP POLICY IF EXISTS "Allow full access to settings" ON public.settings;
+DROP POLICY IF EXISTS "Allow full access to audit_logs" ON public.audit_logs;
+DROP POLICY IF EXISTS "Allow full access to loyalty_transactions" ON public.loyalty_transactions;
+
+-- Create Policies
 CREATE POLICY "Allow full access to sequences" ON public.sequences FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow full access to customers" ON public.customers FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow full access to products" ON public.products FOR ALL USING (true) WITH CHECK (true);
