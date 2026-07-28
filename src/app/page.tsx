@@ -23,7 +23,12 @@ import {
   DollarSign, 
   Calendar,
   Filter,
-  Calculator
+  Calculator,
+  CreditCard,
+  Smartphone,
+  Wallet,
+  CheckCircle2,
+  Layers
 } from 'lucide-react';
 
 const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444'];
@@ -40,6 +45,19 @@ export default function DashboardPage() {
     net_profit: 0,
     bills_generated: 0,
     average_bill_value: 0,
+    payment_summary: {
+      total_sales: 0,
+      cash_collected: 0,
+      upi_collected: 0,
+      card_collected: 0,
+      mixed_payments_total: 0,
+      total_amount_collected: 0,
+      outstanding_amount: 0,
+      customer_advance_balance: 0,
+      payment_method_breakdown: [],
+      daily_collection_trend: [],
+      monthly_collection_trend: []
+    },
     sales_trend: [],
     monthly_revenue: [],
     payment_distribution: [],
@@ -77,6 +95,8 @@ export default function DashboardPage() {
     if (fullBill) setSelectedBill(fullBill);
   };
 
+  const ps = stats.payment_summary;
+
   return (
     <div className="space-y-6">
       <SupabaseBanner />
@@ -84,8 +104,8 @@ export default function DashboardPage() {
       {/* Header Banner */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Analytics Dashboard</h1>
-          <p className="text-sm text-slate-500 mt-0.5">Real-time business performance, revenue trends, and top selling products</p>
+          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Dashboard & Payment Reconciliation</h1>
+          <p className="text-sm text-slate-500 mt-0.5">Separate collection breakdown for Cash, UPI, Card, and Mixed payments</p>
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -117,7 +137,7 @@ export default function DashboardPage() {
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
         <div className="flex items-center space-x-2 text-xs font-bold text-slate-700 uppercase tracking-wider">
           <Filter size={16} className="text-blue-600" />
-          <span>Dashboard Filter:</span>
+          <span>Select Reconciliation Period:</span>
         </div>
 
         <div className="flex flex-wrap gap-1.5">
@@ -169,91 +189,152 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* METRICS CARDS GRID (9 Cards) */}
+      {/* DEDICATED PAYMENT SUMMARY CARDS GRID (8 CARDS) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Total Sales */}
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Filtered Sales</p>
-            <p className="text-2xl font-extrabold text-slate-900 mt-1">₹{stats.todays_sales.toFixed(2)}</p>
-          </div>
-          <div className="bg-emerald-50 text-emerald-600 p-3 rounded-xl border border-emerald-100">
-            <IndianRupee size={24} />
-          </div>
-        </div>
-
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Monthly Revenue</p>
-            <p className="text-2xl font-extrabold text-blue-600 mt-1">₹{stats.monthly_sales.toFixed(2)}</p>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Sales Billed</p>
+            <p className="text-2xl font-extrabold text-slate-900 mt-1">₹{ps.total_sales.toFixed(2)}</p>
           </div>
           <div className="bg-blue-50 text-blue-600 p-3 rounded-xl border border-blue-100">
-            <Calendar size={24} />
-          </div>
-        </div>
-
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Bills Generated</p>
-            <p className="text-2xl font-extrabold text-slate-900 mt-1">{stats.bills_generated}</p>
-          </div>
-          <div className="bg-purple-50 text-purple-600 p-3 rounded-xl border border-purple-100">
             <Receipt size={24} />
           </div>
         </div>
 
+        {/* Cash Collected */}
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Avg Bill Value</p>
-            <p className="text-2xl font-extrabold text-slate-900 mt-1">₹{stats.average_bill_value.toFixed(2)}</p>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Cash Collected</p>
+            <p className="text-2xl font-extrabold text-emerald-600 mt-1">₹{ps.cash_collected.toFixed(2)}</p>
+          </div>
+          <div className="bg-emerald-50 text-emerald-600 p-3 rounded-xl border border-emerald-100">
+            <Wallet size={24} />
+          </div>
+        </div>
+
+        {/* UPI Collected */}
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">UPI Collected</p>
+            <p className="text-2xl font-extrabold text-indigo-600 mt-1">₹{ps.upi_collected.toFixed(2)}</p>
           </div>
           <div className="bg-indigo-50 text-indigo-600 p-3 rounded-xl border border-indigo-100">
-            <Calculator size={24} />
+            <Smartphone size={24} />
+          </div>
+        </div>
+
+        {/* Card Collected */}
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Card Collected</p>
+            <p className="text-2xl font-extrabold text-purple-600 mt-1">₹{ps.card_collected.toFixed(2)}</p>
+          </div>
+          <div className="bg-purple-50 text-purple-600 p-3 rounded-xl border border-purple-100">
+            <CreditCard size={24} />
+          </div>
+        </div>
+
+        {/* Mixed Payments Total */}
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Mixed Payments Total</p>
+            <p className="text-2xl font-extrabold text-amber-600 mt-1">₹{ps.mixed_payments_total.toFixed(2)}</p>
+          </div>
+          <div className="bg-amber-50 text-amber-600 p-3 rounded-xl border border-amber-100">
+            <Layers size={24} />
+          </div>
+        </div>
+
+        {/* Total Amount Collected */}
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Amount Collected</p>
+            <p className="text-2xl font-extrabold text-emerald-700 mt-1">₹{ps.total_amount_collected.toFixed(2)}</p>
+          </div>
+          <div className="bg-emerald-100 text-emerald-800 p-3 rounded-xl border border-emerald-200">
+            <CheckCircle2 size={24} />
+          </div>
+        </div>
+
+        {/* Outstanding Amount */}
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Outstanding Amount</p>
+            <p className="text-2xl font-extrabold text-rose-600 mt-1">₹{ps.outstanding_amount.toFixed(2)}</p>
+          </div>
+          <div className="bg-rose-50 text-rose-600 p-3 rounded-xl border border-rose-100">
+            <AlertCircle size={24} />
+          </div>
+        </div>
+
+        {/* Customer Advance Balance */}
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Customer Advance Balance</p>
+            <p className="text-2xl font-extrabold text-blue-600 mt-1">₹{ps.customer_advance_balance.toFixed(2)}</p>
+          </div>
+          <div className="bg-blue-50 text-blue-600 p-3 rounded-xl border border-blue-100">
+            <IndianRupee size={24} />
           </div>
         </div>
       </div>
 
-      {/* FINANCIAL PROFIT SUMMARY BAR */}
-      <div className="bg-slate-900 text-white p-6 rounded-xl shadow-md grid grid-cols-1 md:grid-cols-4 gap-6 items-center">
-        <div className="flex items-center space-x-3">
-          <div className="bg-emerald-500/20 text-emerald-400 p-3 rounded-lg border border-emerald-500/30">
-            <TrendingUp size={24} />
-          </div>
-          <div>
-            <p className="text-xs text-slate-400 font-medium uppercase">Total Income</p>
-            <p className="text-xl font-bold text-emerald-400 mt-0.5">₹{stats.total_income.toFixed(2)}</p>
-          </div>
+      {/* PAYMENT ANALYSIS BREAKDOWN TABLE & FINANCIAL SUMMARY */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* PAYMENT ANALYSIS TABLE (6 Cols) */}
+        <div className="lg:col-span-6 bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden p-6 space-y-3">
+          <h3 className="font-bold text-slate-900 text-base flex items-center space-x-2">
+            <Wallet className="text-blue-600" size={20} />
+            <span>Payment Analysis Breakdown</span>
+          </h3>
+
+          <table className="w-full text-left text-sm border-collapse">
+            <thead>
+              <tr className="bg-slate-100 text-slate-700 uppercase text-xs font-bold border-b">
+                <th className="py-2.5 px-4">Payment Method</th>
+                <th className="py-2.5 px-4 text-right">Amount Collected (₹)</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {ps.payment_method_breakdown.map((item, idx) => (
+                <tr key={idx} className={item.method === 'Total Collected' ? 'bg-slate-900 text-white font-bold' : 'hover:bg-slate-50'}>
+                  <td className="py-3 px-4 font-semibold">{item.method}</td>
+                  <td className="py-3 px-4 text-right font-mono font-bold">
+                    ₹{item.amount.toFixed(2)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
 
-        <div className="flex items-center space-x-3">
-          <div className="bg-rose-500/20 text-rose-400 p-3 rounded-lg border border-rose-500/30">
-            <TrendingDown size={24} />
+        {/* NET PROFIT SUMMARY (6 Cols) */}
+        <div className="lg:col-span-6 bg-slate-900 text-white p-6 rounded-xl shadow-md space-y-4">
+          <h3 className="text-sm font-bold text-slate-300 uppercase tracking-wider">
+            Reconciled Financial Summary
+          </h3>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="bg-slate-800 p-3.5 rounded-lg border border-slate-700">
+              <p className="text-[11px] text-slate-400 font-semibold uppercase">Total Income (Collected)</p>
+              <p className="text-xl font-bold text-emerald-400 mt-1">₹{stats.total_income.toFixed(2)}</p>
+            </div>
+            <div className="bg-slate-800 p-3.5 rounded-lg border border-slate-700">
+              <p className="text-[11px] text-slate-400 font-semibold uppercase">Total Shop Expenses</p>
+              <p className="text-xl font-bold text-rose-400 mt-1">₹{stats.total_expense.toFixed(2)}</p>
+            </div>
           </div>
-          <div>
-            <p className="text-xs text-slate-400 font-medium uppercase">Total Expenses</p>
-            <p className="text-xl font-bold text-rose-400 mt-0.5">₹{stats.total_expense.toFixed(2)}</p>
+          <div className="bg-slate-800 p-4 rounded-lg border border-slate-700 flex justify-between items-center">
+            <div>
+              <p className="text-xs text-slate-400 font-bold uppercase">Net Profit</p>
+              <p className={`text-2xl font-extrabold mt-0.5 ${stats.net_profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                ₹{stats.net_profit.toFixed(2)}
+              </p>
+            </div>
+            <Link href="/expenses" className="text-xs font-bold text-blue-400 hover:underline">
+              Manage Expenses
+            </Link>
           </div>
-        </div>
-
-        <div className="flex items-center space-x-3">
-          <div className="bg-amber-500/20 text-amber-400 p-3 rounded-lg border border-amber-500/30">
-            <AlertCircle size={24} />
-          </div>
-          <div>
-            <p className="text-xs text-slate-400 font-medium uppercase">Pending Dues</p>
-            <p className="text-xl font-bold text-amber-400 mt-0.5">₹{stats.pending_balance.toFixed(2)}</p>
-          </div>
-        </div>
-
-        <div className="bg-slate-800 p-4 rounded-lg border border-slate-700 flex justify-between items-center">
-          <div>
-            <p className="text-xs text-slate-400 font-medium uppercase">Net Profit</p>
-            <p className={`text-2xl font-extrabold mt-0.5 ${stats.net_profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-              ₹{stats.net_profit.toFixed(2)}
-            </p>
-          </div>
-          <Link href="/expenses" className="text-xs font-bold text-blue-400 hover:underline">
-            Manage
-          </Link>
         </div>
       </div>
 
@@ -282,30 +363,7 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* CHART 2: MONTHLY REVENUE */}
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
-          <h3 className="font-bold text-slate-800 text-sm uppercase tracking-wider flex items-center space-x-2">
-            <Calendar size={18} className="text-blue-600" />
-            <span>Monthly Revenue</span>
-          </h3>
-          <div className="h-64">
-            {stats.monthly_revenue.length === 0 ? (
-              <div className="h-full flex items-center justify-center text-xs text-slate-400">No monthly revenue recorded.</div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={stats.monthly_revenue}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
-                  <XAxis dataKey="month" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip />
-                  <Bar dataKey="amount" fill="#3B82F6" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-        </div>
-
-        {/* CHART 3: PAYMENT METHOD DISTRIBUTION */}
+        {/* CHART 2: PAYMENT METHOD DISTRIBUTION */}
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
           <h3 className="font-bold text-slate-800 text-sm uppercase tracking-wider flex items-center space-x-2">
             <IndianRupee size={18} className="text-purple-600" />
@@ -329,29 +387,6 @@ export default function DashboardPage() {
             )}
           </div>
         </div>
-
-        {/* CHART 4: TOP SELLING PRODUCTS */}
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
-          <h3 className="font-bold text-slate-800 text-sm uppercase tracking-wider flex items-center space-x-2">
-            <Package size={18} className="text-amber-600" />
-            <span>Top Selling Products</span>
-          </h3>
-          <div className="h-64">
-            {stats.top_products.length === 0 ? (
-              <div className="h-full flex items-center justify-center text-xs text-slate-400">No product sales recorded.</div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={stats.top_products} layout="vertical">
-                  <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#E2E8F0" />
-                  <XAxis type="number" tick={{ fontSize: 11 }} />
-                  <YAxis dataKey="name" type="category" tick={{ fontSize: 11 }} width={120} />
-                  <Tooltip />
-                  <Bar dataKey="revenue" fill="#F59E0B" radius={[0, 4, 4, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-        </div>
       </div>
 
       {/* RECENT BILLS TABLE */}
@@ -367,7 +402,7 @@ export default function DashboardPage() {
         </div>
 
         {loading ? (
-          <div className="p-8 text-center text-slate-500 text-sm">Loading recent bills...</div>
+          <div className="p-8 text-center text-slate-500 text-sm">Loading recent transactions...</div>
         ) : recentBills.length === 0 ? (
           <div className="p-12 text-center text-slate-500">
             <Receipt className="mx-auto text-slate-300 mb-3" size={40} />

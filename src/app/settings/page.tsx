@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { ApiService, DEFAULT_SETTINGS } from '@/lib/services/api';
-import { AllSettings, RoundingMethod } from '@/lib/types';
+import { AllSettings, RoundingMethod, SequenceConfig } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { 
   Settings as SettingsIcon, 
@@ -15,14 +15,14 @@ import {
   CheckCircle2, 
   AlertTriangle, 
   Download, 
-  Upload, 
-  Trash2, 
-  Lock 
+  Trash2,
+  Hash
 } from 'lucide-react';
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<AllSettings>(DEFAULT_SETTINGS);
-  const [activeTab, setActiveTab] = useState<'shop' | 'billing' | 'loyalty' | 'whatsapp' | 'security' | 'backup'>('shop');
+  const [sequences, setSequences] = useState<SequenceConfig[]>([]);
+  const [activeTab, setActiveTab] = useState<'shop' | 'billing' | 'sequence' | 'loyalty' | 'whatsapp' | 'security' | 'backup'>('shop');
   const [loading, setLoading] = useState(true);
 
   // Super Admin Purge Modal
@@ -42,8 +42,12 @@ export default function SettingsPage() {
   const loadSettings = async () => {
     setLoading(true);
     try {
-      const data = await ApiService.getSettings();
+      const [data, seqList] = await Promise.all([
+        ApiService.getSettings(),
+        ApiService.getSequences()
+      ]);
       setSettings(data);
+      setSequences(seqList);
     } catch (err) {
       console.error('Error loading settings:', err);
     } finally {
@@ -65,7 +69,21 @@ export default function SettingsPage() {
     }
   };
 
-  // Backup & Restore
+  const handleSaveSequenceItem = async (seq: SequenceConfig) => {
+    setErrorMsg('');
+    setSuccessMsg('');
+    setSaving(true);
+    try {
+      await ApiService.updateSequenceConfig(seq.key, seq.prefix, seq.padding);
+      setSuccessMsg(`Sequence counter for ${seq.key} updated.`);
+      loadSettings();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to update sequence');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleExportBackup = async () => {
     try {
       const bills = await ApiService.getBills();
@@ -77,6 +95,7 @@ export default function SettingsPage() {
       const backupData = {
         export_date: new Date().toISOString(),
         settings,
+        sequences,
         customers,
         products,
         bills,
@@ -100,7 +119,6 @@ export default function SettingsPage() {
     }
   };
 
-  // Super Admin Data Purge
   const handlePurgeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
@@ -138,9 +156,9 @@ export default function SettingsPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900 flex items-center space-x-2">
             <SettingsIcon className="text-blue-600" size={26} />
-            <span>System Settings</span>
+            <span>System Settings & Sequence Management</span>
           </h1>
-          <p className="text-sm text-slate-500 mt-0.5">Shop branding, billing configuration, loyalty rules, backup & security</p>
+          <p className="text-sm text-slate-500 mt-0.5">Shop branding, database sequence prefixes, billing rules, and security</p>
         </div>
       </div>
 
@@ -163,6 +181,7 @@ export default function SettingsPage() {
         {[
           { id: 'shop', label: 'Shop Details', icon: Store },
           { id: 'billing', label: 'Billing Config', icon: Receipt },
+          { id: 'sequence', label: 'Sequence Management', icon: Hash },
           { id: 'loyalty', label: 'Loyalty Program', icon: Gift },
           { id: 'whatsapp', label: 'WhatsApp Receipts', icon: MessageSquare },
           { id: 'security', label: 'Security & Purge', icon: ShieldAlert },
@@ -328,7 +347,80 @@ export default function SettingsPage() {
               </div>
             )}
 
-            {/* 3. LOYALTY PROGRAM TAB */}
+            {/* 3. DEDICATED SEQUENCE MANAGEMENT TAB */}
+            {activeTab === 'sequence' && (
+              <div className="space-y-5">
+                <div className="border-b pb-2">
+                  <h2 className="text-lg font-bold text-slate-900">Database Sequence Counter Management</h2>
+                  <p className="text-xs text-slate-500 mt-1">Configure atomic database prefixes and numeric padding (e.g., BILL-000001) for all entities.</p>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 text-slate-700 uppercase text-xs font-bold border-b">
+                        <th className="py-2.5 px-4">Entity Key</th>
+                        <th className="py-2.5 px-4">Prefix</th>
+                        <th className="py-2.5 px-4 text-center">Padding Length</th>
+                        <th className="py-2.5 px-4 text-right">Current Counter</th>
+                        <th className="py-2.5 px-4 text-center">Preview Format</th>
+                        <th className="py-2.5 px-4 text-center w-28">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {sequences.map((seq, idx) => (
+                        <tr key={seq.key} className="hover:bg-slate-50">
+                          <td className="py-3 px-4 font-mono font-bold text-slate-900">{seq.key}</td>
+                          <td className="py-3 px-4">
+                            <input
+                              type="text"
+                              value={seq.prefix}
+                              onChange={(e) => {
+                                const updated = [...sequences];
+                                updated[idx].prefix = e.target.value.toUpperCase();
+                                setSequences(updated);
+                              }}
+                              className="w-24 bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs font-mono font-bold"
+                            />
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            <select
+                              value={seq.padding}
+                              onChange={(e) => {
+                                const updated = [...sequences];
+                                updated[idx].padding = Number(e.target.value);
+                                setSequences(updated);
+                              }}
+                              className="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs font-bold"
+                            >
+                              <option value={4}>4 Digits (0001)</option>
+                              <option value={6}>6 Digits (000001)</option>
+                              <option value={8}>8 Digits (00000001)</option>
+                            </select>
+                          </td>
+                          <td className="py-3 px-4 text-right font-mono font-bold text-slate-800">
+                            {seq.current_val}
+                          </td>
+                          <td className="py-3 px-4 text-center font-mono font-bold text-blue-700 text-xs">
+                            {seq.prefix}-{String(seq.current_val + 1).padStart(seq.padding, '0')}
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            <button
+                              onClick={() => handleSaveSequenceItem(seq)}
+                              className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-3 py-1.5 rounded transition"
+                            >
+                              Save
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* 4. LOYALTY PROGRAM TAB */}
             {activeTab === 'loyalty' && (
               <div className="space-y-5">
                 <h2 className="text-lg font-bold text-slate-900 border-b pb-2">Customer Loyalty Program Settings</h2>
@@ -356,7 +448,6 @@ export default function SettingsPage() {
                         onChange={(e) => setSettings({ ...settings, loyalty: { ...settings.loyalty, points_per_amount: Number(e.target.value) } })}
                         className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-slate-900"
                       />
-                      <p className="text-[11px] text-slate-500 mt-1">Example: 100 means customer earns 1 point for every ₹100 billed.</p>
                     </div>
 
                     <div>
@@ -369,7 +460,6 @@ export default function SettingsPage() {
                         onChange={(e) => setSettings({ ...settings, loyalty: { ...settings.loyalty, amount_per_point: Number(e.target.value) } })}
                         className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-slate-900"
                       />
-                      <p className="text-[11px] text-slate-500 mt-1">Example: 1 means 1 point equals ₹1 discount during billing.</p>
                     </div>
                   </div>
                 )}
@@ -387,7 +477,7 @@ export default function SettingsPage() {
               </div>
             )}
 
-            {/* 4. WHATSAPP TAB */}
+            {/* 5. WHATSAPP TAB */}
             {activeTab === 'whatsapp' && (
               <div className="space-y-5">
                 <h2 className="text-lg font-bold text-slate-900 border-b pb-2">WhatsApp Receipt Integration</h2>
@@ -417,7 +507,7 @@ export default function SettingsPage() {
               </div>
             )}
 
-            {/* 5. SECURITY & SUPER ADMIN PURGE TAB */}
+            {/* 6. SECURITY & SUPER ADMIN PURGE TAB */}
             {activeTab === 'security' && (
               <div className="space-y-5">
                 <h2 className="text-lg font-bold text-slate-900 border-b pb-2">Security PIN & Super Admin Data Purge</h2>
@@ -441,7 +531,7 @@ export default function SettingsPage() {
               </div>
             )}
 
-            {/* 6. BACKUP & RESTORE TAB */}
+            {/* 7. BACKUP & RESTORE TAB */}
             {activeTab === 'backup' && (
               <div className="space-y-5">
                 <h2 className="text-lg font-bold text-slate-900 border-b pb-2">Database Backup & Export</h2>

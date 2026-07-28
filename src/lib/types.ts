@@ -15,8 +15,17 @@ export type DateFilterOption =
   | 'specific_date' 
   | 'custom';
 
+export interface SequenceConfig {
+  key: string;
+  prefix: string;
+  padding: number;
+  current_val: number;
+  updated_at?: string;
+}
+
 export interface Customer {
   id: string;
+  customer_code?: string | null;
   name: string;
   mobile?: string | null;
   advance_balance: number;
@@ -26,6 +35,7 @@ export interface Customer {
 
 export interface Product {
   id: string;
+  product_code?: string | null;
   name: string;
   category: string;
   price: number;
@@ -41,13 +51,6 @@ export interface BillItem {
   price: number;
   total: number;
   created_at?: string;
-}
-
-export interface SplitPaymentBreakdown {
-  cash_paid: number;
-  upi_paid: number;
-  card_paid: number;
-  advance_used: number;
 }
 
 export interface Bill {
@@ -79,6 +82,7 @@ export interface Bill {
 
 export interface Payment {
   id: string;
+  payment_number?: string | null;
   customer_id: string;
   bill_id?: string | null;
   amount: number;
@@ -89,6 +93,7 @@ export interface Payment {
 
 export interface Expense {
   id: string;
+  expense_number?: string | null;
   title: string;
   amount: number;
   category: ExpenseCategory;
@@ -110,6 +115,7 @@ export interface CustomerLedgerEntry {
 
 export interface CustomerSummary {
   id: string;
+  customer_code?: string | null;
   name: string;
   mobile?: string | null;
   total_billed: number;
@@ -118,6 +124,20 @@ export interface CustomerSummary {
   advance_balance: number;
   loyalty_points: number;
   created_at: string;
+}
+
+export interface PaymentSummary {
+  total_sales: number;
+  cash_collected: number;
+  upi_collected: number;
+  card_collected: number;
+  mixed_payments_total: number;
+  total_amount_collected: number;
+  outstanding_amount: number;
+  customer_advance_balance: number;
+  payment_method_breakdown: { method: string; amount: number }[];
+  daily_collection_trend: { date: string; cash: number; upi: number; card: number; total: number }[];
+  monthly_collection_trend: { month: string; amount: number }[];
 }
 
 export interface DashboardStats {
@@ -131,6 +151,7 @@ export interface DashboardStats {
   net_profit: number;
   bills_generated: number;
   average_bill_value: number;
+  payment_summary: PaymentSummary;
   sales_trend: { date: string; amount: number }[];
   monthly_revenue: { month: string; amount: number }[];
   payment_distribution: { name: string; value: number }[];
@@ -163,8 +184,8 @@ export interface BillingSettings {
 
 export interface LoyaltySettings {
   enabled: boolean;
-  points_per_amount: number; // e.g. 1 point per 100 spent
-  amount_per_point: number;  // e.g. 1 point = 1 rupee discount
+  points_per_amount: number;
+  amount_per_point: number;
   min_redemption_points: number;
 }
 
@@ -197,6 +218,7 @@ export interface AllSettings {
 
 export interface AuditLog {
   id: string;
+  audit_number?: string | null;
   user_name: string;
   action: string;
   entity: string;
@@ -207,6 +229,7 @@ export interface AuditLog {
 
 export interface LoyaltyTransaction {
   id: string;
+  transaction_number?: string | null;
   customer_id: string;
   bill_id?: string | null;
   points: number;
