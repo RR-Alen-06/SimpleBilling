@@ -12,7 +12,9 @@ import {
   AllSettings, 
   RoundingMethod, 
   AuditLog, 
-  DateFilterOption 
+  DateFilterOption,
+  SequenceConfig,
+  PaymentSummary
 } from '../types';
 
 export const DEFAULT_SETTINGS: AllSettings = {
@@ -39,8 +41,8 @@ export const DEFAULT_SETTINGS: AllSettings = {
   },
   loyalty: {
     enabled: true,
-    points_per_amount: 100, // 1 point per ₹100
-    amount_per_point: 1,    // 1 point = ₹1
+    points_per_amount: 100,
+    amount_per_point: 1,
     min_redemption_points: 10
   },
   whatsapp: {
@@ -61,6 +63,68 @@ export const DEFAULT_SETTINGS: AllSettings = {
 };
 
 export class ApiService {
+  // --- DEDICATED ATOMIC SEQUENCE MANAGEMENT ---
+  static async getNextSequence(key: string): Promise<string> {
+    if (!isSupabaseConfigured) {
+      const fallbackNum = Date.now().toString().slice(-6);
+      return `${key.slice(0, 3).toUpperCase()}-${fallbackNum}`;
+    }
+
+    try {
+      // Invoke PostgreSQL atomic PL/pgSQL function
+      const { data, error } = await supabase.rpc('get_next_sequence', { p_key: key.toUpperCase() });
+      if (error || !data) {
+        console.warn('RPC get_next_sequence failed, falling back to database query:', error);
+        return await this.fallbackSequence(key);
+      }
+      return data;
+    } catch {
+      return await this.fallbackSequence(key);
+    }
+  }
+
+  private static async fallbackSequence(key: string): Promise<string> {
+    const { data: seq } = await supabase.from('sequences').select('*').eq('key', key.toUpperCase()).single();
+    const prefix = seq?.prefix || key.slice(0, 3).toUpperCase();
+    const padding = seq?.padding || 6;
+    const nextVal = (seq?.current_val || 0) + 1;
+
+    await supabase.from('sequences').upsert({
+      key: key.toUpperCase(),
+      prefix,
+      padding,
+      current_val: nextVal,
+      updated_at: new Date().toISOString()
+    });
+
+    return `${prefix}-${String(nextVal).padStart(padding, '0')}`;
+  }
+
+  static async getSequences(): Promise<SequenceConfig[]> {
+    if (!isSupabaseConfigured) return [];
+    const { data, error } = await supabase.from('sequences').select('*').order('key', { ascending: true });
+    if (error) return [];
+    return data || [];
+  }
+
+  static async updateSequenceConfig(key: string, prefix: string, padding: number, userName = 'Super Admin'): Promise<void> {
+    if (!isSupabaseConfigured) return;
+    const { error } = await supabase.from('sequences').upsert({
+      key: key.toUpperCase(),
+      prefix: prefix.toUpperCase(),
+      padding: Math.min(12, Math.max(2, padding)),
+      updated_at: new Date().toISOString()
+    });
+    if (error) throw new Error(error.message);
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'UPDATE_SEQUENCE_CONFIG',
+      entity: `Sequence ${key}`,
+      new_value: `Prefix: ${prefix.toUpperCase()}, Padding: ${padding}`
+    });
+  }
+
   // --- ROUNDING HELPER ---
   static calculateRounding(subtotalAfterDiscount: number, method: RoundingMethod): {
     roundedTotal: number;
@@ -137,7 +201,11 @@ export class ApiService {
   static async logAudit(log: Omit<AuditLog, 'id' | 'created_at'>): Promise<void> {
     if (!isSupabaseConfigured) return;
     try {
-      await supabase.from('audit_logs').insert([log]);
+      const auditNumber = await this.getNextSequence('AUDIT');
+      await supabase.from('audit_logs').insert([{
+        ...log,
+        audit_number: auditNumber
+      }]);
     } catch (err) {
       console.error('Audit logging error:', err);
     }
@@ -169,9 +237,11 @@ export class ApiService {
 
   static async addProduct(product: Omit<Product, 'id' | 'created_at'>, userName = 'Admin'): Promise<Product> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const product_code = await this.getNextSequence('PRODUCT');
+
     const { data, error } = await supabase
       .from('products')
-      .insert([product])
+      .insert([{ ...product, product_code }])
       .select()
       .single();
 
@@ -180,7 +250,7 @@ export class ApiService {
     await this.logAudit({
       user_name: userName,
       action: 'ADD_PRODUCT',
-      entity: `Product ${data.name}`,
+      entity: `Product ${data.name} (${product_code})`,
       new_value: JSON.stringify(data)
     });
 
@@ -234,9 +304,12 @@ export class ApiService {
 
   static async addCustomer(customer: { name: string; mobile?: string }, userName = 'Admin'): Promise<Customer> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const customer_code = await this.getNextSequence('CUSTOMER');
+
     const { data, error } = await supabase
       .from('customers')
       .insert([{ 
+        customer_code,
         name: customer.name, 
         mobile: customer.mobile || null,
         advance_balance: 0,
@@ -250,7 +323,7 @@ export class ApiService {
     await this.logAudit({
       user_name: userName,
       action: 'ADD_CUSTOMER',
-      entity: `Customer ${data.name}`,
+      entity: `Customer ${data.name} (${customer_code})`,
       new_value: JSON.stringify(data)
     });
 
@@ -296,6 +369,7 @@ export class ApiService {
 
       return {
         id: cust.id,
+        customer_code: cust.customer_code,
         name: cust.name,
         mobile: cust.mobile,
         total_billed: totalBilled,
@@ -308,7 +382,7 @@ export class ApiService {
     });
   }
 
-  // --- BILLING WITH SPLIT PAYMENTS & LOYALTY ---
+  // --- BILLING WITH ATOMIC SEQUENCE GENERATOR & SPLIT PAYMENTS ---
   static async createBill(billData: {
     customer_id?: string | null;
     total: number;
@@ -347,7 +421,6 @@ export class ApiService {
       pointsEarned = Math.floor(roundedTotal / settings.loyalty.points_per_amount);
     }
 
-    // Determine payment method label
     const activeModes: string[] = [];
     if (billData.cash_paid > 0) activeModes.push(`Cash: ₹${billData.cash_paid}`);
     if (billData.upi_paid > 0) activeModes.push(`UPI: ₹${billData.upi_paid}`);
@@ -356,9 +429,8 @@ export class ApiService {
 
     const payment_method = activeModes.length > 1 ? 'Split Payment' : (activeModes[0]?.split(':')[0] || 'Cash');
 
-    // 4. Generate Bill Number
-    const timestamp = Date.now().toString().slice(-6);
-    const bill_number = `${settings.billing.bill_prefix}-${timestamp}`;
+    // 4. ATOMIC DATABASE SEQUENCE GENERATOR (Never client-side)
+    const bill_number = await this.getNextSequence('BILL');
 
     const { data: bill, error: billErr } = await supabase
       .from('bills')
@@ -400,9 +472,10 @@ export class ApiService {
 
     // 6. Customer Ledger & Balances Update
     if (billData.customer_id) {
-      // Record payment entry if money paid
       if (directPaid > 0) {
+        const paymentNumber = await this.getNextSequence('PAYMENT');
         await supabase.from('payments').insert([{
+          payment_number: paymentNumber,
           customer_id: billData.customer_id,
           bill_id: bill.id,
           amount: directPaid,
@@ -411,7 +484,6 @@ export class ApiService {
         }]);
       }
 
-      // Update customer's advance & loyalty balances
       const { data: cust } = await supabase.from('customers').select('advance_balance, loyalty_points').eq('id', billData.customer_id).single();
       if (cust) {
         const newAdvance = Math.max(0, Number(cust.advance_balance || 0) - billData.advance_used + advanceEarned);
@@ -434,7 +506,7 @@ export class ApiService {
     return { ...bill, items: billData.items };
   }
 
-  // --- EDIT BILL DISCOUNT (SUPER ADMIN) ---
+  // --- EDIT BILL DISCOUNT ---
   static async editBillDiscount(billId: string, newDiscount: number, reason: string, userName = 'Super Admin'): Promise<Bill> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
 
@@ -559,7 +631,7 @@ export class ApiService {
       rawEvents.push({
         date: p.created_at,
         type: 'PAYMENT',
-        reference_no: `PAY-${p.id.slice(0, 6).toUpperCase()}`,
+        reference_no: p.payment_number || `PAY-${p.id.slice(0, 6).toUpperCase()}`,
         description: p.notes || `Payment received via ${p.payment_method}`,
         bill_amount: 0,
         paid_amount: Number(p.amount),
@@ -609,9 +681,12 @@ export class ApiService {
     notes?: string;
   }, userName = 'Admin'): Promise<Payment> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const payment_number = await this.getNextSequence('PAYMENT');
+
     const { data, error } = await supabase
       .from('payments')
       .insert([{
+        payment_number,
         customer_id: payment.customer_id,
         amount: payment.amount,
         payment_method: payment.payment_method,
@@ -625,7 +700,7 @@ export class ApiService {
     await this.logAudit({
       user_name: userName,
       action: 'RECORD_PAYMENT',
-      entity: `Payment ₹${payment.amount}`,
+      entity: `Payment ${payment_number} (₹${payment.amount})`,
       new_value: JSON.stringify(data)
     });
 
@@ -646,9 +721,11 @@ export class ApiService {
 
   static async addExpense(expense: { title: string; amount: number; category: 'Shop Expense' | 'Electricity' | 'Rent' | 'Other Expense' }, userName = 'Admin'): Promise<Expense> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const expense_number = await this.getNextSequence('EXPENSE');
+
     const { data, error } = await supabase
       .from('expenses')
-      .insert([expense])
+      .insert([{ ...expense, expense_number }])
       .select()
       .single();
 
@@ -657,7 +734,7 @@ export class ApiService {
     await this.logAudit({
       user_name: userName,
       action: 'ADD_EXPENSE',
-      entity: `Expense ${expense.title}`,
+      entity: `Expense ${expense.title} (${expense_number})`,
       new_value: JSON.stringify(data)
     });
 
@@ -676,11 +753,10 @@ export class ApiService {
     });
   }
 
-  // --- SUPER ADMIN PURGE (DELETE ALL DATA) ---
+  // --- SUPER ADMIN PURGE ---
   static async purgeAllBusinessData(userName = 'Super Admin'): Promise<void> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
 
-    // Wipe transactional data
     await supabase.from('bill_items').delete().neq('id', '00000000-0000-0000-0000-000000000000');
     await supabase.from('payments').delete().neq('id', '00000000-0000-0000-0000-000000000000');
     await supabase.from('bills').delete().neq('id', '00000000-0000-0000-0000-000000000000');
@@ -688,7 +764,6 @@ export class ApiService {
     await supabase.from('loyalty_transactions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
     await supabase.from('audit_logs').delete().neq('id', '00000000-0000-0000-0000-000000000000');
 
-    // Reset customer advance balances & loyalty points
     await supabase.from('customers').update({ advance_balance: 0, loyalty_points: 0 }).neq('id', '00000000-0000-0000-0000-000000000000');
 
     await this.logAudit({
@@ -698,8 +773,26 @@ export class ApiService {
     });
   }
 
-  // --- DASHBOARD & ANALYTICS METRICS ---
+  // --- DASHBOARD PAYMENT RECONCILIATIONS & METRICS ---
   static async getDashboardStats(filter: DateFilterOption = 'today', customRange?: { from: string; to: string }): Promise<DashboardStats> {
+    const emptyPaymentSummary: PaymentSummary = {
+      total_sales: 0,
+      cash_collected: 0,
+      upi_collected: 0,
+      card_collected: 0,
+      mixed_payments_total: 0,
+      total_amount_collected: 0,
+      outstanding_amount: 0,
+      customer_advance_balance: 0,
+      payment_method_breakdown: [
+        { method: 'Cash', amount: 0 },
+        { method: 'UPI', amount: 0 },
+        { method: 'Card', amount: 0 }
+      ],
+      daily_collection_trend: [],
+      monthly_collection_trend: []
+    };
+
     if (!isSupabaseConfigured) {
       return {
         todays_sales: 0,
@@ -712,6 +805,7 @@ export class ApiService {
         net_profit: 0,
         bills_generated: 0,
         average_bill_value: 0,
+        payment_summary: emptyPaymentSummary,
         sales_trend: [],
         monthly_revenue: [],
         payment_distribution: [],
@@ -721,36 +815,93 @@ export class ApiService {
 
     const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
 
-    // Fetch filtered bills
-    let query = supabase.from('bills').select('*, bill_items(*)');
-    if (startDate) query = query.gte('created_at', startDate.toISOString());
-    if (endDate) query = query.lte('created_at', endDate.toISOString());
+    let billsQuery = supabase.from('bills').select('*, bill_items(*)');
+    let paymentsQuery = supabase.from('payments').select('*');
 
-    const { data: bills } = await query;
-    const allBills = bills || [];
+    if (startDate) {
+      billsQuery = billsQuery.gte('created_at', startDate.toISOString());
+      paymentsQuery = paymentsQuery.gte('created_at', startDate.toISOString());
+    }
+    if (endDate) {
+      billsQuery = billsQuery.lte('created_at', endDate.toISOString());
+      paymentsQuery = paymentsQuery.lte('created_at', endDate.toISOString());
+    }
 
+    const { data: bills } = await billsQuery;
+    const { data: payments } = await paymentsQuery;
     const { data: expenses } = await supabase.from('expenses').select('*');
+
+    const allBills = bills || [];
+    const allPayments = payments || [];
     const allExpenses = expenses || [];
 
     const customers = await this.getCustomerSummaries();
     const total_customers = customers.length;
     const pending_balance = customers.reduce((sum, c) => sum + Math.max(0, c.balance_due), 0);
+    const total_advance = customers.reduce((sum, c) => sum + Number(c.advance_balance || 0), 0);
 
-    const todays_sales = allBills.reduce((sum, b) => sum + Number(b.grand_total), 0);
+    // --- RECONCILE COLLECTIONS FROM ACTUAL PAYMENTS & SPLIT BILL FIELDS ---
+    let cashCollected = 0;
+    let upiCollected = 0;
+    let cardCollected = 0;
+    let mixedPaymentsTotal = 0;
+
+    allBills.forEach(b => {
+      const c = Number(b.cash_paid || 0);
+      const u = Number(b.upi_paid || 0);
+      const cd = Number(b.card_paid || 0);
+
+      cashCollected += c;
+      upiCollected += u;
+      cardCollected += cd;
+
+      if ((c > 0 && (u > 0 || cd > 0)) || (u > 0 && cd > 0)) {
+        mixedPaymentsTotal += Number(b.grand_total);
+      }
+    });
+
+    // Reconcile direct standalone payment entries
+    allPayments.forEach(p => {
+      const amt = Number(p.amount || 0);
+      if (p.payment_method === 'Cash') cashCollected += amt;
+      else if (p.payment_method === 'UPI') upiCollected += amt;
+      else if (p.payment_method === 'Card') cardCollected += amt;
+    });
+
+    const totalAmountCollected = cashCollected + upiCollected + cardCollected;
+    const totalSales = allBills.reduce((sum, b) => sum + Number(b.grand_total), 0);
     const bills_generated = allBills.length;
-    const average_bill_value = bills_generated > 0 ? todays_sales / bills_generated : 0;
+    const average_bill_value = bills_generated > 0 ? totalSales / bills_generated : 0;
 
-    const total_income = todays_sales;
+    const total_income = totalAmountCollected;
     const total_expense = allExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
     const net_profit = total_income - total_expense;
 
-    // Monthly Sales
     const currentMonth = new Date().toISOString().slice(0, 7);
     const monthly_sales = allBills
       .filter(b => b.created_at.startsWith(currentMonth))
       .reduce((sum, b) => sum + Number(b.grand_total), 0);
 
-    // Chart 1: Sales Trend
+    const paymentSummary: PaymentSummary = {
+      total_sales: totalSales,
+      cash_collected: cashCollected,
+      upi_collected: upiCollected,
+      card_collected: cardCollected,
+      mixed_payments_total: mixedPaymentsTotal,
+      total_amount_collected: totalAmountCollected,
+      outstanding_amount: pending_balance,
+      customer_advance_balance: total_advance,
+      payment_method_breakdown: [
+        { method: 'Cash', amount: cashCollected },
+        { method: 'UPI', amount: upiCollected },
+        { method: 'Card', amount: cardCollected },
+        { method: 'Total Collected', amount: totalAmountCollected }
+      ],
+      daily_collection_trend: [],
+      monthly_collection_trend: []
+    };
+
+    // Chart Trends
     const salesTrendMap = new Map<string, number>();
     allBills.forEach(b => {
       const dateKey = new Date(b.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
@@ -758,7 +909,6 @@ export class ApiService {
     });
     const sales_trend = Array.from(salesTrendMap.entries()).map(([date, amount]) => ({ date, amount }));
 
-    // Chart 2: Monthly Revenue
     const monthlyRevMap = new Map<string, number>();
     allBills.forEach(b => {
       const monthKey = new Date(b.created_at).toLocaleDateString('en-IN', { month: 'short', year: '2-digit' });
@@ -766,15 +916,12 @@ export class ApiService {
     });
     const monthly_revenue = Array.from(monthlyRevMap.entries()).map(([month, amount]) => ({ month, amount }));
 
-    // Chart 3: Payment Distribution
-    const payDistMap = new Map<string, number>();
-    allBills.forEach(b => {
-      const method = b.payment_method || 'Cash';
-      payDistMap.set(method, (payDistMap.get(method) || 0) + Number(b.grand_total));
-    });
-    const payment_distribution = Array.from(payDistMap.entries()).map(([name, value]) => ({ name, value }));
+    const payment_distribution = [
+      { name: 'Cash', value: cashCollected },
+      { name: 'UPI', value: upiCollected },
+      { name: 'Card', value: cardCollected }
+    ].filter(p => p.value > 0);
 
-    // Chart 4: Top Products
     const prodMap = new Map<string, { quantity: number; revenue: number }>();
     allBills.forEach(b => {
       b.bill_items?.forEach((item: BillItem) => {
@@ -793,7 +940,7 @@ export class ApiService {
       .slice(0, 5);
 
     return {
-      todays_sales,
+      todays_sales: totalSales,
       monthly_sales,
       todays_bills_count: bills_generated,
       pending_balance,
@@ -803,6 +950,7 @@ export class ApiService {
       net_profit,
       bills_generated,
       average_bill_value,
+      payment_summary: paymentSummary,
       sales_trend,
       monthly_revenue,
       payment_distribution,
@@ -810,7 +958,6 @@ export class ApiService {
     };
   }
 
-  // Date Range Bounds Helper
   private static getDateRangeBounds(filter: DateFilterOption, customRange?: { from: string; to: string }): {
     startDate?: Date;
     endDate?: Date;
