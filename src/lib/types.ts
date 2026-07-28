@@ -158,6 +158,28 @@ export interface DashboardStats {
   top_products: { name: string; quantity: number; revenue: number }[];
 }
 
+// Loyalty Rule Engine Models
+export interface LoyaltyRule {
+  id: string;
+  rule_name: string;
+  min_bill_amount: number;
+  max_bill_amount?: number | null;
+  reward_type: 'FLAT' | 'PERCENTAGE';
+  reward_value: number;
+  enabled: boolean;
+  sort_order: number;
+  created_at?: string;
+}
+
+export interface LoyaltySettings {
+  enabled: boolean;
+  min_points_to_redeem: number;
+  max_points_per_bill: number;
+  max_discount_per_bill: number;
+  allow_partial_redemption: boolean;
+  amount_per_point: number;
+}
+
 // System Settings Models
 export interface ShopSettings {
   shop_name: string;
@@ -180,13 +202,6 @@ export interface BillingSettings {
   default_printer_size: '80mm' | 'A4';
   auto_print: boolean;
   rounding_method: RoundingMethod;
-}
-
-export interface LoyaltySettings {
-  enabled: boolean;
-  points_per_amount: number;
-  amount_per_point: number;
-  min_redemption_points: number;
 }
 
 export interface WhatsAppSettings {

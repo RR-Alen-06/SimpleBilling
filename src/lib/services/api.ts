@@ -14,7 +14,8 @@ import {
   AuditLog, 
   DateFilterOption,
   SequenceConfig,
-  PaymentSummary
+  PaymentSummary,
+  LoyaltyRule
 } from '../types';
 
 export const DEFAULT_SETTINGS: AllSettings = {
@@ -41,9 +42,11 @@ export const DEFAULT_SETTINGS: AllSettings = {
   },
   loyalty: {
     enabled: true,
-    points_per_amount: 100,
-    amount_per_point: 1,
-    min_redemption_points: 10
+    min_points_to_redeem: 10,
+    max_points_per_bill: 500,
+    max_discount_per_bill: 500,
+    allow_partial_redemption: true,
+    amount_per_point: 1
   },
   whatsapp: {
     enabled: true,
@@ -63,7 +66,7 @@ export const DEFAULT_SETTINGS: AllSettings = {
 };
 
 export class ApiService {
-  // --- DEDICATED ATOMIC SEQUENCE MANAGEMENT ---
+  // --- ATOMIC SEQUENCE MANAGEMENT ---
   static async getNextSequence(key: string): Promise<string> {
     if (!isSupabaseConfigured) {
       const fallbackNum = Date.now().toString().slice(-6);
@@ -71,12 +74,8 @@ export class ApiService {
     }
 
     try {
-      // Invoke PostgreSQL atomic PL/pgSQL function
       const { data, error } = await supabase.rpc('get_next_sequence', { p_key: key.toUpperCase() });
-      if (error || !data) {
-        console.warn('RPC get_next_sequence failed, falling back to database query:', error);
-        return await this.fallbackSequence(key);
-      }
+      if (error || !data) return await this.fallbackSequence(key);
       return data;
     } catch {
       return await this.fallbackSequence(key);
@@ -123,6 +122,81 @@ export class ApiService {
       entity: `Sequence ${key}`,
       new_value: `Prefix: ${prefix.toUpperCase()}, Padding: ${padding}`
     });
+  }
+
+  // --- DYNAMIC LOYALTY RULE ENGINE ---
+  static async getLoyaltyRules(): Promise<LoyaltyRule[]> {
+    if (!isSupabaseConfigured) return [
+      { id: 'rule-1', rule_name: 'Standard Earning Rule', min_bill_amount: 0, max_bill_amount: 500, reward_type: 'PERCENTAGE', reward_value: 1, enabled: true, sort_order: 1 },
+      { id: 'rule-2', rule_name: 'Bulk Purchase Bonus', min_bill_amount: 501, max_bill_amount: null, reward_type: 'PERCENTAGE', reward_value: 2, enabled: true, sort_order: 2 }
+    ];
+
+    const { data, error } = await supabase.from('loyalty_rules').select('*').order('sort_order', { ascending: true });
+    if (error) return [];
+    return data || [];
+  }
+
+  static async addLoyaltyRule(rule: Omit<LoyaltyRule, 'id' | 'created_at'>, userName = 'Super Admin'): Promise<LoyaltyRule> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const { data, error } = await supabase.from('loyalty_rules').insert([rule]).select().single();
+    if (error) throw new Error(error.message);
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'ADD_LOYALTY_RULE',
+      entity: `Rule ${rule.rule_name}`,
+      new_value: JSON.stringify(data)
+    });
+
+    return data;
+  }
+
+  static async updateLoyaltyRule(id: string, rule: Partial<Omit<LoyaltyRule, 'id' | 'created_at'>>, userName = 'Super Admin'): Promise<LoyaltyRule> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const { data, error } = await supabase.from('loyalty_rules').update(rule).eq('id', id).select().single();
+    if (error) throw new Error(error.message);
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'UPDATE_LOYALTY_RULE',
+      entity: `Rule ${data.rule_name}`,
+      new_value: JSON.stringify(data)
+    });
+
+    return data;
+  }
+
+  static async deleteLoyaltyRule(id: string, userName = 'Super Admin'): Promise<void> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const { error } = await supabase.from('loyalty_rules').delete().eq('id', id);
+    if (error) throw new Error(error.message);
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'DELETE_LOYALTY_RULE',
+      entity: `Rule ID ${id}`
+    });
+  }
+
+  static async calculateLoyaltyPointsEarned(billAmount: number): Promise<number> {
+    const rules = await this.getLoyaltyRules();
+    const activeRules = rules.filter(r => r.enabled).sort((a, b) => a.sort_order - b.sort_order);
+
+    for (const rule of activeRules) {
+      const min = Number(rule.min_bill_amount || 0);
+      const max = rule.max_bill_amount !== null && rule.max_bill_amount !== undefined ? Number(rule.max_bill_amount) : Infinity;
+
+      if (billAmount >= min && billAmount <= max) {
+        if (rule.reward_type === 'FLAT') {
+          return Number(rule.reward_value);
+        } else if (rule.reward_type === 'PERCENTAGE') {
+          return Math.floor((billAmount * Number(rule.reward_value)) / 100);
+        }
+      }
+    }
+
+    // Default fallback: 1 point per 100
+    return Math.floor(billAmount / 100);
   }
 
   // --- ROUNDING HELPER ---
@@ -382,7 +456,7 @@ export class ApiService {
     });
   }
 
-  // --- BILLING WITH ATOMIC SEQUENCE GENERATOR & SPLIT PAYMENTS ---
+  // --- BILLING WITH DYNAMIC LOYALTY RULE ENGINE ---
   static async createBill(billData: {
     customer_id?: string | null;
     total: number;
@@ -405,20 +479,24 @@ export class ApiService {
 
     const settings = await this.getSettings();
 
-    // 1. Calculate Rounding
-    const subtotalAfterDiscount = Math.max(0, billData.total - billData.discount - (billData.points_to_redeem * settings.loyalty.amount_per_point));
+    // 1. Calculate Loyalty Redemption Discount
+    const redemptionDiscount = billData.points_to_redeem * (settings.loyalty.amount_per_point || 1);
+    const totalDiscountApplied = billData.discount + redemptionDiscount;
+
+    // 2. Calculate Rounding
+    const subtotalAfterDiscount = Math.max(0, billData.total - totalDiscountApplied);
     const { roundedTotal, roundingAdjustment } = this.calculateRounding(subtotalAfterDiscount, billData.rounding_method);
 
-    // 2. Payments & Advance Math
+    // 3. Payments & Advance Math
     const directPaid = billData.cash_paid + billData.upi_paid + billData.card_paid;
     const paidTotal = directPaid + billData.advance_used;
     const netDueForBill = roundedTotal - billData.advance_used;
     const advanceEarned = directPaid > netDueForBill ? directPaid - netDueForBill : 0;
 
-    // 3. Loyalty Math
+    // 4. Dynamic Loyalty Earning Calculator
     let pointsEarned = 0;
-    if (settings.loyalty.enabled && settings.loyalty.points_per_amount > 0) {
-      pointsEarned = Math.floor(roundedTotal / settings.loyalty.points_per_amount);
+    if (settings.loyalty.enabled) {
+      pointsEarned = await this.calculateLoyaltyPointsEarned(roundedTotal);
     }
 
     const activeModes: string[] = [];
@@ -429,7 +507,7 @@ export class ApiService {
 
     const payment_method = activeModes.length > 1 ? 'Split Payment' : (activeModes[0]?.split(':')[0] || 'Cash');
 
-    // 4. ATOMIC DATABASE SEQUENCE GENERATOR (Never client-side)
+    // 5. ATOMIC DATABASE SEQUENCE GENERATOR
     const bill_number = await this.getNextSequence('BILL');
 
     const { data: bill, error: billErr } = await supabase
@@ -438,7 +516,7 @@ export class ApiService {
         bill_number,
         customer_id: billData.customer_id || null,
         total: billData.total,
-        discount: billData.discount,
+        discount: totalDiscountApplied,
         rounding_method: billData.rounding_method,
         rounding_adjustment: roundingAdjustment,
         grand_total: roundedTotal,
@@ -457,7 +535,7 @@ export class ApiService {
 
     if (billErr) throw new Error(billErr.message);
 
-    // 5. Insert Items
+    // 6. Insert Items
     const itemsToInsert = billData.items.map(item => ({
       bill_id: bill.id,
       product_id: item.product_id || null,
@@ -470,7 +548,7 @@ export class ApiService {
     const { error: itemsErr } = await supabase.from('bill_items').insert(itemsToInsert);
     if (itemsErr) throw new Error(itemsErr.message);
 
-    // 6. Customer Ledger & Balances Update
+    // 7. Customer Ledger, Loyalty Transactions & Balances Update
     if (billData.customer_id) {
       if (directPaid > 0) {
         const paymentNumber = await this.getNextSequence('PAYMENT');
@@ -481,6 +559,32 @@ export class ApiService {
           amount: directPaid,
           payment_method,
           notes: `Bill payment for ${bill.bill_number}`
+        }]);
+      }
+
+      // Record loyalty earn transaction
+      if (pointsEarned > 0) {
+        const loySeq = await this.getNextSequence('LOYALTY');
+        await supabase.from('loyalty_transactions').insert([{
+          transaction_number: loySeq,
+          customer_id: billData.customer_id,
+          bill_id: bill.id,
+          points: pointsEarned,
+          type: 'EARN',
+          notes: `Loyalty points earned on bill ${bill.bill_number}`
+        }]);
+      }
+
+      // Record loyalty redeem transaction
+      if (billData.points_to_redeem > 0) {
+        const loySeq = await this.getNextSequence('LOYALTY');
+        await supabase.from('loyalty_transactions').insert([{
+          transaction_number: loySeq,
+          customer_id: billData.customer_id,
+          bill_id: bill.id,
+          points: billData.points_to_redeem,
+          type: 'REDEEM',
+          notes: `Loyalty points redeemed on bill ${bill.bill_number}`
         }]);
       }
 
@@ -500,7 +604,7 @@ export class ApiService {
       user_name: userName,
       action: 'CREATE_BILL',
       entity: `Bill ${bill.bill_number}`,
-      new_value: JSON.stringify({ grand_total: roundedTotal, payment_method })
+      new_value: JSON.stringify({ grand_total: roundedTotal, payment_method, pointsEarned })
     });
 
     return { ...bill, items: billData.items };
@@ -840,7 +944,6 @@ export class ApiService {
     const pending_balance = customers.reduce((sum, c) => sum + Math.max(0, c.balance_due), 0);
     const total_advance = customers.reduce((sum, c) => sum + Number(c.advance_balance || 0), 0);
 
-    // --- RECONCILE COLLECTIONS FROM ACTUAL PAYMENTS & SPLIT BILL FIELDS ---
     let cashCollected = 0;
     let upiCollected = 0;
     let cardCollected = 0;
@@ -860,7 +963,6 @@ export class ApiService {
       }
     });
 
-    // Reconcile direct standalone payment entries
     allPayments.forEach(p => {
       const amt = Number(p.amount || 0);
       if (p.payment_method === 'Cash') cashCollected += amt;
@@ -901,7 +1003,6 @@ export class ApiService {
       monthly_collection_trend: []
     };
 
-    // Chart Trends
     const salesTrendMap = new Map<string, number>();
     allBills.forEach(b => {
       const dateKey = new Date(b.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
@@ -1007,7 +1108,7 @@ export class ApiService {
 
   // --- WHATSAPP TEXT RECEIPT GENERATOR ---
   static generateWhatsAppTextReceipt(bill: Bill, customerLedger?: { previousOutstanding: number }): string {
-    const formattedDate = new Date(bill.created_at).toLocaleDateString('en-IN', {
+    const formattedDate = new Date(bill.created_at || Date.now()).toLocaleDateString('en-IN', {
       day: '2-digit',
       month: 'short',
       year: 'numeric'

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { ApiService, DEFAULT_SETTINGS } from '@/lib/services/api';
-import { AllSettings, RoundingMethod, SequenceConfig } from '@/lib/types';
+import { AllSettings, RoundingMethod, SequenceConfig, LoyaltyRule } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { 
   Settings as SettingsIcon, 
@@ -16,14 +16,30 @@ import {
   AlertTriangle, 
   Download, 
   Trash2,
-  Hash
+  Hash,
+  Plus,
+  Edit2,
+  X,
+  ToggleLeft,
+  ToggleRight
 } from 'lucide-react';
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<AllSettings>(DEFAULT_SETTINGS);
   const [sequences, setSequences] = useState<SequenceConfig[]>([]);
+  const [loyaltyRules, setLoyaltyRules] = useState<LoyaltyRule[]>([]);
   const [activeTab, setActiveTab] = useState<'shop' | 'billing' | 'sequence' | 'loyalty' | 'whatsapp' | 'security' | 'backup'>('shop');
   const [loading, setLoading] = useState(true);
+
+  // Loyalty Rule Modal state
+  const [showRuleModal, setShowRuleModal] = useState(false);
+  const [editingRule, setEditingRule] = useState<LoyaltyRule | null>(null);
+  const [ruleName, setRuleName] = useState('');
+  const [minBill, setMinBill] = useState<number | ''>(0);
+  const [maxBill, setMaxBill] = useState<number | ''>('');
+  const [rewardType, setRewardType] = useState<'FLAT' | 'PERCENTAGE'>('PERCENTAGE');
+  const [rewardValue, setRewardValue] = useState<number | ''>(1);
+  const [sortOrder, setSortOrder] = useState<number>(1);
 
   // Super Admin Purge Modal
   const [showPurgeModal, setShowPurgeModal] = useState(false);
@@ -35,25 +51,34 @@ export default function SettingsPage() {
   const [successMsg, setSuccessMsg] = useState('');
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    loadSettings();
-  }, []);
-
   const loadSettings = async () => {
     setLoading(true);
     try {
-      const [data, seqList] = await Promise.all([
+      const [data, seqList, ruleList] = await Promise.all([
         ApiService.getSettings(),
-        ApiService.getSequences()
+        ApiService.getSequences(),
+        ApiService.getLoyaltyRules()
       ]);
       setSettings(data);
       setSequences(seqList);
+      setLoyaltyRules(ruleList);
     } catch (err) {
       console.error('Error loading settings:', err);
     } finally {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    let isMounted = true;
+    const run = async () => {
+      if (isMounted) {
+        await loadSettings();
+      }
+    };
+    void run();
+    return () => { isMounted = false; };
+  }, []);
 
   const handleSaveSection = async (section: keyof AllSettings) => {
     setErrorMsg('');
@@ -84,6 +109,111 @@ export default function SettingsPage() {
     }
   };
 
+  // Loyalty Rule Handlers
+  const handleOpenAddRule = () => {
+    setEditingRule(null);
+    setRuleName('');
+    setMinBill(0);
+    setMaxBill('');
+    setRewardType('PERCENTAGE');
+    setRewardValue(1);
+    setSortOrder(loyaltyRules.length + 1);
+    setErrorMsg('');
+    setShowRuleModal(true);
+  };
+
+  const handleOpenEditRule = (rule: LoyaltyRule) => {
+    setEditingRule(rule);
+    setRuleName(rule.rule_name);
+    setMinBill(rule.min_bill_amount);
+    setMaxBill(rule.max_bill_amount ?? '');
+    setRewardType(rule.reward_type);
+    setRewardValue(rule.reward_value);
+    setSortOrder(rule.sort_order);
+    setErrorMsg('');
+    setShowRuleModal(true);
+  };
+
+  const handleSaveRuleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    if (!ruleName.trim()) {
+      setErrorMsg('Rule name is required.');
+      return;
+    }
+
+    const minVal = Number(minBill);
+    if (isNaN(minVal) || minVal < 0) {
+      setErrorMsg('Minimum bill amount cannot be negative.');
+      return;
+    }
+
+    const maxVal = maxBill === '' ? null : Number(maxBill);
+    if (maxVal !== null && maxVal < minVal) {
+      setErrorMsg('Maximum bill amount must be greater than minimum bill amount.');
+      return;
+    }
+
+    const rVal = Number(rewardValue);
+    if (isNaN(rVal) || rVal <= 0) {
+      setErrorMsg('Reward value must be greater than 0.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      if (editingRule) {
+        await ApiService.updateLoyaltyRule(editingRule.id, {
+          rule_name: ruleName.trim(),
+          min_bill_amount: minVal,
+          max_bill_amount: maxVal,
+          reward_type: rewardType,
+          reward_value: rVal,
+          sort_order: sortOrder
+        });
+        setSuccessMsg('Loyalty earning rule updated.');
+      } else {
+        await ApiService.addLoyaltyRule({
+          rule_name: ruleName.trim(),
+          min_bill_amount: minVal,
+          max_bill_amount: maxVal,
+          reward_type: rewardType,
+          reward_value: rVal,
+          enabled: true,
+          sort_order: sortOrder
+        });
+        setSuccessMsg('Loyalty earning rule created.');
+      }
+      setShowRuleModal(false);
+      loadSettings();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to save loyalty rule');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggleRule = async (rule: LoyaltyRule) => {
+    try {
+      await ApiService.updateLoyaltyRule(rule.id, { enabled: !rule.enabled });
+      loadSettings();
+    } catch (err) {
+      console.error('Failed to toggle rule:', err);
+    }
+  };
+
+  const handleDeleteRule = async (id: string) => {
+    try {
+      await ApiService.deleteLoyaltyRule(id);
+      setSuccessMsg('Loyalty rule deleted.');
+      loadSettings();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to delete rule');
+    }
+  };
+
   const handleExportBackup = async () => {
     try {
       const bills = await ApiService.getBills();
@@ -96,6 +226,7 @@ export default function SettingsPage() {
         export_date: new Date().toISOString(),
         settings,
         sequences,
+        loyaltyRules,
         customers,
         products,
         bills,
@@ -156,9 +287,9 @@ export default function SettingsPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900 flex items-center space-x-2">
             <SettingsIcon className="text-blue-600" size={26} />
-            <span>System Settings & Sequence Management</span>
+            <span>System Settings & Loyalty Engine</span>
           </h1>
-          <p className="text-sm text-slate-500 mt-0.5">Shop branding, database sequence prefixes, billing rules, and security</p>
+          <p className="text-sm text-slate-500 mt-0.5">Shop details, atomic database sequences, dynamic loyalty rules, and security</p>
         </div>
       </div>
 
@@ -182,7 +313,7 @@ export default function SettingsPage() {
           { id: 'shop', label: 'Shop Details', icon: Store },
           { id: 'billing', label: 'Billing Config', icon: Receipt },
           { id: 'sequence', label: 'Sequence Management', icon: Hash },
-          { id: 'loyalty', label: 'Loyalty Program', icon: Gift },
+          { id: 'loyalty', label: 'Loyalty Engine', icon: Gift },
           { id: 'whatsapp', label: 'WhatsApp Receipts', icon: MessageSquare },
           { id: 'security', label: 'Security & Purge', icon: ShieldAlert },
           { id: 'backup', label: 'Backup & Restore', icon: Download }
@@ -420,10 +551,23 @@ export default function SettingsPage() {
               </div>
             )}
 
-            {/* 4. LOYALTY PROGRAM TAB */}
+            {/* 4. DYNAMIC LOYALTY RULE ENGINE TAB */}
             {activeTab === 'loyalty' && (
-              <div className="space-y-5">
-                <h2 className="text-lg font-bold text-slate-900 border-b pb-2">Customer Loyalty Program Settings</h2>
+              <div className="space-y-6">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b pb-3">
+                  <div>
+                    <h2 className="text-lg font-bold text-slate-900">Database-Driven Loyalty Rule Engine</h2>
+                    <p className="text-xs text-slate-500 mt-0.5">Manage unlimited earning rules, range criteria, flat/percentage rewards & redemption rules</p>
+                  </div>
+                  <button
+                    onClick={handleOpenAddRule}
+                    className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-4 py-2 rounded-lg shadow transition flex items-center space-x-1 self-start sm:self-auto"
+                  >
+                    <Plus size={16} />
+                    <span>+ Add Earning Rule</span>
+                  </button>
+                </div>
+
                 <div className="flex items-center space-x-3 bg-purple-50 p-4 rounded-xl border border-purple-200">
                   <input
                     type="checkbox"
@@ -433,45 +577,115 @@ export default function SettingsPage() {
                     className="w-4 h-4 text-purple-600 rounded"
                   />
                   <label htmlFor="loyalty_enable" className="text-sm font-bold text-purple-900">
-                    Enable Customer Loyalty Program
+                    Enable Customer Loyalty Program System
                   </label>
                 </div>
 
-                {settings.loyalty.enabled && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* EARNING RULES TABLE */}
+                <div className="space-y-3">
+                  <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Active Loyalty Earning Rules</h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 text-slate-700 uppercase text-xs font-bold border-b">
+                          <th className="py-2.5 px-4">Order</th>
+                          <th className="py-2.5 px-4">Rule Name</th>
+                          <th className="py-2.5 px-4">Bill Amount Range</th>
+                          <th className="py-2.5 px-4">Reward Type</th>
+                          <th className="py-2.5 px-4 text-right">Reward Value</th>
+                          <th className="py-2.5 px-4 text-center">Status</th>
+                          <th className="py-2.5 px-4 text-center w-28">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {loyaltyRules.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} className="py-8 text-center text-slate-400 text-xs">No custom earning rules created yet.</td>
+                          </tr>
+                        ) : (
+                          loyaltyRules.map((rule) => (
+                            <tr key={rule.id} className="hover:bg-slate-50">
+                              <td className="py-3 px-4 font-bold text-xs text-slate-500">#{rule.sort_order}</td>
+                              <td className="py-3 px-4 font-bold text-slate-900">{rule.rule_name}</td>
+                              <td className="py-3 px-4 text-xs font-mono text-slate-700">
+                                ₹{rule.min_bill_amount} - {rule.max_bill_amount !== null && rule.max_bill_amount !== undefined ? `₹${rule.max_bill_amount}` : 'Above'}
+                              </td>
+                              <td className="py-3 px-4">
+                                <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${rule.reward_type === 'FLAT' ? 'bg-blue-100 text-blue-800' : 'bg-emerald-100 text-emerald-800'}`}>
+                                  {rule.reward_type}
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 text-right font-extrabold text-slate-900">
+                                {rule.reward_type === 'FLAT' ? `${rule.reward_value} pts` : `${rule.reward_value}%`}
+                              </td>
+                              <td className="py-3 px-4 text-center">
+                                <button onClick={() => handleToggleRule(rule)} className="text-slate-600 hover:text-purple-600">
+                                  {rule.enabled ? <ToggleRight className="text-purple-600" size={24} /> : <ToggleLeft className="text-slate-400" size={24} />}
+                                </button>
+                              </td>
+                              <td className="py-3 px-4 text-center">
+                                <div className="flex items-center justify-center space-x-2">
+                                  <button onClick={() => handleOpenEditRule(rule)} className="p-1 text-slate-500 hover:text-blue-600">
+                                    <Edit2 size={16} />
+                                  </button>
+                                  <button onClick={() => handleDeleteRule(rule.id)} className="p-1 text-slate-500 hover:text-rose-600">
+                                    <Trash2 size={16} />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* REDEMPTION CONFIGURATION */}
+                <div className="pt-4 border-t space-y-4">
+                  <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Redemption Limits & Rules</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">Earning Rule (₹ Spent per 1 Point)</label>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">Min Points Required to Redeem</label>
                       <input
                         type="number"
                         min="1"
-                        value={settings.loyalty.points_per_amount}
-                        onChange={(e) => setSettings({ ...settings, loyalty: { ...settings.loyalty, points_per_amount: Number(e.target.value) } })}
-                        className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-slate-900"
+                        value={settings.loyalty.min_points_to_redeem}
+                        onChange={(e) => setSettings({ ...settings, loyalty: { ...settings.loyalty, min_points_to_redeem: Number(e.target.value) } })}
+                        className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold"
                       />
                     </div>
-
                     <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">Redemption Rate (₹ Discount per 1 Point)</label>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">Max Points Redeemable Per Bill</label>
                       <input
                         type="number"
-                        min="0.1"
-                        step="0.5"
-                        value={settings.loyalty.amount_per_point}
-                        onChange={(e) => setSettings({ ...settings, loyalty: { ...settings.loyalty, amount_per_point: Number(e.target.value) } })}
-                        className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-slate-900"
+                        min="1"
+                        value={settings.loyalty.max_points_per_bill}
+                        onChange={(e) => setSettings({ ...settings, loyalty: { ...settings.loyalty, max_points_per_bill: Number(e.target.value) } })}
+                        className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">Max Discount Allowed Per Bill (₹)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={settings.loyalty.max_discount_per_bill}
+                        onChange={(e) => setSettings({ ...settings, loyalty: { ...settings.loyalty, max_discount_per_bill: Number(e.target.value) } })}
+                        className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold"
                       />
                     </div>
                   </div>
-                )}
+                </div>
 
                 <div className="pt-3 border-t flex justify-end">
                   <button
                     onClick={() => handleSaveSection('loyalty')}
                     disabled={saving}
-                    className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-5 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5"
+                    className="bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold px-5 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5"
                   >
                     <Save size={16} />
-                    <span>Save Loyalty Settings</span>
+                    <span>Save Loyalty Engine Config</span>
                   </button>
                 </div>
               </div>
@@ -551,6 +765,114 @@ export default function SettingsPage() {
           </>
         )}
       </div>
+
+      {/* ADD / EDIT LOYALTY RULE MODAL */}
+      {showRuleModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-200 pb-3">
+              <h2 className="text-lg font-bold text-slate-900">
+                {editingRule ? 'Edit Loyalty Earning Rule' : 'Add New Earning Rule'}
+              </h2>
+              <button onClick={() => setShowRuleModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveRuleSubmit} className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Rule Name *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Standard Earning Rule"
+                  value={ruleName}
+                  onChange={(e) => setRuleName(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Min Bill Amount (₹) *</label>
+                  <input
+                    type="number"
+                    required
+                    min="0"
+                    value={minBill}
+                    onChange={(e) => setMinBill(e.target.value === '' ? '' : Number(e.target.value))}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Max Bill Amount (₹)</label>
+                  <input
+                    type="number"
+                    placeholder="Leave empty for Above"
+                    value={maxBill}
+                    onChange={(e) => setMaxBill(e.target.value === '' ? '' : Number(e.target.value))}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Reward Type *</label>
+                  <select
+                    value={rewardType}
+                    onChange={(e) => setRewardType(e.target.value as 'FLAT' | 'PERCENTAGE')}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold"
+                  >
+                    <option value="PERCENTAGE">Percentage (%)</option>
+                    <option value="FLAT">Flat Points</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Reward Value *</label>
+                  <input
+                    type="number"
+                    required
+                    min="0.1"
+                    step="0.5"
+                    value={rewardValue}
+                    onChange={(e) => setRewardValue(e.target.value === '' ? '' : Number(e.target.value))}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Evaluation Priority Order</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={sortOrder}
+                  onChange={(e) => setSortOrder(Number(e.target.value))}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                />
+              </div>
+
+              <div className="flex justify-end space-x-2 pt-3 border-t">
+                <button
+                  type="button"
+                  onClick={() => setShowRuleModal(false)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="px-5 py-2 text-xs font-bold bg-purple-600 hover:bg-purple-500 text-white rounded-lg shadow disabled:opacity-50"
+                >
+                  {saving ? 'Saving...' : editingRule ? 'Update Rule' : 'Add Rule'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* DELETE ALL DATA CONFIRMATION MODAL */}
       {showPurgeModal && (

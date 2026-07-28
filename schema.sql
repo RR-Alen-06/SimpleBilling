@@ -1,6 +1,6 @@
 -- ==========================================
 -- PrintPro ERP / Xerox & Stationery Billing System Database Schema
--- Supabase / PostgreSQL Script (Idempotent & Safe for re-running)
+-- Supabase / PostgreSQL Script (Updated with Dynamic Loyalty Rules Engine)
 -- ==========================================
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -35,7 +35,6 @@ DECLARE
     v_padding INT;
     v_next_val BIGINT;
 BEGIN
-    -- Ensure record exists & lock row for atomic increment
     INSERT INTO public.sequences (key, prefix, padding, current_val)
     VALUES (UPPER(p_key), UPPER(p_key), 6, 1)
     ON CONFLICT (key) DO UPDATE
@@ -158,12 +157,33 @@ CREATE TABLE IF NOT EXISTS public.loyalty_transactions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- 10. DYNAMIC LOYALTY RULES TABLE
+CREATE TABLE IF NOT EXISTS public.loyalty_rules (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    rule_name TEXT NOT NULL,
+    min_bill_amount NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (min_bill_amount >= 0),
+    max_bill_amount NUMERIC(10, 2),
+    reward_type TEXT NOT NULL CHECK (reward_type IN ('FLAT', 'PERCENTAGE')),
+    reward_value NUMERIC(10, 2) NOT NULL CHECK (reward_value > 0),
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Seed Default Earning Rules
+INSERT INTO public.loyalty_rules (rule_name, min_bill_amount, max_bill_amount, reward_type, reward_value, enabled, sort_order)
+VALUES
+    ('Standard Earning Rule', 0.00, 500.00, 'PERCENTAGE', 1.00, true, 1),
+    ('Bulk Purchase Bonus', 501.00, NULL, 'PERCENTAGE', 2.00, true, 2)
+ON CONFLICT DO NOTHING;
+
 -- Indexes for fast query performance
 CREATE INDEX IF NOT EXISTS idx_bills_customer_id ON public.bills(customer_id);
 CREATE INDEX IF NOT EXISTS idx_bills_created_at ON public.bills(created_at);
 CREATE INDEX IF NOT EXISTS idx_bill_items_bill_id ON public.bill_items(bill_id);
 CREATE INDEX IF NOT EXISTS idx_payments_customer_id ON public.payments(customer_id);
 CREATE INDEX IF NOT EXISTS idx_expenses_created_at ON public.expenses(created_at);
+CREATE INDEX IF NOT EXISTS idx_loyalty_rules_sort ON public.loyalty_rules(sort_order);
 
 -- Enable RLS Policies safely
 ALTER TABLE public.sequences ENABLE ROW LEVEL SECURITY;
@@ -176,6 +196,7 @@ ALTER TABLE public.expenses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.loyalty_transactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.loyalty_rules ENABLE ROW LEVEL SECURITY;
 
 -- Drop Policies if they already exist to ensure idempotency
 DROP POLICY IF EXISTS "Allow full access to sequences" ON public.sequences;
@@ -188,6 +209,7 @@ DROP POLICY IF EXISTS "Allow full access to expenses" ON public.expenses;
 DROP POLICY IF EXISTS "Allow full access to settings" ON public.settings;
 DROP POLICY IF EXISTS "Allow full access to audit_logs" ON public.audit_logs;
 DROP POLICY IF EXISTS "Allow full access to loyalty_transactions" ON public.loyalty_transactions;
+DROP POLICY IF EXISTS "Allow full access to loyalty_rules" ON public.loyalty_rules;
 
 -- Create Policies
 CREATE POLICY "Allow full access to sequences" ON public.sequences FOR ALL USING (true) WITH CHECK (true);
@@ -200,3 +222,4 @@ CREATE POLICY "Allow full access to expenses" ON public.expenses FOR ALL USING (
 CREATE POLICY "Allow full access to settings" ON public.settings FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow full access to audit_logs" ON public.audit_logs FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow full access to loyalty_transactions" ON public.loyalty_transactions FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow full access to loyalty_rules" ON public.loyalty_rules FOR ALL USING (true) WITH CHECK (true);
