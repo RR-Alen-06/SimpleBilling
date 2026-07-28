@@ -16,6 +16,8 @@ export type DateFilterOption =
   | 'custom';
 
 export interface SequenceConfig {
+  id?: string;
+  user_id?: string | null;
   key: string;
   prefix: string;
   padding: number;
@@ -25,6 +27,7 @@ export interface SequenceConfig {
 
 export interface Customer {
   id: string;
+  user_id?: string | null;
   customer_code?: string | null;
   name: string;
   mobile?: string | null;
@@ -35,6 +38,7 @@ export interface Customer {
 
 export interface Product {
   id: string;
+  user_id?: string | null;
   product_code?: string | null;
   name: string;
   category: string;
@@ -44,6 +48,7 @@ export interface Product {
 
 export interface BillItem {
   id?: string;
+  user_id?: string | null;
   bill_id?: string;
   product_id?: string | null;
   product_name: string;
@@ -55,6 +60,7 @@ export interface BillItem {
 
 export interface Bill {
   id: string;
+  user_id?: string | null;
   bill_number: string;
   customer_id?: string | null;
   customer_name?: string;
@@ -82,6 +88,7 @@ export interface Bill {
 
 export interface Payment {
   id: string;
+  user_id?: string | null;
   payment_number?: string | null;
   customer_id: string;
   bill_id?: string | null;
@@ -93,6 +100,7 @@ export interface Payment {
 
 export interface Expense {
   id: string;
+  user_id?: string | null;
   expense_number?: string | null;
   title: string;
   amount: number;
@@ -115,6 +123,7 @@ export interface CustomerLedgerEntry {
 
 export interface CustomerSummary {
   id: string;
+  user_id?: string | null;
   customer_code?: string | null;
   name: string;
   mobile?: string | null;
@@ -161,6 +170,7 @@ export interface DashboardStats {
 // Loyalty Rule Engine Models
 export interface LoyaltyRule {
   id: string;
+  user_id?: string | null;
   rule_name: string;
   min_bill_amount: number;
   max_bill_amount?: number | null;
@@ -233,6 +243,7 @@ export interface AllSettings {
 
 export interface AuditLog {
   id: string;
+  user_id?: string | null;
   audit_number?: string | null;
   user_name: string;
   action: string;
@@ -244,6 +255,7 @@ export interface AuditLog {
 
 export interface LoyaltyTransaction {
   id: string;
+  user_id?: string | null;
   transaction_number?: string | null;
   customer_id: string;
   bill_id?: string | null;
