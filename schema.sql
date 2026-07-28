@@ -1,21 +1,25 @@
 -- ==========================================
 -- PrintPro ERP / Xerox & Stationery Billing System Database Schema
--- Supabase / PostgreSQL Script (Updated with Multi-Tenant RLS User Data Isolation)
+-- Supabase / PostgreSQL Script (Complete In-Place Migration + PostgREST Cache Reload)
 -- ==========================================
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- 0. SEQUENCES MANAGEMENT TABLE & FUNCTION
+-- 0. SEQUENCES TABLE
 CREATE TABLE IF NOT EXISTS public.sequences (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     key TEXT NOT NULL,
     prefix TEXT NOT NULL,
     padding INT NOT NULL DEFAULT 6 CHECK (padding >= 2 AND padding <= 12),
     current_val BIGINT NOT NULL DEFAULT 0 CHECK (current_val >= 0),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT unique_user_key UNIQUE (user_id, key)
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE public.sequences ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.sequences ADD COLUMN IF NOT EXISTS key TEXT;
+ALTER TABLE public.sequences ADD COLUMN IF NOT EXISTS prefix TEXT;
+ALTER TABLE public.sequences ADD COLUMN IF NOT EXISTS padding INT DEFAULT 6;
+ALTER TABLE public.sequences ADD COLUMN IF NOT EXISTS current_val BIGINT DEFAULT 0;
 
 -- Seed Default Entity Sequences
 INSERT INTO public.sequences (user_id, key, prefix, padding, current_val)
@@ -41,20 +45,27 @@ DECLARE
 BEGIN
     INSERT INTO public.sequences (user_id, key, prefix, padding, current_val)
     VALUES (v_user_id, UPPER(p_key), UPPER(p_key), 6, 1)
-    ON CONFLICT (user_id, key) DO UPDATE
+    ON CONFLICT DO NOTHING;
+
+    UPDATE public.sequences
     SET current_val = sequences.current_val + 1,
         updated_at = now()
+    WHERE (user_id = v_user_id OR user_id IS NULL) AND UPPER(key) = UPPER(p_key)
     RETURNING prefix, padding, current_val INTO v_prefix, v_padding, v_next_val;
+
+    IF v_prefix IS NULL THEN
+        v_prefix := UPPER(p_key);
+        v_padding := 6;
+        v_next_val := 1;
+    END IF;
 
     RETURN v_prefix || '-' || LPAD(v_next_val::text, v_padding, '0');
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- 1. CUSTOMERS TABLE
+-- 1. CUSTOMERS TABLE & FULL COLUMN MIGRATIONS
 CREATE TABLE IF NOT EXISTS public.customers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
-    customer_code TEXT,
     name TEXT NOT NULL,
     mobile TEXT,
     advance_balance NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (advance_balance >= 0),
@@ -62,21 +73,26 @@ CREATE TABLE IF NOT EXISTS public.customers (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 2. PRODUCTS TABLE
+ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS customer_code TEXT;
+ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS advance_balance NUMERIC(10, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS loyalty_points NUMERIC(10, 2) NOT NULL DEFAULT 0.00;
+
+-- 2. PRODUCTS TABLE & FULL COLUMN MIGRATIONS
 CREATE TABLE IF NOT EXISTS public.products (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
-    product_code TEXT,
     name TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT 'Stationery',
     price NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (price >= 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 3. BILLS TABLE
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS product_code TEXT;
+
+-- 3. BILLS TABLE & FULL COLUMN MIGRATIONS
 CREATE TABLE IF NOT EXISTS public.bills (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     bill_number TEXT NOT NULL,
     customer_id UUID REFERENCES public.customers(id) ON DELETE SET NULL,
     total NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (total >= 0),
@@ -96,14 +112,27 @@ CREATE TABLE IF NOT EXISTS public.bills (
     edited_at TIMESTAMPTZ,
     edited_by TEXT,
     edit_reason TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT unique_user_bill UNIQUE (user_id, bill_number)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS rounding_method TEXT DEFAULT 'None';
+ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS rounding_adjustment NUMERIC(10, 2) DEFAULT 0.00;
+ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS cash_paid NUMERIC(10, 2) DEFAULT 0.00;
+ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS upi_paid NUMERIC(10, 2) DEFAULT 0.00;
+ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS card_paid NUMERIC(10, 2) DEFAULT 0.00;
+ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS paid_total NUMERIC(10, 2) DEFAULT 0.00;
+ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS advance_used NUMERIC(10, 2) DEFAULT 0.00;
+ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS advance_earned NUMERIC(10, 2) DEFAULT 0.00;
+ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS loyalty_points_earned NUMERIC(10, 2) DEFAULT 0.00;
+ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS loyalty_points_redeemed NUMERIC(10, 2) DEFAULT 0.00;
+ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
+ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS edited_by TEXT;
+ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS edit_reason TEXT;
 
 -- 4. BILL ITEMS TABLE
 CREATE TABLE IF NOT EXISTS public.bill_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     bill_id UUID NOT NULL REFERENCES public.bills(id) ON DELETE CASCADE,
     product_id UUID REFERENCES public.products(id) ON DELETE SET NULL,
     product_name TEXT NOT NULL,
@@ -112,12 +141,11 @@ CREATE TABLE IF NOT EXISTS public.bill_items (
     total NUMERIC(10, 2) NOT NULL CHECK (total >= 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE public.bill_items ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
 
 -- 5. PAYMENTS TABLE
 CREATE TABLE IF NOT EXISTS public.payments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
-    payment_number TEXT,
     customer_id UUID NOT NULL REFERENCES public.customers(id) ON DELETE CASCADE,
     bill_id UUID REFERENCES public.bills(id) ON DELETE SET NULL,
     amount NUMERIC(10, 2) NOT NULL CHECK (amount > 0),
@@ -125,33 +153,32 @@ CREATE TABLE IF NOT EXISTS public.payments (
     notes TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS payment_number TEXT;
 
 -- 6. EXPENSES TABLE
 CREATE TABLE IF NOT EXISTS public.expenses (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
-    expense_number TEXT,
     title TEXT NOT NULL,
     amount NUMERIC(10, 2) NOT NULL CHECK (amount > 0),
     category TEXT NOT NULL CHECK (category IN ('Shop Expense', 'Electricity', 'Rent', 'Other Expense')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS expense_number TEXT;
 
 -- 7. SETTINGS TABLE
 CREATE TABLE IF NOT EXISTS public.settings (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     key TEXT NOT NULL,
     value JSONB NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT unique_user_setting UNIQUE (user_id, key)
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
 
 -- 8. AUDIT LOGS TABLE
 CREATE TABLE IF NOT EXISTS public.audit_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
-    audit_number TEXT,
     user_name TEXT NOT NULL DEFAULT 'Admin',
     action TEXT NOT NULL,
     entity TEXT NOT NULL,
@@ -159,12 +186,12 @@ CREATE TABLE IF NOT EXISTS public.audit_logs (
     new_value TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE public.audit_logs ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.audit_logs ADD COLUMN IF NOT EXISTS audit_number TEXT;
 
 -- 9. LOYALTY TRANSACTIONS TABLE
 CREATE TABLE IF NOT EXISTS public.loyalty_transactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
-    transaction_number TEXT,
     customer_id UUID NOT NULL REFERENCES public.customers(id) ON DELETE CASCADE,
     bill_id UUID REFERENCES public.bills(id) ON DELETE SET NULL,
     points NUMERIC(10, 2) NOT NULL,
@@ -172,11 +199,12 @@ CREATE TABLE IF NOT EXISTS public.loyalty_transactions (
     notes TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE public.loyalty_transactions ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.loyalty_transactions ADD COLUMN IF NOT EXISTS transaction_number TEXT;
 
 -- 10. DYNAMIC LOYALTY RULES TABLE
 CREATE TABLE IF NOT EXISTS public.loyalty_rules (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     rule_name TEXT NOT NULL,
     min_bill_amount NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (min_bill_amount >= 0),
     max_bill_amount NUMERIC(10, 2),
@@ -186,6 +214,7 @@ CREATE TABLE IF NOT EXISTS public.loyalty_rules (
     sort_order INT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE public.loyalty_rules ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
 
 -- Seed Default Earning Rules
 INSERT INTO public.loyalty_rules (user_id, rule_name, min_bill_amount, max_bill_amount, reward_type, reward_value, enabled, sort_order)
@@ -195,7 +224,6 @@ VALUES
 ON CONFLICT DO NOTHING;
 
 -- Indexes for fast query performance
-CREATE INDEX IF NOT EXISTS idx_sequences_user_key ON public.sequences(user_id, key);
 CREATE INDEX IF NOT EXISTS idx_customers_user_id ON public.customers(user_id);
 CREATE INDEX IF NOT EXISTS idx_products_user_id ON public.products(user_id);
 CREATE INDEX IF NOT EXISTS idx_bills_user_id ON public.bills(user_id);
@@ -204,9 +232,6 @@ CREATE INDEX IF NOT EXISTS idx_bills_created_at ON public.bills(created_at);
 CREATE INDEX IF NOT EXISTS idx_bill_items_bill_id ON public.bill_items(bill_id);
 CREATE INDEX IF NOT EXISTS idx_payments_user_id ON public.payments(user_id);
 CREATE INDEX IF NOT EXISTS idx_expenses_user_id ON public.expenses(user_id);
-CREATE INDEX IF NOT EXISTS idx_settings_user_key ON public.settings(user_id, key);
-CREATE INDEX IF NOT EXISTS idx_audit_user_id ON public.audit_logs(user_id);
-CREATE INDEX IF NOT EXISTS idx_loyalty_user_id ON public.loyalty_rules(user_id);
 
 -- Enable RLS Policies on ALL tables
 ALTER TABLE public.sequences ENABLE ROW LEVEL SECURITY;
@@ -258,3 +283,6 @@ CREATE POLICY "User data isolation on settings" ON public.settings FOR ALL USING
 CREATE POLICY "User data isolation on audit_logs" ON public.audit_logs FOR ALL USING (auth.uid() = user_id OR user_id IS NULL) WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
 CREATE POLICY "User data isolation on loyalty_transactions" ON public.loyalty_transactions FOR ALL USING (auth.uid() = user_id OR user_id IS NULL) WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
 CREATE POLICY "User data isolation on loyalty_rules" ON public.loyalty_rules FOR ALL USING (auth.uid() = user_id OR user_id IS NULL) WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
+
+-- RELOAD SUPABASE POSTGREST SCHEMA CACHE INSTANTLY
+NOTIFY pgrst, 'reload schema';
