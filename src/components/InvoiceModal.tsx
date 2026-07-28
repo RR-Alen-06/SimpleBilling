@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { Bill } from '@/lib/types';
 import { ApiService } from '@/lib/services/api';
-import { Printer, X, FileText, Receipt, CheckCircle2, Share2, MessageSquare, Download } from 'lucide-react';
+import { Printer, X, FileText, Receipt, CheckCircle2, MessageSquare } from 'lucide-react';
 
 interface InvoiceModalProps {
   bill: Bill | null;
@@ -27,10 +27,16 @@ export function InvoiceModal({ bill, onClose }: InvoiceModalProps) {
     window.open(url, '_blank');
   };
 
-  const formattedDate = new Date(bill.created_at).toLocaleString('en-IN', {
-    dateStyle: 'medium',
-    timeStyle: 'short'
-  });
+  const formattedDate = bill.created_at 
+    ? new Date(bill.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })
+    : '';
+
+  const subTotal = Number(bill.total || 0);
+  const discountVal = Number(bill.discount || 0);
+  const roundingAdj = Number(bill.rounding_adjustment || 0);
+  const grandTotalVal = Number(bill.grand_total || 0);
+  const paidTotalVal = Number(bill.paid_total || bill.grand_total || 0);
+  const loyaltyEarned = Number(bill.loyalty_points_earned || 0);
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto print:p-0 print:static print:bg-white print:backdrop-none">
@@ -152,32 +158,32 @@ export function InvoiceModal({ bill, onClose }: InvoiceModalProps) {
               <div className="text-xs space-y-1 py-1 border-b border-dashed border-slate-400">
                 <div className="flex justify-between">
                   <span>Subtotal:</span>
-                  <span>₹{bill.total.toFixed(2)}</span>
+                  <span>₹{subTotal.toFixed(2)}</span>
                 </div>
-                {bill.discount > 0 && (
+                {discountVal > 0 && (
                   <div className="flex justify-between text-slate-600">
                     <span>Discount:</span>
-                    <span>-₹{bill.discount.toFixed(2)}</span>
+                    <span>-₹{discountVal.toFixed(2)}</span>
                   </div>
                 )}
-                {bill.rounding_adjustment !== 0 && (
+                {roundingAdj !== 0 && (
                   <div className="flex justify-between text-slate-600">
-                    <span>Rounding ({bill.rounding_method}):</span>
-                    <span>{bill.rounding_adjustment >= 0 ? '+' : ''}₹{bill.rounding_adjustment.toFixed(2)}</span>
+                    <span>Rounding ({bill.rounding_method || 'Standard'}):</span>
+                    <span>{roundingAdj >= 0 ? '+' : ''}₹{roundingAdj.toFixed(2)}</span>
                   </div>
                 )}
                 <div className="flex justify-between text-sm font-extrabold pt-1 border-t border-slate-300">
                   <span>GRAND TOTAL:</span>
-                  <span>₹{bill.grand_total.toFixed(2)}</span>
+                  <span>₹{grandTotalVal.toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between text-[11px] pt-1">
                   <span>Payment Mode:</span>
-                  <span className="font-bold uppercase">{bill.payment_method}</span>
+                  <span className="font-bold uppercase">{bill.payment_method || 'Cash'}</span>
                 </div>
-                {bill.loyalty_points_earned > 0 && (
+                {loyaltyEarned > 0 && (
                   <div className="flex justify-between text-[11px] text-emerald-700 font-bold pt-1">
                     <span>Loyalty Points Earned:</span>
-                    <span>+{bill.loyalty_points_earned} pts</span>
+                    <span>+{loyaltyEarned} pts</span>
                   </div>
                 )}
               </div>
@@ -203,7 +209,7 @@ export function InvoiceModal({ bill, onClose }: InvoiceModalProps) {
                   <div className="text-sm font-bold text-slate-700">Invoice #{bill.bill_number}</div>
                   <div className="text-xs text-slate-500 mt-1">Date: {formattedDate}</div>
                   <div className="inline-block mt-2 px-2.5 py-0.5 rounded text-xs font-bold bg-slate-100 text-slate-700 uppercase">
-                    Paid via {bill.payment_method}
+                    Paid via {bill.payment_method || 'Cash'}
                   </div>
                 </div>
               </div>
@@ -217,9 +223,9 @@ export function InvoiceModal({ bill, onClose }: InvoiceModalProps) {
                 </div>
                 <div className="text-right">
                   <span className="text-slate-500 block uppercase font-medium">Payment Breakdown:</span>
-                  <p className="font-semibold text-slate-800">Paid: ₹{bill.paid_total.toFixed(2)}</p>
-                  {bill.loyalty_points_earned > 0 && (
-                    <p className="text-emerald-600 font-bold mt-1">Earned Loyalty: +{bill.loyalty_points_earned} Points</p>
+                  <p className="font-semibold text-slate-800">Paid: ₹{paidTotalVal.toFixed(2)}</p>
+                  {loyaltyEarned > 0 && (
+                    <p className="text-emerald-600 font-bold mt-1">Earned Loyalty: +{loyaltyEarned} Points</p>
                   )}
                 </div>
               </div>
@@ -253,23 +259,23 @@ export function InvoiceModal({ bill, onClose }: InvoiceModalProps) {
                 <div className="w-64 space-y-2 text-sm">
                   <div className="flex justify-between text-slate-600">
                     <span>Subtotal:</span>
-                    <span className="font-semibold">₹{bill.total.toFixed(2)}</span>
+                    <span className="font-semibold">₹{subTotal.toFixed(2)}</span>
                   </div>
-                  {bill.discount > 0 && (
+                  {discountVal > 0 && (
                     <div className="flex justify-between text-slate-600">
                       <span>Discount:</span>
-                      <span className="font-semibold text-emerald-600">-₹{bill.discount.toFixed(2)}</span>
+                      <span className="font-semibold text-emerald-600">-₹{discountVal.toFixed(2)}</span>
                     </div>
                   )}
-                  {bill.rounding_adjustment !== 0 && (
+                  {roundingAdj !== 0 && (
                     <div className="flex justify-between text-slate-600">
-                      <span>Rounding ({bill.rounding_method}):</span>
-                      <span>{bill.rounding_adjustment >= 0 ? '+' : ''}₹{bill.rounding_adjustment.toFixed(2)}</span>
+                      <span>Rounding ({bill.rounding_method || 'Standard'}):</span>
+                      <span>{roundingAdj >= 0 ? '+' : ''}₹{roundingAdj.toFixed(2)}</span>
                     </div>
                   )}
                   <div className="flex justify-between text-base font-bold pt-2 border-t border-slate-300 text-slate-900">
                     <span>Grand Total:</span>
-                    <span>₹{bill.grand_total.toFixed(2)}</span>
+                    <span>₹{grandTotalVal.toFixed(2)}</span>
                   </div>
                 </div>
               </div>
