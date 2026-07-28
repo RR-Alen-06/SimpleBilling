@@ -10,6 +10,8 @@ import {
   Users, 
   DollarSign, 
   BarChart3, 
+  Settings as SettingsIcon,
+  FileText,
   Menu, 
   X, 
   Printer,
@@ -26,13 +28,15 @@ export function Navigation() {
     { label: 'Create Bill', href: '/billing', icon: Receipt },
     { label: 'Products', href: '/products', icon: Package },
     { label: 'Customers', href: '/customers', icon: Users },
+    { label: 'Manage Bills', href: '/bills', icon: FileText },
     { label: 'Expenses', href: '/expenses', icon: DollarSign },
     { label: 'Reports', href: '/reports', icon: BarChart3 },
+    { label: 'Settings', href: '/settings', icon: SettingsIcon },
   ];
 
   return (
     <>
-      {/* Top Navbar for branding & mobile toggle */}
+      {/* Top Navbar */}
       <header className="bg-slate-900 text-white sticky top-0 z-40 shadow-md print:hidden">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center space-x-3">
@@ -47,7 +51,10 @@ export function Navigation() {
               <div className="bg-blue-600 p-2 rounded-lg text-white">
                 <Printer size={22} />
               </div>
-              <span>Xerox & Stationery Billing</span>
+              <div className="flex flex-col">
+                <span className="leading-none text-base sm:text-lg">PrintPro ERP</span>
+                <span className="text-[10px] text-blue-400 font-normal leading-none mt-0.5">Xerox & Stationery POS</span>
+              </div>
             </Link>
           </div>
 
@@ -60,7 +67,7 @@ export function Navigation() {
             )}
             <Link 
               href="/billing" 
-              className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-sm px-4 py-2 rounded-lg shadow-sm transition flex items-center space-x-1.5"
+              className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs sm:text-sm px-3.5 py-2 rounded-lg shadow-sm transition flex items-center space-x-1.5"
             >
               <Receipt size={16} />
               <span>+ New Bill</span>
@@ -79,13 +86,13 @@ export function Navigation() {
               <Link
                 key={item.href}
                 href={item.href}
-                className={`flex items-center space-x-2 px-4 py-3 text-sm font-medium transition border-b-2 ${
+                className={`flex items-center space-x-2 px-3.5 py-3 text-xs font-semibold transition border-b-2 ${
                   isActive
                     ? 'border-blue-400 text-white bg-slate-900/60'
                     : 'border-transparent text-slate-300 hover:text-white hover:bg-slate-700/50'
                 }`}
               >
-                <Icon size={18} className={isActive ? 'text-blue-400' : 'text-slate-400'} />
+                <Icon size={16} className={isActive ? 'text-blue-400' : 'text-slate-400'} />
                 <span>{item.label}</span>
               </Link>
             );
@@ -104,7 +111,7 @@ export function Navigation() {
               <div className="flex items-center justify-between pb-4 mb-4 border-b border-slate-800">
                 <div className="flex items-center space-x-2 font-bold text-lg">
                   <Printer className="text-blue-400" size={20} />
-                  <span>Navigation</span>
+                  <span>PrintPro ERP</span>
                 </div>
                 <button onClick={() => setMobileOpen(false)} className="p-1 rounded text-slate-400 hover:text-white">
                   <X size={20} />
@@ -120,13 +127,13 @@ export function Navigation() {
                       key={item.href}
                       href={item.href}
                       onClick={() => setMobileOpen(false)}
-                      className={`flex items-center space-x-3 px-4 py-3 rounded-lg text-base font-medium transition ${
+                      className={`flex items-center space-x-3 px-4 py-2.5 rounded-lg text-sm font-medium transition ${
                         isActive
                           ? 'bg-blue-600 text-white'
                           : 'text-slate-300 hover:bg-slate-800 hover:text-white'
                       }`}
                     >
-                      <Icon size={20} />
+                      <Icon size={18} />
                       <span>{item.label}</span>
                     </Link>
                   );
@@ -135,7 +142,7 @@ export function Navigation() {
             </div>
 
             <div className="pt-4 border-t border-slate-800 text-xs text-slate-400 text-center">
-              Xerox & Stationery Billing Software
+              PrintPro ERP Billing System
             </div>
           </div>
         </div>

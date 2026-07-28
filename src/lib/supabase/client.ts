@@ -1,7 +1,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || '';
 
 export const isSupabaseConfigured = Boolean(
   supabaseUrl &&
@@ -10,9 +10,21 @@ export const isSupabaseConfigured = Boolean(
   supabaseAnonKey !== 'your-supabase-anon-key'
 );
 
-export const supabase: SupabaseClient = isSupabaseConfigured
-  ? createClient(supabaseUrl, supabaseAnonKey)
-  : (createClient(
-      supabaseUrl || 'https://placeholder.supabase.co',
-      supabaseAnonKey || 'placeholder'
-    ));
+const globalForSupabase = globalThis as unknown as {
+  supabase: SupabaseClient | undefined;
+};
+
+export const supabase: SupabaseClient =
+  globalForSupabase.supabase ??
+  (isSupabaseConfigured
+    ? createClient(supabaseUrl, supabaseAnonKey)
+    : createClient(
+        supabaseUrl || 'https://placeholder.supabase.co',
+        supabaseAnonKey || 'placeholder'
+      ));
+
+if (process.env.NODE_ENV !== 'production') {
+  globalForSupabase.supabase = supabase;
+}
+
+

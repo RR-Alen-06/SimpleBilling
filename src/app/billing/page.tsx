@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '@/lib/services/api';
-import { Customer, Product, Bill, PaymentMethod } from '@/lib/types';
+import { Customer, Product, Bill, RoundingMethod, AllSettings } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { InvoiceModal } from '@/components/InvoiceModal';
 import { 
@@ -12,10 +12,12 @@ import {
   UserPlus, 
   CheckCircle2, 
   AlertTriangle, 
-  Printer, 
   Save, 
   IndianRupee,
-  Search
+  Search,
+  Gift,
+  Calculator,
+  MessageSquare
 } from 'lucide-react';
 
 interface CartItem {
@@ -29,19 +31,29 @@ interface CartItem {
 export default function BillingPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [settings, setSettings] = useState<AllSettings | null>(null);
+  
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
   const [cart, setCart] = useState<CartItem[]>([]);
   
-  // Custom manual item entry fields
+  // Custom manual item entry
   const [customItemName, setCustomItemName] = useState('');
   const [customItemPrice, setCustomItemPrice] = useState<number | ''>('');
   const [customItemQty, setCustomItemQty] = useState<number | ''>(1);
   const [productSearch, setProductSearch] = useState('');
 
-  // Bill totals
+  // Discount & Rounding
   const [discount, setDiscount] = useState<number>(0);
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Cash');
-  const [paidAmount, setPaidAmount] = useState<number | ''>('');
+  const [roundingMethod, setRoundingMethod] = useState<RoundingMethod>('None');
+
+  // Split Payment Inputs
+  const [cashPaid, setCashPaid] = useState<number | ''>('');
+  const [upiPaid, setUpiPaid] = useState<number | ''>('');
+  const [cardPaid, setCardPaid] = useState<number | ''>('');
+  const [advanceUsed, setAdvanceUsed] = useState<number | ''>('');
+
+  // Loyalty Points Redemption
+  const [pointsToRedeem, setPointsToRedeem] = useState<number>(0);
 
   // Quick Customer Add Modal
   const [showAddCustomerModal, setShowAddCustomerModal] = useState(false);
@@ -60,22 +72,39 @@ export default function BillingPage() {
 
   const fetchInitialData = async () => {
     try {
-      const [custList, prodList] = await Promise.all([
+      const [custList, prodList, shopSettings] = await Promise.all([
         ApiService.getCustomers(),
-        ApiService.getProducts()
+        ApiService.getProducts(),
+        ApiService.getSettings()
       ]);
       setCustomers(custList);
       setProducts(prodList);
+      setSettings(shopSettings);
+      setRoundingMethod(shopSettings.billing.rounding_method);
     } catch (err) {
       console.error('Error loading data:', err);
     }
   };
 
+  const selectedCustomer = customers.find(c => c.id === selectedCustomerId);
+
   // Calculations
   const subtotal = cart.reduce((sum, item) => sum + item.total, 0);
-  const grandTotal = Math.max(0, subtotal - Number(discount || 0));
+  const loyaltyDiscount = (pointsToRedeem * (settings?.loyalty.amount_per_point || 1));
+  const totalAfterDiscount = Math.max(0, subtotal - Number(discount || 0) - loyaltyDiscount);
+  
+  const { roundedTotal, roundingAdjustment } = ApiService.calculateRounding(totalAfterDiscount, roundingMethod);
 
-  // Add selected existing product to cart
+  const cashVal = Number(cashPaid || 0);
+  const upiVal = Number(upiPaid || 0);
+  const cardVal = Number(cardPaid || 0);
+  const advanceVal = Number(advanceUsed || 0);
+
+  const totalPaidNow = cashVal + upiVal + cardVal + advanceVal;
+  const remainingBalance = Math.max(0, roundedTotal - totalPaidNow);
+  const customerAdvanceEarned = totalPaidNow > roundedTotal ? totalPaidNow - roundedTotal : 0;
+
+  // Add catalog product
   const handleAddProductToCart = (product: Product) => {
     const existingIdx = cart.findIndex(c => c.product_id === product.id);
     if (existingIdx >= 0) {
@@ -97,7 +126,7 @@ export default function BillingPage() {
     }
   };
 
-  // Add custom item (e.g. Xerox 45 copies)
+  // Add custom xerox item
   const handleAddCustomItem = () => {
     setErrorMsg('');
     if (!customItemName.trim()) {
@@ -130,27 +159,20 @@ export default function BillingPage() {
     setCustomItemQty(1);
   };
 
-  // Update Item in Cart (Editable price & qty)
   const handleUpdateCartItem = (index: number, field: 'quantity' | 'price', value: number) => {
     const updated = [...cart];
     const item = { ...updated[index] };
-
-    if (field === 'quantity') {
-      item.quantity = Math.max(0.01, value);
-    } else if (field === 'price') {
-      item.price = Math.max(0, value);
-    }
+    if (field === 'quantity') item.quantity = Math.max(0.01, value);
+    if (field === 'price') item.price = Math.max(0, value);
     item.total = item.quantity * item.price;
     updated[index] = item;
     setCart(updated);
   };
 
-  // Remove Item
   const handleRemoveCartItem = (index: number) => {
     setCart(cart.filter((_, idx) => idx !== index));
   };
 
-  // Quick Customer Creation
   const handleQuickAddCustomer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCustName.trim()) return;
@@ -190,32 +212,33 @@ export default function BillingPage() {
       }
     }
 
-    const paid = paidAmount === '' ? grandTotal : Number(paidAmount);
-    if (paid < 0) {
-      setErrorMsg('Payment amount cannot be negative.');
-      return;
-    }
-
     setSaving(true);
     try {
       const created = await ApiService.createBill({
         customer_id: selectedCustomerId || null,
         total: subtotal,
         discount: Number(discount || 0),
-        grand_total: grandTotal,
-        paid_amount: paid,
-        payment_method: paymentMethod,
+        rounding_method: roundingMethod,
+        cash_paid: cashVal,
+        upi_paid: upiVal,
+        card_paid: cardVal,
+        advance_used: advanceVal,
+        points_to_redeem: pointsToRedeem,
         items: cart
       });
 
       const fullBill = await ApiService.getBillById(created.id);
       setSavedBill(fullBill || created);
-      setSuccessMsg('Bill generated successfully!');
+      setSuccessMsg('Bill generated & saved successfully!');
 
       // Reset form
       setCart([]);
       setDiscount(0);
-      setPaidAmount('');
+      setCashPaid('');
+      setUpiPaid('');
+      setCardPaid('');
+      setAdvanceUsed('');
+      setPointsToRedeem(0);
       setSelectedCustomerId('');
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to save bill');
@@ -237,9 +260,9 @@ export default function BillingPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900 flex items-center space-x-2">
             <Receipt className="text-blue-600" size={26} />
-            <span>Create New Bill</span>
+            <span>POS Billing & Split Payments</span>
           </h1>
-          <p className="text-sm text-slate-500 mt-0.5">Quick POS billing for Xerox, Prints & Stationery</p>
+          <p className="text-sm text-slate-500 mt-0.5">Xerox page rates, stationery catalog, multi-mode split payments & loyalty points</p>
         </div>
       </div>
 
@@ -258,12 +281,12 @@ export default function BillingPage() {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* LEFT COLUMN: PRODUCT SEARCH & QUICK ADD (5 Cols) */}
+        {/* LEFT COLUMN: CUSTOMER & PRODUCT SELECTOR (5 Cols) */}
         <div className="lg:col-span-5 space-y-5">
           {/* Customer Selection */}
           <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
             <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
-              Select Customer (Optional)
+              Select Customer Account (Optional)
             </label>
             <div className="flex gap-2">
               <select
@@ -282,52 +305,65 @@ export default function BillingPage() {
                 type="button"
                 onClick={() => setShowAddCustomerModal(true)}
                 className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2 rounded-lg border border-slate-300 transition flex items-center space-x-1 flex-shrink-0 text-xs font-semibold"
-                title="Add New Customer"
               >
                 <UserPlus size={16} />
                 <span>+ New</span>
               </button>
             </div>
+
+            {/* Customer Info Card if selected */}
+            {selectedCustomer && (
+              <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Advance Balance:</span>
+                  <span className="font-bold text-emerald-700">₹{selectedCustomer.advance_balance.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Loyalty Points:</span>
+                  <span className="font-bold text-purple-700">⭐ {selectedCustomer.loyalty_points} Points</span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Catalog Products */}
           <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                Select Shop Product
+                Shop Product Catalog
               </label>
-              <span className="text-xs text-slate-400">{products.length} items available</span>
+              <span className="text-xs text-slate-400">{products.length} items</span>
             </div>
 
             <div className="relative">
               <Search size={16} className="absolute left-3 top-2.5 text-slate-400" />
               <input
                 type="text"
-                placeholder="Search product name or category..."
+                placeholder="Search products or category..."
                 value={productSearch}
                 onChange={(e) => setProductSearch(e.target.value)}
                 className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
 
-            <div className="max-h-52 overflow-y-auto space-y-1 pr-1">
+            <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
               {filteredProducts.length === 0 ? (
-                <p className="text-xs text-slate-400 py-4 text-center">No products found in shop catalog.</p>
+                <p className="text-xs text-slate-400 py-4 text-center">No products found in catalog.</p>
               ) : (
                 filteredProducts.map((prod) => (
                   <div
                     key={prod.id}
                     onClick={() => handleAddProductToCart(prod)}
-                    className="flex items-center justify-between p-2.5 rounded-lg border border-slate-100 hover:border-blue-300 hover:bg-blue-50/50 cursor-pointer transition group"
+                    className="flex items-center justify-between p-2 rounded-lg border border-slate-100 hover:border-blue-300 hover:bg-blue-50/50 cursor-pointer transition group"
                   >
                     <div>
-                      <p className="text-sm font-medium text-slate-800 group-hover:text-blue-700">{prod.name}</p>
-                      <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-mono">{prod.category}</span>
+                      <p className="text-xs font-semibold text-slate-800 group-hover:text-blue-700">{prod.name}</p>
+                      <span className="text-[10px] text-slate-500">{prod.category}</span>
                     </div>
                     <div className="flex items-center space-x-2">
-                      <span className="text-sm font-bold text-slate-900">₹{prod.price}</span>
+                      <span className="text-xs font-bold text-slate-900">₹{prod.price}</span>
                       <span className="bg-blue-600 text-white p-1 rounded hover:bg-blue-700 transition">
-                        <Plus size={14} />
+                        <Plus size={12} />
                       </span>
                     </div>
                   </div>
@@ -336,10 +372,10 @@ export default function BillingPage() {
             </div>
           </div>
 
-          {/* Quick Custom Item Entry (e.g., Special Xerox Page Count) */}
+          {/* Quick Custom Item Entry */}
           <div className="bg-slate-900 text-white p-5 rounded-xl shadow-md space-y-3">
             <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-              Add Custom Service / Xerox Item
+              Add Custom Xerox Job / Custom Rate
             </h3>
             <div className="space-y-2">
               <input
@@ -377,7 +413,7 @@ export default function BillingPage() {
               <button
                 type="button"
                 onClick={handleAddCustomItem}
-                className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-2 rounded transition flex items-center justify-center space-x-1 mt-1"
+                className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold py-2 rounded transition flex items-center justify-center space-x-1"
               >
                 <Plus size={14} />
                 <span>Add Custom Item</span>
@@ -386,11 +422,11 @@ export default function BillingPage() {
           </div>
         </div>
 
-        {/* RIGHT COLUMN: BILL CART & TOTALS (7 Cols) */}
+        {/* RIGHT COLUMN: BILL ITEMS, SPLIT PAYMENTS & TOTALS (7 Cols) */}
         <div className="lg:col-span-7 space-y-5">
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-              <h2 className="font-bold text-slate-800 text-lg">Bill Items List</h2>
+              <h2 className="font-bold text-slate-800 text-lg">Bill Cart</h2>
               <span className="text-xs bg-slate-100 text-slate-600 px-2.5 py-1 rounded-full font-semibold">
                 {cart.length} items
               </span>
@@ -401,18 +437,17 @@ export default function BillingPage() {
               <div className="py-12 text-center text-slate-400">
                 <Receipt className="mx-auto text-slate-300 mb-2" size={36} />
                 <p className="text-sm font-medium text-slate-600">Bill cart is empty</p>
-                <p className="text-xs text-slate-400 mt-1">Select catalog items or add a custom Xerox job to start billing.</p>
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead>
                     <tr className="bg-slate-100 text-slate-600 uppercase font-semibold border-b border-slate-200">
-                      <th className="py-2.5 px-3">Item Name</th>
-                      <th className="py-2.5 px-2 text-center w-24">Qty</th>
-                      <th className="py-2.5 px-2 text-right w-24">Price (₹)</th>
+                      <th className="py-2.5 px-3">Item</th>
+                      <th className="py-2.5 px-2 text-center w-20">Qty</th>
+                      <th className="py-2.5 px-2 text-right w-20">Price (₹)</th>
                       <th className="py-2.5 px-3 text-right">Total (₹)</th>
-                      <th className="py-2.5 px-2 text-center w-12"></th>
+                      <th className="py-2.5 px-2 text-center w-10"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -446,7 +481,6 @@ export default function BillingPage() {
                           <button
                             onClick={() => handleRemoveCartItem(idx)}
                             className="text-slate-400 hover:text-rose-600 transition"
-                            title="Remove Item"
                           >
                             <Trash2 size={16} />
                           </button>
@@ -458,14 +492,14 @@ export default function BillingPage() {
               </div>
             )}
 
-            {/* BILL SUMMARY & PAYMENT MODE */}
-            <div className="pt-4 border-t border-slate-200 space-y-3 bg-slate-50 p-4 rounded-lg">
+            {/* BILL DISCOUNTS & ROUNDING */}
+            <div className="pt-4 border-t border-slate-200 space-y-2.5 bg-slate-50 p-4 rounded-lg">
               <div className="flex justify-between text-sm text-slate-600">
                 <span>Subtotal:</span>
                 <span className="font-semibold text-slate-900">₹{subtotal.toFixed(2)}</span>
               </div>
 
-              <div className="flex justify-between items-center text-sm">
+              <div className="flex justify-between items-center text-xs">
                 <span className="text-slate-600">Discount (₹):</span>
                 <input
                   type="number"
@@ -473,63 +507,131 @@ export default function BillingPage() {
                   placeholder="0"
                   value={discount === 0 ? '' : discount}
                   onChange={(e) => setDiscount(Math.max(0, Number(e.target.value)))}
-                  className="w-28 text-right bg-white border border-slate-300 rounded px-2 py-1 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-24 text-right bg-white border border-slate-300 rounded px-2 py-1 text-xs font-semibold text-slate-900 focus:ring-1 focus:ring-blue-500"
                 />
               </div>
 
-              <div className="flex justify-between items-center text-lg font-extrabold text-slate-900 pt-2 border-t border-slate-200">
-                <span>Grand Total:</span>
-                <span className="text-blue-700 text-xl">₹{grandTotal.toFixed(2)}</span>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 uppercase mb-1">
-                    Payment Method
-                  </label>
-                  <div className="grid grid-cols-3 gap-1 bg-white p-1 rounded-lg border border-slate-300 text-xs font-semibold">
-                    {(['Cash', 'UPI', 'Card'] as PaymentMethod[]).map((mode) => (
-                      <button
-                        key={mode}
-                        type="button"
-                        onClick={() => setPaymentMethod(mode)}
-                        className={`py-1.5 rounded text-center transition ${
-                          paymentMethod === mode
-                            ? 'bg-blue-600 text-white shadow'
-                            : 'text-slate-600 hover:bg-slate-100'
-                        }`}
-                      >
-                        {mode}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 uppercase mb-1">
-                    Amount Received (₹)
-                  </label>
+              {/* Loyalty Redemption Option */}
+              {selectedCustomer && selectedCustomer.loyalty_points > 0 && settings?.loyalty.enabled && (
+                <div className="flex justify-between items-center text-xs bg-purple-50 p-2 rounded border border-purple-200">
+                  <span className="text-purple-800 font-bold flex items-center space-x-1">
+                    <Gift size={14} />
+                    <span>Redeem Loyalty Points (Max: {selectedCustomer.loyalty_points} pts):</span>
+                  </span>
                   <input
                     type="number"
                     min="0"
-                    placeholder={`Full (₹${grandTotal})`}
-                    value={paidAmount}
-                    onChange={(e) => setPaidAmount(e.target.value === '' ? '' : Number(e.target.value))}
-                    className="w-full bg-white border border-slate-300 rounded px-3 py-1.5 text-sm font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    max={selectedCustomer.loyalty_points}
+                    value={pointsToRedeem === 0 ? '' : pointsToRedeem}
+                    onChange={(e) => setPointsToRedeem(Math.min(selectedCustomer.loyalty_points, Math.max(0, Number(e.target.value))))}
+                    className="w-20 text-right bg-white border border-purple-300 rounded px-2 py-1 text-xs font-bold text-purple-900 focus:ring-1 focus:ring-purple-500"
                   />
+                </div>
+              )}
+
+              {/* Rounding Selection */}
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-600 flex items-center space-x-1">
+                  <Calculator size={14} />
+                  <span>Rounding Method:</span>
+                </span>
+                <select
+                  value={roundingMethod}
+                  onChange={(e) => setRoundingMethod(e.target.value as RoundingMethod)}
+                  className="bg-white border border-slate-300 rounded px-2 py-1 text-xs font-semibold text-slate-800"
+                >
+                  <option value="None">No Rounding</option>
+                  <option value="Round Down">Round Down</option>
+                  <option value="Round Up">Round Up</option>
+                  <option value="Standard">Standard Rounding</option>
+                </select>
+              </div>
+
+              {roundingAdjustment !== 0 && (
+                <div className="flex justify-between text-xs text-slate-500 italic">
+                  <span>Rounding Adjustment:</span>
+                  <span>{roundingAdjustment >= 0 ? '+' : ''}₹{roundingAdjustment.toFixed(2)}</span>
+                </div>
+              )}
+
+              <div className="flex justify-between items-center text-lg font-extrabold text-slate-900 pt-2 border-t border-slate-200">
+                <span>Grand Total:</span>
+                <span className="text-blue-700 text-xl">₹{roundedTotal.toFixed(2)}</span>
+              </div>
+
+              {/* SPLIT PAYMENT INPUTS */}
+              <div className="pt-2 border-t border-slate-200 space-y-2">
+                <label className="block text-xs font-bold text-slate-700 uppercase">
+                  Split Payment Breakdown
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <div>
+                    <label className="text-[10px] text-slate-500 font-bold">Cash (₹)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      value={cashPaid}
+                      onChange={(e) => setCashPaid(e.target.value === '' ? '' : Number(e.target.value))}
+                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-bold text-slate-900"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500 font-bold">UPI (₹)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      value={upiPaid}
+                      onChange={(e) => setUpiPaid(e.target.value === '' ? '' : Number(e.target.value))}
+                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-bold text-slate-900"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500 font-bold">Card (₹)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      value={cardPaid}
+                      onChange={(e) => setCardPaid(e.target.value === '' ? '' : Number(e.target.value))}
+                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-bold text-slate-900"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500 font-bold">Advance Used (₹)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max={selectedCustomer?.advance_balance || 0}
+                      placeholder="0"
+                      value={advanceUsed}
+                      onChange={(e) => setAdvanceUsed(e.target.value === '' ? '' : Number(e.target.value))}
+                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-bold text-slate-900"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-between text-xs font-semibold pt-1">
+                  <span>Total Paid Now: ₹{totalPaidNow.toFixed(2)}</span>
+                  {remainingBalance > 0 ? (
+                    <span className="text-amber-600 font-bold">Due: ₹{remainingBalance.toFixed(2)}</span>
+                  ) : (
+                    <span className="text-emerald-600 font-bold">Advance Surplus: ₹{customerAdvanceEarned.toFixed(2)}</span>
+                  )}
                 </div>
               </div>
 
-              {/* SAVE / PRINT BUTTONS */}
-              <div className="pt-3 flex gap-3">
+              {/* SAVE / PRINT BUTTON */}
+              <div className="pt-3">
                 <button
                   type="button"
                   onClick={handleSaveBill}
                   disabled={saving || cart.length === 0}
-                  className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-sm py-3 rounded-lg shadow transition flex items-center justify-center space-x-2"
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-sm py-3 rounded-lg shadow transition flex items-center justify-center space-x-2"
                 >
                   <Save size={18} />
-                  <span>{saving ? 'Saving Bill...' : 'Save & Print Bill'}</span>
+                  <span>{saving ? 'Processing...' : 'Save & Print Bill'}</span>
                 </button>
               </div>
             </div>
