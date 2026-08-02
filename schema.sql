@@ -1,6 +1,6 @@
 -- ==========================================
 -- PrintPro ERP / Xerox & Stationery Billing System Database Schema
--- Supabase / PostgreSQL Script (Updated with Dynamic Loyalty Redemption Rules)
+-- Supabase / PostgreSQL Script (Simplified Loyalty Earning & Redemption Rules)
 -- ==========================================
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -182,19 +182,23 @@ CREATE TABLE IF NOT EXISTS public.loyalty_transactions (
 );
 ALTER TABLE public.loyalty_transactions ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
 
--- 10. DYNAMIC LOYALTY EARNING RULES TABLE
+-- 10. SIMPLIFIED LOYALTY EARNING RULES TABLE
 CREATE TABLE IF NOT EXISTS public.loyalty_rules (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     rule_name TEXT NOT NULL,
     min_bill_amount NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (min_bill_amount >= 0),
     max_bill_amount NUMERIC(10, 2),
-    reward_type TEXT NOT NULL CHECK (reward_type IN ('FLAT', 'PERCENTAGE')),
-    reward_value NUMERIC(10, 2) NOT NULL CHECK (reward_value > 0),
+    points_earned NUMERIC(10, 2) NOT NULL DEFAULT 1.00 CHECK (points_earned > 0),
     enabled BOOLEAN NOT NULL DEFAULT true,
     sort_order INT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- In-place Migration: Remove NOT NULL constraints on legacy reward_type & reward_value
 ALTER TABLE public.loyalty_rules ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.loyalty_rules ADD COLUMN IF NOT EXISTS points_earned NUMERIC(10, 2) NOT NULL DEFAULT 1.00;
+ALTER TABLE public.loyalty_rules ALTER COLUMN reward_type DROP NOT NULL;
+ALTER TABLE public.loyalty_rules ALTER COLUMN reward_value DROP NOT NULL;
 
 -- 11. DYNAMIC LOYALTY REDEMPTION RULES TABLE
 CREATE TABLE IF NOT EXISTS public.loyalty_redemption_rules (
@@ -207,14 +211,15 @@ CREATE TABLE IF NOT EXISTS public.loyalty_redemption_rules (
 );
 ALTER TABLE public.loyalty_redemption_rules ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
 
--- Seed Default Earning Rules
-INSERT INTO public.loyalty_rules (user_id, rule_name, min_bill_amount, max_bill_amount, reward_type, reward_value, enabled, sort_order)
+-- Seed Default Simplified Earning Rules (Includes legacy columns as fallback)
+INSERT INTO public.loyalty_rules (user_id, rule_name, min_bill_amount, max_bill_amount, points_earned, reward_type, reward_value, enabled, sort_order)
 VALUES
-    (auth.uid(), 'Standard Earning Rule', 0.00, 500.00, 'PERCENTAGE', 1.00, true, 1),
-    (auth.uid(), 'Bulk Purchase Bonus', 501.00, NULL, 'PERCENTAGE', 2.00, true, 2)
+    (auth.uid(), 'Standard Earning Rule', 0.00, 100.00, 1.00, 'FLAT', 1.00, true, 1),
+    (auth.uid(), 'Medium Purchase Bonus', 101.00, 500.00, 5.00, 'FLAT', 5.00, true, 2),
+    (auth.uid(), 'Bulk Purchase Bonus', 501.00, NULL, 15.00, 'FLAT', 15.00, true, 3)
 ON CONFLICT DO NOTHING;
 
--- Seed Default Redemption Rules (10 Pts = ₹5, 20 Pts = ₹10, 50 Pts = ₹25)
+-- Seed Default Redemption Rules
 INSERT INTO public.loyalty_redemption_rules (user_id, points_required, discount_amount, enabled)
 VALUES
     (auth.uid(), 10, 5.00, true),

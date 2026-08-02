@@ -38,8 +38,7 @@ export default function SettingsPage() {
   const [ruleName, setRuleName] = useState('');
   const [minBill, setMinBill] = useState<number | ''>(0);
   const [maxBill, setMaxBill] = useState<number | ''>('');
-  const [rewardType, setRewardType] = useState<'FLAT' | 'PERCENTAGE'>('PERCENTAGE');
-  const [rewardValue, setRewardValue] = useState<number | ''>(1);
+  const [pointsEarnedInput, setPointsEarnedInput] = useState<number | ''>(1);
   const [sortOrder, setSortOrder] = useState<number>(1);
 
   // Loyalty Redemption Rule Modal state
@@ -124,8 +123,7 @@ export default function SettingsPage() {
     setRuleName('');
     setMinBill(0);
     setMaxBill('');
-    setRewardType('PERCENTAGE');
-    setRewardValue(1);
+    setPointsEarnedInput(1);
     setSortOrder(loyaltyRules.length + 1);
     setErrorMsg('');
     setShowRuleModal(true);
@@ -136,8 +134,7 @@ export default function SettingsPage() {
     setRuleName(rule.rule_name);
     setMinBill(rule.min_bill_amount);
     setMaxBill(rule.max_bill_amount ?? '');
-    setRewardType(rule.reward_type);
-    setRewardValue(rule.reward_value);
+    setPointsEarnedInput(rule.points_earned);
     setSortOrder(rule.sort_order);
     setErrorMsg('');
     setShowRuleModal(true);
@@ -165,9 +162,9 @@ export default function SettingsPage() {
       return;
     }
 
-    const rVal = Number(rewardValue);
-    if (isNaN(rVal) || rVal <= 0) {
-      setErrorMsg('Reward value must be greater than 0.');
+    const ptsVal = Number(pointsEarnedInput);
+    if (isNaN(ptsVal) || ptsVal <= 0) {
+      setErrorMsg('Points earned must be greater than 0.');
       return;
     }
 
@@ -178,8 +175,7 @@ export default function SettingsPage() {
           rule_name: ruleName.trim(),
           min_bill_amount: minVal,
           max_bill_amount: maxVal,
-          reward_type: rewardType,
-          reward_value: rVal,
+          points_earned: ptsVal,
           sort_order: sortOrder
         });
         setSuccessMsg('Loyalty earning rule updated.');
@@ -188,8 +184,7 @@ export default function SettingsPage() {
           rule_name: ruleName.trim(),
           min_bill_amount: minVal,
           max_bill_amount: maxVal,
-          reward_type: rewardType,
-          reward_value: rVal,
+          points_earned: ptsVal,
           enabled: true,
           sort_order: sortOrder
         });
@@ -644,8 +639,8 @@ export default function SettingsPage() {
             {activeTab === 'loyalty' && (
               <div className="space-y-6">
                 <div className="border-b pb-3">
-                  <h2 className="text-lg font-bold text-slate-900">Loyalty Program & Dynamic Redemption Rules</h2>
-                  <p className="text-xs text-slate-500 mt-0.5">Manage unlimited earning rules & redemption rules stored directly in database</p>
+                  <h2 className="text-lg font-bold text-slate-900">Loyalty Program & Point Rules Engine</h2>
+                  <p className="text-xs text-slate-500 mt-0.5">Manage bill range earning rules and redemption rules stored directly in database</p>
                 </div>
 
                 <div className="flex items-center space-x-3 bg-purple-50 p-4 rounded-xl border border-purple-200">
@@ -669,7 +664,7 @@ export default function SettingsPage() {
                         <Gift size={16} className="text-purple-600" />
                         <span>Loyalty Point Redemption Rules</span>
                       </h3>
-                      <p className="text-[11px] text-slate-500">Super Admin can configure unlimited points-to-discount rules stored in database</p>
+                      <p className="text-[11px] text-slate-500">Super Admin can configure points-to-discount rules stored in database</p>
                     </div>
                     <button
                       onClick={handleOpenAddRedemptionRule}
@@ -738,7 +733,10 @@ export default function SettingsPage() {
                 {/* EARNING RULES TABLE */}
                 <div className="space-y-3 pt-4 border-t">
                   <div className="flex justify-between items-center">
-                    <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Active Loyalty Earning Rules</h3>
+                    <div>
+                      <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Active Loyalty Earning Rules</h3>
+                      <p className="text-[11px] text-slate-500">Configure how many points customers earn based on bill amount ranges</p>
+                    </div>
                     <button
                       onClick={handleOpenAddRule}
                       className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-3 py-1.5 rounded-lg shadow transition flex items-center space-x-1"
@@ -755,8 +753,7 @@ export default function SettingsPage() {
                           <th className="py-2.5 px-4">Order</th>
                           <th className="py-2.5 px-4">Rule Name</th>
                           <th className="py-2.5 px-4">Bill Amount Range</th>
-                          <th className="py-2.5 px-4">Reward Type</th>
-                          <th className="py-2.5 px-4 text-right">Reward Value</th>
+                          <th className="py-2.5 px-4 text-right">Points Earned</th>
                           <th className="py-2.5 px-4 text-center">Status</th>
                           <th className="py-2.5 px-4 text-center w-28">Actions</th>
                         </tr>
@@ -764,7 +761,7 @@ export default function SettingsPage() {
                       <tbody className="divide-y divide-slate-100">
                         {loyaltyRules.length === 0 ? (
                           <tr>
-                            <td colSpan={7} className="py-8 text-center text-slate-400 text-xs">No custom earning rules created yet.</td>
+                            <td colSpan={6} className="py-8 text-center text-slate-400 text-xs">No custom earning rules created yet.</td>
                           </tr>
                         ) : (
                           loyaltyRules.map((rule) => (
@@ -774,13 +771,8 @@ export default function SettingsPage() {
                               <td className="py-3 px-4 text-xs font-mono text-slate-700">
                                 ₹{rule.min_bill_amount} - {rule.max_bill_amount !== null && rule.max_bill_amount !== undefined ? `₹${rule.max_bill_amount}` : 'Above'}
                               </td>
-                              <td className="py-3 px-4">
-                                <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${rule.reward_type === 'FLAT' ? 'bg-blue-100 text-blue-800' : 'bg-emerald-100 text-emerald-800'}`}>
-                                  {rule.reward_type}
-                                </span>
-                              </td>
-                              <td className="py-3 px-4 text-right font-extrabold text-slate-900">
-                                {rule.reward_type === 'FLAT' ? `${rule.reward_value} pts` : `${rule.reward_value}%`}
+                              <td className="py-3 px-4 text-right font-extrabold text-purple-700">
+                                +{rule.points_earned} Pts
                               </td>
                               <td className="py-3 px-4 text-center">
                                 <button onClick={() => handleToggleRule(rule)} className="text-slate-600 hover:text-purple-600">
@@ -1009,30 +1001,17 @@ export default function SettingsPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Reward Type *</label>
-                  <select
-                    value={rewardType}
-                    onChange={(e) => setRewardType(e.target.value as 'FLAT' | 'PERCENTAGE')}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold"
-                  >
-                    <option value="PERCENTAGE">Percentage (%)</option>
-                    <option value="FLAT">Flat Points</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Reward Value *</label>
-                  <input
-                    type="number"
-                    required
-                    min="0.1"
-                    step="0.5"
-                    value={rewardValue}
-                    onChange={(e) => setRewardValue(e.target.value === '' ? '' : Number(e.target.value))}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold"
-                  />
-                </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Points Earned *</label>
+                <input
+                  type="number"
+                  required
+                  min="0.01"
+                  step="any"
+                  value={pointsEarnedInput}
+                  onChange={(e) => setPointsEarnedInput(e.target.value === '' ? '' : Number(e.target.value))}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-extrabold text-purple-700"
+                />
               </div>
 
               <div>

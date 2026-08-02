@@ -168,15 +168,14 @@ export interface DashboardStats {
   top_products: { name: string; quantity: number; revenue: number }[];
 }
 
-// Loyalty Rule Engine & Dynamic Redemption Models
+// Simplified Loyalty Earning & Redemption Models
 export interface LoyaltyRule {
   id: string;
   user_id?: string | null;
   rule_name: string;
   min_bill_amount: number;
   max_bill_amount?: number | null;
-  reward_type: 'FLAT' | 'PERCENTAGE';
-  reward_value: number;
+  points_earned: number;
   enabled: boolean;
   sort_order: number;
   created_at?: string;

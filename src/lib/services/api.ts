@@ -188,7 +188,6 @@ export class ApiService {
     const enabledRules = activeRedemptionRules.filter(r => r.enabled).sort((a, b) => b.points_required - a.points_required);
 
     if (enabledRules.length > 0) {
-      // Find exact or closest matching rule tier
       let remainingPts = pointsToRedeem;
       let totalDiscount = 0;
 
@@ -202,7 +201,6 @@ export class ApiService {
 
       if (totalDiscount > 0) return Number(totalDiscount.toFixed(2));
       
-      // Fallback rate from best active tier
       const bestRule = enabledRules[0];
       const rate = Number(bestRule.discount_amount) / Number(bestRule.points_required);
       return Number((pointsToRedeem * rate).toFixed(2));
@@ -214,11 +212,12 @@ export class ApiService {
     return Number((pointsToRedeem * ratePerPoint).toFixed(2));
   }
 
-  // --- DYNAMIC LOYALTY EARNING RULE ENGINE ---
+  // --- SIMPLIFIED DYNAMIC LOYALTY EARNING RULES ---
   static async getLoyaltyRules(): Promise<LoyaltyRule[]> {
     if (!isSupabaseConfigured) return [
-      { id: 'rule-1', rule_name: 'Standard Earning Rule', min_bill_amount: 0, max_bill_amount: 500, reward_type: 'PERCENTAGE', reward_value: 1, enabled: true, sort_order: 1 },
-      { id: 'rule-2', rule_name: 'Bulk Purchase Bonus', min_bill_amount: 501, max_bill_amount: null, reward_type: 'PERCENTAGE', reward_value: 2, enabled: true, sort_order: 2 }
+      { id: 'rule-1', rule_name: 'Standard Earning Rule', min_bill_amount: 0, max_bill_amount: 100, points_earned: 1, enabled: true, sort_order: 1 },
+      { id: 'rule-2', rule_name: 'Medium Purchase Bonus', min_bill_amount: 101, max_bill_amount: 500, points_earned: 5, enabled: true, sort_order: 2 },
+      { id: 'rule-3', rule_name: 'Bulk Purchase Bonus', min_bill_amount: 501, max_bill_amount: null, points_earned: 15, enabled: true, sort_order: 3 }
     ];
 
     const { data, error } = await supabase.from('loyalty_rules').select('*').order('sort_order', { ascending: true });
@@ -277,11 +276,7 @@ export class ApiService {
       const max = rule.max_bill_amount !== null && rule.max_bill_amount !== undefined ? Number(rule.max_bill_amount) : Infinity;
 
       if (billAmount >= min && billAmount <= max) {
-        if (rule.reward_type === 'FLAT') {
-          return Number(rule.reward_value);
-        } else if (rule.reward_type === 'PERCENTAGE') {
-          return Math.floor((billAmount * Number(rule.reward_value)) / 100);
-        }
+        return Number(rule.points_earned);
       }
     }
 

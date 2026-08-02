@@ -191,6 +191,15 @@ export default function BillingPage() {
     setCart(updated);
   };
 
+  // Live Editable Rate Handler
+  const handleUpdateItemRate = (index: number, newPrice: number) => {
+    const updated = [...cart];
+    const price = Math.max(0, newPrice);
+    updated[index].price = price;
+    updated[index].total = updated[index].quantity * price;
+    setCart(updated);
+  };
+
   const handleRemoveItem = (index: number) => {
     setCart(cart.filter((_, i) => i !== index));
   };
@@ -293,7 +302,7 @@ export default function BillingPage() {
             <Receipt className="text-blue-600" size={26} />
             <span>POS Billing & Flexible Discounts</span>
           </h1>
-          <p className="text-sm text-slate-500 mt-0.5">Flat (₹) or Percentage (%) discounts, split payments & dynamic loyalty point redemptions</p>
+          <p className="text-sm text-slate-500 mt-0.5">Editable item rates, flat/percentage discounts & dynamic loyalty point redemptions</p>
         </div>
       </div>
 
@@ -432,7 +441,7 @@ export default function BillingPage() {
                 <label className="text-[10px] text-slate-400 font-semibold block">Unit Rate (₹)</label>
                 <input
                   type="number"
-                  step="0.5"
+                  step="any"
                   min="0"
                   value={customItemPrice}
                   onChange={(e) => setCustomItemPrice(e.target.value === '' ? '' : Number(e.target.value))}
@@ -462,7 +471,7 @@ export default function BillingPage() {
               </span>
             </div>
 
-            {/* CART ITEMS TABLE */}
+            {/* CART ITEMS TABLE WITH EDITABLE UNIT RATE */}
             {cart.length === 0 ? (
               <div className="py-12 text-center text-slate-400 text-xs">
                 No items added to bill yet. Click products from catalog or use quick custom entry.
@@ -473,7 +482,19 @@ export default function BillingPage() {
                   <div key={idx} className="py-2.5 flex items-center justify-between gap-2 text-xs">
                     <div className="flex-1">
                       <p className="font-semibold text-slate-800">{item.product_name}</p>
-                      <p className="text-[10px] text-slate-400">Rate: ₹{item.price.toFixed(2)}</p>
+                      
+                      {/* EDITABLE UNIT RATE INPUT */}
+                      <div className="flex items-center space-x-1 text-[10px] text-slate-500 mt-0.5">
+                        <span>Rate: ₹</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="any"
+                          value={item.price}
+                          onChange={(e) => handleUpdateItemRate(idx, Number(e.target.value))}
+                          className="w-16 bg-slate-50 border border-slate-300 rounded px-1 py-0.5 text-[10px] font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                      </div>
                     </div>
 
                     <div className="flex items-center space-x-1">
@@ -546,6 +567,7 @@ export default function BillingPage() {
                 <input
                   type="number"
                   min="0"
+                  step="any"
                   max={discountType === 'PERCENTAGE' ? 100 : undefined}
                   placeholder="0"
                   value={discountValue === 0 ? '' : discountValue}
