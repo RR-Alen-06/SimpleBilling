@@ -414,9 +414,52 @@ export default function BillingPage() {
 
           {/* Quick Xerox Entry */}
           <form onSubmit={handleAddCustomItem} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
-            <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
-              Quick Custom Entry (Xerox / Printing)
-            </label>
+            <div className="flex items-center justify-between">
+              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                Quick Custom Entry (Xerox / Printing)
+              </label>
+              <span className="text-[10px] font-semibold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full border border-emerald-100">
+                Fast Add
+              </span>
+            </div>
+
+            {/* Stitch Quick Preset Buttons */}
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setCustomItemName('A4 B&W Single');
+                  setCustomItemPrice(2.00);
+                }}
+                className="flex flex-col items-center justify-center p-2 rounded-lg border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-200 transition active:scale-95 text-center"
+              >
+                <span className="text-[11px] font-semibold text-slate-800">A4 B&W</span>
+                <span className="text-[10px] font-data-mono text-slate-500">₹2.00</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCustomItemName('A4 Color Copy');
+                  setCustomItemPrice(10.00);
+                }}
+                className="flex flex-col items-center justify-center p-2 rounded-lg border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-200 transition active:scale-95 text-center"
+              >
+                <span className="text-[11px] font-semibold text-slate-800">A4 Color</span>
+                <span className="text-[10px] font-data-mono text-slate-500">₹10.00</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCustomItemName('Scan to PDF');
+                  setCustomItemPrice(5.00);
+                }}
+                className="flex flex-col items-center justify-center p-2 rounded-lg border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-200 transition active:scale-95 text-center"
+              >
+                <span className="text-[11px] font-semibold text-slate-800">Scan PDF</span>
+                <span className="text-[10px] font-data-mono text-slate-500">₹5.00</span>
+              </button>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <div className="sm:col-span-3">
                 <input
@@ -434,7 +477,7 @@ export default function BillingPage() {
                   min="1"
                   value={customItemQty}
                   onChange={(e) => setCustomItemQty(e.target.value === '' ? '' : Number(e.target.value))}
-                  className="w-full bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs text-center font-bold"
+                  className="w-full bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs text-center font-data-mono font-bold"
                 />
               </div>
               <div>
@@ -445,7 +488,7 @@ export default function BillingPage() {
                   min="0"
                   value={customItemPrice}
                   onChange={(e) => setCustomItemPrice(e.target.value === '' ? '' : Number(e.target.value))}
-                  className="w-full bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs text-center font-bold"
+                  className="w-full bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs text-center font-data-mono font-bold"
                 />
               </div>
               <div className="flex items-end">

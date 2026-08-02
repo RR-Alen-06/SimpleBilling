@@ -38,10 +38,6 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
   const [successMsg, setSuccessMsg] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    loadLedgerData();
-  }, [customerId]);
-
   const loadLedgerData = async () => {
     setLoading(true);
     try {
@@ -58,6 +54,12 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadLedgerData();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customerId]);
 
   const handleOpenPayment = () => {
     setPaymentAmount(runningBalance > 0 ? runningBalance : '');
@@ -133,16 +135,16 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
 
             <div className="flex flex-wrap items-center gap-4 border-t md:border-t-0 pt-3 md:pt-0 border-slate-100">
               <div className="text-right">
-                <p className="text-xs text-slate-500 uppercase font-semibold">Total Billed</p>
-                <p className="text-sm font-bold text-slate-800">₹{totalBilled.toFixed(2)}</p>
+                <p className="text-[11px] text-slate-500 uppercase font-bold tracking-wider">Total Billed</p>
+                <p className="font-data-mono font-bold text-slate-800">₹{totalBilled.toFixed(2)}</p>
               </div>
               <div className="text-right">
-                <p className="text-xs text-slate-500 uppercase font-semibold">Total Paid</p>
-                <p className="text-sm font-bold text-emerald-600">₹{totalPaid.toFixed(2)}</p>
+                <p className="text-[11px] text-slate-500 uppercase font-bold tracking-wider">Total Paid</p>
+                <p className="font-data-mono font-bold text-emerald-600">₹{totalPaid.toFixed(2)}</p>
               </div>
               <div className="text-right bg-slate-50 px-4 py-2 rounded-lg border border-slate-200">
-                <p className="text-xs text-slate-500 uppercase font-bold">Current Balance Due</p>
-                <p className={`text-xl font-extrabold ${runningBalance > 0 ? 'text-amber-600' : 'text-slate-800'}`}>
+                <p className="text-[11px] text-slate-500 uppercase font-bold tracking-wider">Current Balance Due</p>
+                <p className={`text-xl font-data-mono font-extrabold ${runningBalance > 0 ? 'text-amber-600' : 'text-slate-800'}`}>
                   ₹{runningBalance.toFixed(2)}
                 </p>
               </div>
@@ -193,43 +195,43 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm border-collapse">
               <thead>
-                <tr className="bg-slate-50 text-slate-600 uppercase text-xs font-semibold border-b border-slate-200">
+                <tr className="bg-slate-100 text-slate-700 uppercase text-[11px] font-bold tracking-wider border-b border-slate-200">
                   <th className="px-6 py-3.5">Date & Time</th>
                   <th className="px-6 py-3.5">Type</th>
                   <th className="px-6 py-3.5">Reference No</th>
                   <th className="px-6 py-3.5">Description</th>
-                  <th className="px-6 py-3.5 text-right">Bill Amount (₹)</th>
-                  <th className="px-6 py-3.5 text-right">Paid Amount (₹)</th>
-                  <th className="px-6 py-3.5 text-right">Running Balance (₹)</th>
+                  <th className="px-6 py-3.5 text-right">Bill Amount</th>
+                  <th className="px-6 py-3.5 text-right">Paid Amount</th>
+                  <th className="px-6 py-3.5 text-right">Running Balance</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 text-slate-700">
+              <tbody className="divide-y divide-slate-200/60 text-slate-800">
                 {entries.map((entry) => (
-                  <tr key={entry.id} className="hover:bg-slate-50 transition">
-                    <td className="px-6 py-4 text-xs font-medium text-slate-600">
+                  <tr key={entry.id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="px-6 py-4 text-xs font-data-mono text-slate-500">
                       {new Date(entry.date).toLocaleString('en-IN', {
                         dateStyle: 'medium',
                         timeStyle: 'short'
                       })}
                     </td>
                     <td className="px-6 py-4">
-                      <span className={`inline-block px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
+                      <span className={`inline-block px-3 py-0.5 rounded-full text-[11px] font-bold ${
                         entry.type === 'BILL'
-                          ? 'bg-blue-100 text-blue-800'
-                          : 'bg-emerald-100 text-emerald-800'
+                          ? 'bg-blue-50 text-blue-700 border border-blue-100'
+                          : 'bg-emerald-50 text-emerald-700 border border-emerald-100'
                       }`}>
                         {entry.type}
                       </span>
                     </td>
-                    <td className="px-6 py-4 font-mono font-bold text-slate-900">{entry.reference_no}</td>
+                    <td className="px-6 py-4 font-data-mono font-bold text-slate-900">{entry.reference_no}</td>
                     <td className="px-6 py-4 text-xs text-slate-600">{entry.description}</td>
-                    <td className="px-6 py-4 text-right font-medium text-slate-800">
+                    <td className="px-6 py-4 text-right font-data-mono font-medium text-slate-800">
                       {entry.bill_amount > 0 ? `₹${entry.bill_amount.toFixed(2)}` : '-'}
                     </td>
-                    <td className="px-6 py-4 text-right font-medium text-emerald-700">
+                    <td className="px-6 py-4 text-right font-data-mono font-medium text-emerald-700">
                       {entry.paid_amount > 0 ? `₹${entry.paid_amount.toFixed(2)}` : '-'}
                     </td>
-                    <td className="px-6 py-4 text-right font-extrabold text-slate-900">
+                    <td className="px-6 py-4 text-right font-data-mono font-bold text-slate-900 text-base">
                       ₹{entry.running_balance.toFixed(2)}
                     </td>
                   </tr>

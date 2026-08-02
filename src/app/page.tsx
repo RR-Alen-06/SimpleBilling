@@ -8,7 +8,7 @@ import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { InvoiceModal } from '@/components/InvoiceModal';
 import { 
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
-  BarChart, Bar, PieChart, Pie, Cell, Legend 
+  PieChart, Pie, Cell, Legend 
 } from 'recharts';
 import { 
   IndianRupee, 
@@ -16,14 +16,10 @@ import {
   Users, 
   AlertCircle, 
   TrendingUp, 
-  TrendingDown, 
   PlusCircle, 
   Eye, 
   Package, 
-  DollarSign, 
-  Calendar,
   Filter,
-  Calculator,
   CreditCard,
   Smartphone,
   Wallet,
@@ -72,10 +68,6 @@ export default function DashboardPage() {
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
 
-  useEffect(() => {
-    loadDashboardData();
-  }, [dateFilter, customFrom, customTo]);
-
   const loadDashboardData = async () => {
     setLoading(true);
     try {
@@ -89,6 +81,12 @@ export default function DashboardPage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadDashboardData();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateFilter, customFrom, customTo]);
 
   const handleViewBill = async (billId: string) => {
     const fullBill = await ApiService.getBillById(billId);
@@ -194,8 +192,8 @@ export default function DashboardPage() {
         {/* Total Sales */}
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Sales Billed</p>
-            <p className="text-2xl font-extrabold text-slate-900 mt-1">₹{ps.total_sales.toFixed(2)}</p>
+            <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Total Sales Billed</p>
+            <p className="text-2xl font-data-mono font-extrabold text-slate-900 mt-1">₹{ps.total_sales.toFixed(2)}</p>
           </div>
           <div className="bg-blue-50 text-blue-600 p-3 rounded-xl border border-blue-100">
             <Receipt size={24} />
@@ -205,8 +203,8 @@ export default function DashboardPage() {
         {/* Cash Collected */}
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Cash Collected</p>
-            <p className="text-2xl font-extrabold text-emerald-600 mt-1">₹{ps.cash_collected.toFixed(2)}</p>
+            <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Cash Collected</p>
+            <p className="text-2xl font-data-mono font-extrabold text-emerald-600 mt-1">₹{ps.cash_collected.toFixed(2)}</p>
           </div>
           <div className="bg-emerald-50 text-emerald-600 p-3 rounded-xl border border-emerald-100">
             <Wallet size={24} />
@@ -216,8 +214,8 @@ export default function DashboardPage() {
         {/* UPI Collected */}
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">UPI Collected</p>
-            <p className="text-2xl font-extrabold text-indigo-600 mt-1">₹{ps.upi_collected.toFixed(2)}</p>
+            <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">UPI Collected</p>
+            <p className="text-2xl font-data-mono font-extrabold text-indigo-600 mt-1">₹{ps.upi_collected.toFixed(2)}</p>
           </div>
           <div className="bg-indigo-50 text-indigo-600 p-3 rounded-xl border border-indigo-100">
             <Smartphone size={24} />
@@ -227,8 +225,8 @@ export default function DashboardPage() {
         {/* Card Collected */}
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Card Collected</p>
-            <p className="text-2xl font-extrabold text-purple-600 mt-1">₹{ps.card_collected.toFixed(2)}</p>
+            <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Card Collected</p>
+            <p className="text-2xl font-data-mono font-extrabold text-purple-600 mt-1">₹{ps.card_collected.toFixed(2)}</p>
           </div>
           <div className="bg-purple-50 text-purple-600 p-3 rounded-xl border border-purple-100">
             <CreditCard size={24} />
@@ -238,8 +236,8 @@ export default function DashboardPage() {
         {/* Mixed Payments Total */}
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Mixed Payments Total</p>
-            <p className="text-2xl font-extrabold text-amber-600 mt-1">₹{ps.mixed_payments_total.toFixed(2)}</p>
+            <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Mixed Payments Total</p>
+            <p className="text-2xl font-data-mono font-extrabold text-amber-600 mt-1">₹{ps.mixed_payments_total.toFixed(2)}</p>
           </div>
           <div className="bg-amber-50 text-amber-600 p-3 rounded-xl border border-amber-100">
             <Layers size={24} />
@@ -249,8 +247,8 @@ export default function DashboardPage() {
         {/* Total Amount Collected */}
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Amount Collected</p>
-            <p className="text-2xl font-extrabold text-emerald-700 mt-1">₹{ps.total_amount_collected.toFixed(2)}</p>
+            <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Total Amount Collected</p>
+            <p className="text-2xl font-data-mono font-extrabold text-emerald-700 mt-1">₹{ps.total_amount_collected.toFixed(2)}</p>
           </div>
           <div className="bg-emerald-100 text-emerald-800 p-3 rounded-xl border border-emerald-200">
             <CheckCircle2 size={24} />
@@ -260,8 +258,8 @@ export default function DashboardPage() {
         {/* Outstanding Amount */}
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Outstanding Amount</p>
-            <p className="text-2xl font-extrabold text-rose-600 mt-1">₹{ps.outstanding_amount.toFixed(2)}</p>
+            <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Outstanding Amount</p>
+            <p className="text-2xl font-data-mono font-extrabold text-rose-600 mt-1">₹{ps.outstanding_amount.toFixed(2)}</p>
           </div>
           <div className="bg-rose-50 text-rose-600 p-3 rounded-xl border border-rose-100">
             <AlertCircle size={24} />
@@ -271,8 +269,8 @@ export default function DashboardPage() {
         {/* Customer Advance Balance */}
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Customer Advance Balance</p>
-            <p className="text-2xl font-extrabold text-blue-600 mt-1">₹{ps.customer_advance_balance.toFixed(2)}</p>
+            <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Customer Advance Balance</p>
+            <p className="text-2xl font-data-mono font-extrabold text-blue-600 mt-1">₹{ps.customer_advance_balance.toFixed(2)}</p>
           </div>
           <div className="bg-blue-50 text-blue-600 p-3 rounded-xl border border-blue-100">
             <IndianRupee size={24} />
@@ -291,16 +289,16 @@ export default function DashboardPage() {
 
           <table className="w-full text-left text-sm border-collapse">
             <thead>
-              <tr className="bg-slate-100 text-slate-700 uppercase text-xs font-bold border-b">
+              <tr className="bg-slate-100 text-slate-700 uppercase text-[11px] font-bold tracking-wider border-b border-slate-200">
                 <th className="py-2.5 px-4">Payment Method</th>
-                <th className="py-2.5 px-4 text-right">Amount Collected (₹)</th>
+                <th className="py-2.5 px-4 text-right">Amount Collected</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-slate-200/60">
               {ps.payment_method_breakdown.map((item, idx) => (
-                <tr key={idx} className={item.method === 'Total Collected' ? 'bg-slate-900 text-white font-bold' : 'hover:bg-slate-50'}>
-                  <td className="py-3 px-4 font-semibold">{item.method}</td>
-                  <td className="py-3 px-4 text-right font-mono font-bold">
+                <tr key={idx} className={item.method === 'Total Collected' ? 'bg-slate-900 text-white font-bold' : 'hover:bg-slate-50/80 transition-colors'}>
+                  <td className="py-3 px-4 font-semibold text-sm">{item.method}</td>
+                  <td className="py-3 px-4 text-right font-data-mono font-bold">
                     ₹{item.amount.toFixed(2)}
                   </td>
                 </tr>
@@ -412,7 +410,7 @@ export default function DashboardPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm border-collapse">
               <thead>
-                <tr className="bg-slate-50 text-slate-600 uppercase text-xs font-semibold border-b border-slate-200">
+                <tr className="bg-slate-100 text-slate-700 uppercase text-[11px] font-bold tracking-wider border-b border-slate-200">
                   <th className="px-6 py-3.5">Bill No</th>
                   <th className="px-6 py-3.5">Date</th>
                   <th className="px-6 py-3.5">Customer</th>
@@ -421,11 +419,11 @@ export default function DashboardPage() {
                   <th className="px-6 py-3.5 text-center">Action</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 text-slate-700">
+              <tbody className="divide-y divide-slate-200/60 text-slate-800">
                 {recentBills.map((bill) => (
-                  <tr key={bill.id} className="hover:bg-slate-50 transition">
-                    <td className="px-6 py-3.5 font-mono font-bold text-slate-900">{bill.bill_number}</td>
-                    <td className="px-6 py-3.5 text-xs text-slate-500">
+                  <tr key={bill.id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="px-6 py-3.5 font-data-mono font-bold text-slate-900">{bill.bill_number}</td>
+                    <td className="px-6 py-3.5 text-xs font-data-mono text-slate-500">
                       {new Date(bill.created_at).toLocaleDateString('en-IN', {
                         day: '2-digit',
                         month: 'short',
@@ -433,9 +431,13 @@ export default function DashboardPage() {
                         minute: '2-digit'
                       })}
                     </td>
-                    <td className="px-6 py-3.5 font-medium">{bill.customer_name}</td>
-                    <td className="px-6 py-3.5 font-semibold text-xs text-slate-700">{bill.payment_method}</td>
-                    <td className="px-6 py-3.5 text-right font-extrabold text-slate-900">
+                    <td className="px-6 py-3.5 font-medium text-slate-800">{bill.customer_name}</td>
+                    <td className="px-6 py-3.5">
+                      <span className="inline-block px-2.5 py-0.5 rounded text-[11px] font-bold uppercase bg-slate-100 text-slate-700 border border-slate-200">
+                        {bill.payment_method}
+                      </span>
+                    </td>
+                    <td className="px-6 py-3.5 text-right font-data-mono font-bold text-slate-900">
                       ₹{Number(bill.grand_total).toFixed(2)}
                     </td>
                     <td className="px-6 py-3.5 text-center">

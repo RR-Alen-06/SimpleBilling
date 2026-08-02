@@ -6,7 +6,7 @@ import { Navigation } from '@/components/Navigation';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'Xerox & Stationery Billing System',
+  title: 'PrintPro ERP - Billing & Shop Management',
   description: 'Fast, simple billing software for Xerox and stationery shops',
 };
 
@@ -16,10 +16,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className={`${inter.className} bg-slate-100 text-slate-900 min-h-screen flex flex-col antialiased`}>
+    <html lang="en" className="light">
+      <head>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" />
+      </head>
+      <body className={`${inter.className} bg-background text-on-surface min-h-screen flex flex-col antialiased selection:bg-secondary-fixed-dim`}>
         <Navigation />
-        <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
+        <main className="flex-1 max-w-[1440px] w-full mx-auto p-4 sm:p-6 lg:p-8">
           {children}
         </main>
       </body>

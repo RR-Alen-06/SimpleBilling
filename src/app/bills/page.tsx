@@ -34,10 +34,6 @@ export default function ManageBillsPage() {
   const [successMsg, setSuccessMsg] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    loadBills();
-  }, []);
-
   const loadBills = async () => {
     setLoading(true);
     try {
@@ -49,6 +45,11 @@ export default function ManageBillsPage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadBills();
+  }, []);
 
   const handleOpenEdit = (bill: Bill) => {
     setEditingBill(bill);
@@ -158,37 +159,41 @@ export default function ManageBillsPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm border-collapse">
               <thead>
-                <tr className="bg-slate-50 text-slate-600 uppercase text-xs font-semibold border-b border-slate-200">
+                <tr className="bg-slate-100 text-slate-700 uppercase text-[11px] font-bold tracking-wider border-b border-slate-200">
                   <th className="px-6 py-3.5">Bill Number</th>
                   <th className="px-6 py-3.5">Date</th>
                   <th className="px-6 py-3.5">Customer</th>
                   <th className="px-6 py-3.5">Payment Method</th>
                   <th className="px-6 py-3.5 text-right">Discount</th>
-                  <th className="px-6 py-3.5 text-right">Grand Total (₹)</th>
+                  <th className="px-6 py-3.5 text-right">Grand Total</th>
                   <th className="px-6 py-3.5 text-center w-36">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 text-slate-700">
+              <tbody className="divide-y divide-slate-200/60 text-slate-800">
                 {filteredBills.map((b) => (
-                  <tr key={b.id} className="hover:bg-slate-50 transition">
-                    <td className="px-6 py-4 font-mono font-bold text-slate-900">
+                  <tr key={b.id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="px-6 py-4 font-data-mono font-bold text-slate-900">
                       {b.bill_number}
                       {b.edited_at && (
-                        <span className="block text-[10px] text-amber-600 font-sans font-normal flex items-center space-x-0.5">
+                        <span className="block text-[10px] text-amber-600 font-sans font-normal flex items-center space-x-0.5 mt-0.5">
                           <Clock size={10} />
                           <span>Edited</span>
                         </span>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-xs text-slate-500">
+                    <td className="px-6 py-4 text-xs font-data-mono text-slate-500">
                       {new Date(b.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
                     </td>
                     <td className="px-6 py-4 font-medium text-slate-800">{b.customer_name}</td>
-                    <td className="px-6 py-4 text-xs font-semibold">{b.payment_method}</td>
-                    <td className="px-6 py-4 text-right font-medium text-emerald-700">
+                    <td className="px-6 py-4">
+                      <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-slate-100 text-slate-700 uppercase border border-slate-200">
+                        {b.payment_method}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-right font-data-mono font-medium text-emerald-700">
                       {b.discount > 0 ? `₹${b.discount.toFixed(2)}` : '-'}
                     </td>
-                    <td className="px-6 py-4 text-right font-extrabold text-slate-900">
+                    <td className="px-6 py-4 text-right font-data-mono font-bold text-slate-900 text-base">
                       ₹{Number(b.grand_total).toFixed(2)}
                     </td>
                     <td className="px-6 py-4 text-center">

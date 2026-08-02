@@ -244,11 +244,11 @@ export function InvoiceModal({ bill, onClose }: InvoiceModalProps) {
                 <tbody className="divide-y divide-slate-200 text-sm">
                   {bill.items?.map((item, idx) => (
                     <tr key={idx}>
-                      <td className="p-2.5 text-xs text-slate-400">{idx + 1}</td>
+                      <td className="p-2.5 text-xs text-slate-400 font-data-mono">{idx + 1}</td>
                       <td className="p-2.5 font-medium text-slate-800">{item.product_name}</td>
-                      <td className="p-2.5 text-center">{item.quantity}</td>
-                      <td className="p-2.5 text-right">₹{item.price}</td>
-                      <td className="p-2.5 text-right font-bold">₹{item.total}</td>
+                      <td className="p-2.5 text-center font-data-mono">{item.quantity}</td>
+                      <td className="p-2.5 text-right font-data-mono">₹{item.price}</td>
+                      <td className="p-2.5 text-right font-data-mono font-bold text-slate-900">₹{item.total}</td>
                     </tr>
                   ))}
                 </tbody>

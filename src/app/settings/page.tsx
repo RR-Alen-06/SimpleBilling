@@ -407,13 +407,13 @@ export default function SettingsPage() {
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as typeof activeTab)}
-              className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-4 py-2.5 rounded-lg text-xs font-bold transition ${
+              className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-4 py-2 rounded-lg text-xs font-semibold transition ${
                 activeTab === tab.id
-                  ? 'bg-blue-600 text-white shadow'
+                  ? 'bg-slate-900 text-white shadow-sm'
                   : 'text-slate-600 hover:bg-slate-100'
               }`}
             >
-              <Icon size={16} />
+              <Icon size={15} />
               <span>{tab.label}</span>
             </button>
           );

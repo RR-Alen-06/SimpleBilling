@@ -242,8 +242,8 @@ export default function ReportsPage() {
                 <p className="text-xs text-slate-500">Month: {new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}</p>
               </div>
               <div className="text-right">
-                <span className="text-xs text-slate-500 uppercase font-semibold">Total Monthly Sales</span>
-                <p className="text-xl font-extrabold text-blue-600">₹{monthlyTotal.toFixed(2)}</p>
+                <span className="text-[11px] text-slate-500 uppercase font-bold tracking-wider">Total Monthly Sales</span>
+                <p className="text-xl font-data-mono font-extrabold text-blue-600">₹{monthlyTotal.toFixed(2)}</p>
               </div>
             </div>
 
