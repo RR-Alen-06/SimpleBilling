@@ -154,8 +154,8 @@ export default function ExpensesPage() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Income (Sales)</p>
-            <p className="text-2xl font-extrabold text-emerald-600 mt-1">₹{totalIncome.toFixed(2)}</p>
+            <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Total Income (Sales)</p>
+            <p className="text-2xl font-data-mono font-extrabold text-emerald-600 mt-1">₹{totalIncome.toFixed(2)}</p>
           </div>
           <div className="bg-emerald-50 text-emerald-600 p-3 rounded-xl border border-emerald-100">
             <TrendingUp size={24} />
@@ -164,8 +164,8 @@ export default function ExpensesPage() {
 
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Expenses</p>
-            <p className="text-2xl font-extrabold text-rose-600 mt-1">₹{totalExpense.toFixed(2)}</p>
+            <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Total Expenses</p>
+            <p className="text-2xl font-data-mono font-extrabold text-rose-600 mt-1">₹{totalExpense.toFixed(2)}</p>
           </div>
           <div className="bg-rose-50 text-rose-600 p-3 rounded-xl border border-rose-100">
             <TrendingDown size={24} />
@@ -174,8 +174,8 @@ export default function ExpensesPage() {
 
         <div className="bg-slate-900 text-white p-5 rounded-xl shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Net Profit</p>
-            <p className={`text-2xl font-extrabold mt-1 ${netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Net Profit</p>
+            <p className={`text-2xl font-data-mono font-extrabold mt-1 ${netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
               ₹{netProfit.toFixed(2)}
             </p>
           </div>
@@ -213,18 +213,18 @@ export default function ExpensesPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm border-collapse">
               <thead>
-                <tr className="bg-slate-50 text-slate-600 uppercase text-xs font-semibold border-b border-slate-200">
+                <tr className="bg-slate-100 text-slate-700 uppercase text-[11px] font-bold tracking-wider border-b border-slate-200">
                   <th className="px-6 py-3.5">Date & Time</th>
                   <th className="px-6 py-3.5">Expense Description</th>
                   <th className="px-6 py-3.5">Category</th>
-                  <th className="px-6 py-3.5 text-right">Amount (₹)</th>
+                  <th className="px-6 py-3.5 text-right">Amount</th>
                   <th className="px-6 py-3.5 text-center w-24">Action</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 text-slate-700">
+              <tbody className="divide-y divide-slate-200/60 text-slate-800">
                 {expenses.map((exp) => (
-                  <tr key={exp.id} className="hover:bg-slate-50 transition">
-                    <td className="px-6 py-4 text-xs text-slate-500">
+                  <tr key={exp.id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="px-6 py-4 text-xs font-data-mono text-slate-500">
                       {new Date(exp.created_at).toLocaleString('en-IN', {
                         day: '2-digit',
                         month: 'short',
@@ -234,11 +234,11 @@ export default function ExpensesPage() {
                     </td>
                     <td className="px-6 py-4 font-bold text-slate-900">{exp.title}</td>
                     <td className="px-6 py-4">
-                      <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+                      <span className="inline-block px-3 py-0.5 rounded-full text-xs font-semibold bg-purple-50 text-purple-700 border border-purple-100">
                         {exp.category}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-right font-extrabold text-rose-600">
+                    <td className="px-6 py-4 text-right font-data-mono font-bold text-rose-600 text-base">
                       ₹{Number(exp.amount).toFixed(2)}
                     </td>
                     <td className="px-6 py-4 text-center">

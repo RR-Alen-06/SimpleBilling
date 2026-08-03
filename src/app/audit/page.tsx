@@ -11,10 +11,6 @@ export default function AuditLogsPage() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
 
-  useEffect(() => {
-    loadAuditLogs();
-  }, []);
-
   const loadAuditLogs = async () => {
     setLoading(true);
     try {
@@ -26,6 +22,11 @@ export default function AuditLogsPage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadAuditLogs();
+  }, []);
 
   const filteredLogs = logs.filter(l =>
     l.action.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -72,19 +73,19 @@ export default function AuditLogsPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm border-collapse">
               <thead>
-                <tr className="bg-slate-50 text-slate-600 uppercase text-xs font-semibold border-b border-slate-200">
-                  <th className="px-6 py-3.5">Timestamp</th>
-                  <th className="px-6 py-3.5">User</th>
+                <tr className="bg-slate-100 text-slate-700 uppercase text-[11px] font-bold tracking-wider border-b border-slate-200">
+                  <th className="px-6 py-3.5"><span className="flex items-center gap-1.5"><Clock size={12} />Timestamp</span></th>
+                  <th className="px-6 py-3.5"><span className="flex items-center gap-1.5"><User size={12} />User</span></th>
                   <th className="px-6 py-3.5">Action</th>
                   <th className="px-6 py-3.5">Entity / Target</th>
                   <th className="px-6 py-3.5">Previous Value</th>
                   <th className="px-6 py-3.5">New Value</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 text-slate-700">
+              <tbody className="divide-y divide-slate-200/60 text-slate-800">
                 {filteredLogs.map((log) => (
-                  <tr key={log.id} className="hover:bg-slate-50 transition">
-                    <td className="px-6 py-3.5 text-xs text-slate-500 font-mono">
+                  <tr key={log.id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="px-6 py-3.5 text-xs font-data-mono text-slate-500">
                       {new Date(log.created_at).toLocaleString('en-IN', {
                         day: '2-digit',
                         month: 'short',
@@ -92,21 +93,25 @@ export default function AuditLogsPage() {
                         minute: '2-digit'
                       })}
                     </td>
-                    <td className="px-6 py-3.5 text-xs font-bold text-slate-900 flex items-center space-x-1">
-                      <User size={14} className="text-slate-400" />
-                      <span>{log.user_name}</span>
+                    <td className="px-6 py-3.5 text-xs font-bold text-slate-900">
+                      <span className="flex items-center gap-1.5">
+                        <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-slate-200 text-slate-600">
+                          <User size={10} />
+                        </span>
+                        {log.user_name}
+                      </span>
                     </td>
                     <td className="px-6 py-3.5">
-                      <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-bold bg-blue-50 text-blue-800 border border-blue-200">
+                      <span className="inline-block px-3 py-0.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-700 border border-blue-100">
                         {log.action}
                       </span>
                     </td>
-                    <td className="px-6 py-3.5 font-semibold text-slate-800">{log.entity}</td>
-                    <td className="px-6 py-3.5 text-xs text-slate-500 font-mono max-w-xs truncate">
-                      {log.previous_value || '-'}
+                    <td className="px-6 py-3.5 font-semibold text-slate-800 text-xs">{log.entity}</td>
+                    <td className="px-6 py-3.5 text-xs text-slate-400 font-data-mono max-w-xs truncate">
+                      {log.previous_value || '—'}
                     </td>
-                    <td className="px-6 py-3.5 text-xs text-slate-900 font-mono max-w-xs truncate font-semibold">
-                      {log.new_value || '-'}
+                    <td className="px-6 py-3.5 text-xs text-slate-900 font-data-mono max-w-xs truncate font-semibold">
+                      {log.new_value || '—'}
                     </td>
                   </tr>
                 ))}

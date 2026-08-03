@@ -15,7 +15,8 @@ import {
   Menu, 
   X, 
   Printer,
-  Database
+  Database,
+  QrCode
 } from 'lucide-react';
 import { isSupabaseConfigured } from '@/lib/supabase/client';
 
@@ -36,49 +37,50 @@ export function Navigation() {
 
   return (
     <>
-      {/* Top Navbar */}
-      <header className="bg-slate-900 text-white sticky top-0 z-40 shadow-md print:hidden">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <button
-              onClick={() => setMobileOpen(!mobileOpen)}
-              className="lg:hidden p-2 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition"
-              aria-label="Toggle Navigation Menu"
-            >
-              {mobileOpen ? <X size={24} /> : <Menu size={24} />}
-            </button>
-            <Link href="/" className="flex items-center space-x-2 text-xl font-bold tracking-tight text-white">
-              <div className="bg-blue-600 p-2 rounded-lg text-white">
-                <Printer size={22} />
-              </div>
-              <div className="flex flex-col">
-                <span className="leading-none text-base sm:text-lg">PrintPro ERP</span>
-                <span className="text-[10px] text-blue-400 font-normal leading-none mt-0.5">Xerox & Stationery POS</span>
-              </div>
-            </Link>
-          </div>
+      {/* Top App Bar */}
+      <header className="sticky top-0 z-50 w-full bg-slate-900 text-slate-100 border-b border-slate-800 flex justify-between items-center px-4 md:px-6 h-16 shadow-md print:hidden">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setMobileOpen(!mobileOpen)}
+            className="lg:hidden p-2 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition active:scale-95"
+            aria-label="Toggle Navigation Menu"
+          >
+            {mobileOpen ? <X size={22} /> : <Menu size={22} />}
+          </button>
+          <Link href="/" className="flex items-center gap-2.5 group">
+            <div className="w-9 h-9 rounded-lg bg-blue-600 flex items-center justify-center text-white shadow-sm group-hover:bg-blue-500 transition-colors">
+              <Printer size={20} />
+            </div>
+            <div className="flex flex-col">
+              <span className="font-bold text-base sm:text-lg leading-tight tracking-tight text-white">PrintPro ERP</span>
+              <span className="text-[10px] font-medium text-blue-400 leading-none">Xerox & POS Terminal</span>
+            </div>
+          </Link>
+        </div>
 
-          <div className="flex items-center space-x-3">
-            {!isSupabaseConfigured && (
-              <span className="hidden sm:flex items-center space-x-1.5 text-xs font-semibold px-3 py-1.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                <Database size={14} />
-                <span>Supabase Not Connected</span>
-              </span>
-            )}
-            <Link 
-              href="/billing" 
-              className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs sm:text-sm px-3.5 py-2 rounded-lg shadow-sm transition flex items-center space-x-1.5"
-            >
-              <Receipt size={16} />
-              <span>+ New Bill</span>
-            </Link>
-          </div>
+        <div className="flex items-center gap-3">
+          {!isSupabaseConfigured && (
+            <span className="hidden sm:inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">
+              <Database size={13} />
+              <span>Offline / Local DB</span>
+            </span>
+          )}
+          <button className="w-9 h-9 flex items-center justify-center rounded-full text-slate-300 hover:bg-slate-800 transition active:scale-95">
+            <QrCode size={20} />
+          </button>
+          <Link 
+            href="/billing" 
+            className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs sm:text-sm px-3.5 py-2 rounded-lg shadow-sm transition-all flex items-center gap-1.5 active:scale-95"
+          >
+            <Receipt size={16} />
+            <span>+ New Bill</span>
+          </Link>
         </div>
       </header>
 
       {/* Main Navigation Bar */}
       <nav className="bg-slate-800 text-slate-200 border-b border-slate-700 hidden lg:block print:hidden shadow-inner">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex space-x-1">
+        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 flex space-x-1">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href));
@@ -102,7 +104,7 @@ export function Navigation() {
 
       {/* Mobile Drawer Menu */}
       {mobileOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm lg:hidden print:hidden" onClick={() => setMobileOpen(false)}>
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm lg:hidden print:hidden" onClick={() => setMobileOpen(false)}>
           <div 
             className="fixed top-0 left-0 bottom-0 w-3/4 max-w-xs bg-slate-900 text-slate-100 p-5 shadow-2xl flex flex-col justify-between"
             onClick={(e) => e.stopPropagation()}
@@ -113,7 +115,7 @@ export function Navigation() {
                   <Printer className="text-blue-400" size={20} />
                   <span>PrintPro ERP</span>
                 </div>
-                <button onClick={() => setMobileOpen(false)} className="p-1 rounded text-slate-400 hover:text-white">
+                <button onClick={() => setMobileOpen(false)} className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800">
                   <X size={20} />
                 </button>
               </div>
@@ -142,7 +144,7 @@ export function Navigation() {
             </div>
 
             <div className="pt-4 border-t border-slate-800 text-xs text-slate-400 text-center">
-              PrintPro ERP Billing System
+              PrintPro ERP Terminal v2.0
             </div>
           </div>
         </div>
@@ -150,3 +152,4 @@ export function Navigation() {
     </>
   );
 }
+

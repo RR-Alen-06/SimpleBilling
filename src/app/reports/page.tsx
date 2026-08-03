@@ -77,7 +77,7 @@ export default function ReportsPage() {
       const rows = dailyBills.map(b => [
         b.bill_number,
         new Date(b.created_at).toLocaleString('en-IN'),
-        b.customer_name || 'Walk-in',
+        b.customer_name || 'N/A',
         b.payment_method,
         b.grand_total
       ]);
@@ -87,7 +87,7 @@ export default function ReportsPage() {
       const rows = monthlyBills.map(b => [
         b.bill_number,
         new Date(b.created_at).toLocaleString('en-IN'),
-        b.customer_name || 'Walk-in',
+        b.customer_name || 'N/A',
         b.payment_method,
         b.grand_total
       ]);
@@ -242,8 +242,8 @@ export default function ReportsPage() {
                 <p className="text-xs text-slate-500">Month: {new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}</p>
               </div>
               <div className="text-right">
-                <span className="text-xs text-slate-500 uppercase font-semibold">Total Monthly Sales</span>
-                <p className="text-xl font-extrabold text-blue-600">₹{monthlyTotal.toFixed(2)}</p>
+                <span className="text-[11px] text-slate-500 uppercase font-bold tracking-wider">Total Monthly Sales</span>
+                <p className="text-xl font-data-mono font-extrabold text-blue-600">₹{monthlyTotal.toFixed(2)}</p>
               </div>
             </div>
 
