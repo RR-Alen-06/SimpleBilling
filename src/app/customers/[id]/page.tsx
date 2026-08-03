@@ -13,7 +13,7 @@ import {
   AlertTriangle, 
   CheckCircle2, 
   X,
-  CreditCard,
+  Wallet,
   Receipt
 } from 'lucide-react';
 
@@ -231,8 +231,20 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
                     <td className="px-6 py-4 text-right font-data-mono font-medium text-emerald-700">
                       {entry.paid_amount > 0 ? `₹${entry.paid_amount.toFixed(2)}` : '-'}
                     </td>
-                    <td className="px-6 py-4 text-right font-data-mono font-bold text-slate-900 text-base">
-                      ₹{entry.running_balance.toFixed(2)}
+                    <td className="px-6 py-4 text-right font-data-mono font-bold text-base">
+                      {entry.running_balance > 0.001 ? (
+                        <span className="text-amber-700">
+                          ₹{entry.running_balance.toFixed(2)}{' '}
+                          <span className="text-[10px] font-semibold text-amber-600 uppercase">Due</span>
+                        </span>
+                      ) : entry.running_balance < -0.001 ? (
+                        <span className="text-emerald-700">
+                          ₹{Math.abs(entry.running_balance).toFixed(2)}{' '}
+                          <span className="text-[10px] font-semibold text-emerald-600 uppercase">Adv</span>
+                        </span>
+                      ) : (
+                        <span className="text-slate-600">₹0.00</span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -248,7 +260,7 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4">
             <div className="flex justify-between items-center border-b border-slate-200 pb-3">
               <h2 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
-                <CreditCard className="text-emerald-600" size={20} />
+                <Wallet className="text-emerald-600" size={20} />
                 <span>Record Customer Payment</span>
               </h2>
               <button onClick={() => setShowPaymentModal(false)} className="text-slate-400 hover:text-slate-600">
@@ -275,8 +287,8 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Payment Method</label>
-                <div className="grid grid-cols-3 gap-2">
-                  {(['Cash', 'UPI', 'Card'] as PaymentMethod[]).map((mode) => (
+                <div className="grid grid-cols-2 gap-2">
+                  {(['Cash', 'UPI'] as PaymentMethod[]).map((mode) => (
                     <button
                       key={mode}
                       type="button"

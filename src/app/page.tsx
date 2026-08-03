@@ -20,11 +20,10 @@ import {
   Eye, 
   Package, 
   Filter,
-  CreditCard,
+
   Smartphone,
   Wallet,
-  CheckCircle2,
-  Layers
+  CheckCircle2
 } from 'lucide-react';
 
 const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444'];
@@ -45,8 +44,6 @@ export default function DashboardPage() {
       total_sales: 0,
       cash_collected: 0,
       upi_collected: 0,
-      card_collected: 0,
-      mixed_payments_total: 0,
       total_amount_collected: 0,
       outstanding_amount: 0,
       customer_advance_balance: 0,
@@ -103,7 +100,7 @@ export default function DashboardPage() {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
         <div>
           <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Dashboard & Payment Reconciliation</h1>
-          <p className="text-sm text-slate-500 mt-0.5">Separate collection breakdown for Cash, UPI, Card, and Mixed payments</p>
+          <p className="text-sm text-slate-500 mt-0.5">Separate collection breakdown for Cash and UPI payments</p>
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -222,27 +219,6 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Card Collected */}
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Card Collected</p>
-            <p className="text-2xl font-data-mono font-extrabold text-purple-600 mt-1">₹{ps.card_collected.toFixed(2)}</p>
-          </div>
-          <div className="bg-purple-50 text-purple-600 p-3 rounded-xl border border-purple-100">
-            <CreditCard size={24} />
-          </div>
-        </div>
-
-        {/* Mixed Payments Total */}
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Mixed Payments Total</p>
-            <p className="text-2xl font-data-mono font-extrabold text-amber-600 mt-1">₹{ps.mixed_payments_total.toFixed(2)}</p>
-          </div>
-          <div className="bg-amber-50 text-amber-600 p-3 rounded-xl border border-amber-100">
-            <Layers size={24} />
-          </div>
-        </div>
 
         {/* Total Amount Collected */}
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">

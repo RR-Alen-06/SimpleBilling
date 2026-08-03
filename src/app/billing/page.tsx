@@ -5,18 +5,19 @@ import { ApiService } from '@/lib/services/api';
 import { Customer, Product, Bill, RoundingMethod, AllSettings, LoyaltyRedemptionRule } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { InvoiceModal } from '@/components/InvoiceModal';
-import { 
-  Receipt, 
-  UserPlus, 
-  Plus, 
-  Trash2, 
-  Search, 
-  CheckCircle2, 
-  AlertTriangle, 
+import {
+  Receipt,
+  UserPlus,
+  Plus,
+  Trash2,
+  Search,
+  CheckCircle2,
+  AlertTriangle,
   Calculator,
   Gift,
   Sparkles,
-  Percent
+  Percent,
+  Clock
 } from 'lucide-react';
 
 interface CartItem {
@@ -36,7 +37,7 @@ export default function BillingPage() {
   // Form State
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
   const [cart, setCart] = useState<CartItem[]>([]);
-  
+
   // Custom Xerox Entry
   const [customItemName, setCustomItemName] = useState('A4 B&W Single');
   const [customItemQty, setCustomItemQty] = useState<number | ''>(1);
@@ -50,10 +51,10 @@ export default function BillingPage() {
   const [discountValue, setDiscountValue] = useState<number>(0);
   const [roundingMethod, setRoundingMethod] = useState<RoundingMethod>('None');
 
-  // Split Payment Amounts
+  // Split Payment & Advance Amounts
   const [cashPaid, setCashPaid] = useState<number | ''>('');
   const [upiPaid, setUpiPaid] = useState<number | ''>('');
-  const [cardPaid, setCardPaid] = useState<number | ''>('');
+  const [useAdvance, setUseAdvance] = useState<boolean>(false);
   const [advanceUsed, setAdvanceUsed] = useState<number | ''>('');
 
   // Loyalty Points Engine State
@@ -70,6 +71,25 @@ export default function BillingPage() {
   const [successMsg, setSuccessMsg] = useState('');
   const [saving, setSaving] = useState(false);
   const [savedBill, setSavedBill] = useState<Bill | null>(null);
+
+  // Customer Ledger Summary State
+  const [customerLedgerData, setCustomerLedgerData] = useState<{ runningBalance: number; pendingPoints: number } | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (selectedCustomerId) {
+      ApiService.getCustomerLedger(selectedCustomerId).then(res => {
+        if (active) setCustomerLedgerData({ runningBalance: res.runningBalance, pendingPoints: res.pendingPoints });
+      }).catch(() => {
+        if (active) setCustomerLedgerData(null);
+      });
+    } else {
+      Promise.resolve().then(() => {
+        if (active) setCustomerLedgerData(null);
+      });
+    }
+    return () => { active = false; };
+  }, [selectedCustomerId]);
 
   const fetchInitialData = async () => {
     try {
@@ -110,12 +130,44 @@ export default function BillingPage() {
     : Number(discountValue || 0);
 
   const activeRedemptionRules = redemptionRules.filter(r => r.enabled);
-  const loyaltyDiscount = settings 
-    ? ApiService.calculateLoyaltyDiscount(pointsToRedeem, settings.loyalty, activeRedemptionRules) 
+  const loyaltyDiscount = settings
+    ? ApiService.calculateLoyaltyDiscount(pointsToRedeem, settings.loyalty, activeRedemptionRules)
     : 0;
 
   const totalAfterDiscount = Math.max(0, subtotal - manualDiscountApplied - loyaltyDiscount);
   const { roundedTotal, roundingAdjustment } = ApiService.calculateRounding(totalAfterDiscount, roundingMethod);
+
+  // Auto pre-fill full customer advance immediately when selecting a customer with an advance balance
+  useEffect(() => {
+    let active = true;
+    if (selectedCustomerId) {
+      const cust = customers.find(c => c.id === selectedCustomerId);
+      if (cust && cust.advance_balance > 0) {
+        Promise.resolve().then(() => {
+          if (active) {
+            setUseAdvance(true);
+            const maxUsable = roundedTotal > 0 ? Math.min(cust.advance_balance, roundedTotal) : cust.advance_balance;
+            setAdvanceUsed(maxUsable);
+          }
+        });
+      } else {
+        Promise.resolve().then(() => {
+          if (active) {
+            setUseAdvance(false);
+            setAdvanceUsed('');
+          }
+        });
+      }
+    } else {
+      Promise.resolve().then(() => {
+        if (active) {
+          setUseAdvance(false);
+          setAdvanceUsed('');
+        }
+      });
+    }
+    return () => { active = false; };
+  }, [selectedCustomerId, customers, roundedTotal]);
 
   useEffect(() => {
     let active = true;
@@ -133,12 +185,21 @@ export default function BillingPage() {
 
   const cashVal = Number(cashPaid || 0);
   const upiVal = Number(upiPaid || 0);
-  const cardVal = Number(cardPaid || 0);
   const advanceVal = Number(advanceUsed || 0);
 
-  const totalPaidNow = cashVal + upiVal + cardVal + advanceVal;
-  const remainingBalance = Math.max(0, roundedTotal - totalPaidNow);
-  const customerAdvanceEarned = totalPaidNow > roundedTotal ? totalPaidNow - roundedTotal : 0;
+  const directPaidNow = cashVal + upiVal;
+  const totalPaidNow = directPaidNow + advanceVal;
+  const remainingBillBalance = Math.max(0, roundedTotal - totalPaidNow);
+
+  const prevOutstanding = customerLedgerData?.runningBalance || 0;
+  const netDueForCurrentBill = Math.max(0, roundedTotal - advanceVal);
+  const overpaymentBeyondCurrentBill = Math.max(0, directPaidNow - netDueForCurrentBill);
+  const allocatedToPriorBalance = Math.min(prevOutstanding, overpaymentBeyondCurrentBill);
+  const customerAdvanceEarned = overpaymentBeyondCurrentBill - allocatedToPriorBalance;
+
+  const priorPendingPoints = customerLedgerData?.pendingPoints || 0;
+  const currentBillPendingPoints = (remainingBillBalance > 0 && estimatedPointsEarned > 0) ? estimatedPointsEarned : 0;
+  const totalPendingPoints = priorPendingPoints + currentBillPendingPoints;
 
   // Add catalog product
   const handleAddProductToCart = (product: Product) => {
@@ -224,11 +285,15 @@ export default function BillingPage() {
     }
   };
 
-  // Quick Pay Full in Cash
+  // Quick Pay Handlers
   const handleQuickPayCash = () => {
     setCashPaid(roundedTotal);
     setUpiPaid('');
-    setCardPaid('');
+  };
+
+  const handleQuickPayUPI = () => {
+    setUpiPaid(roundedTotal);
+    setCashPaid('');
   };
 
   // Submit & Create Bill
@@ -241,14 +306,28 @@ export default function BillingPage() {
       return;
     }
 
+    if (!selectedCustomerId) {
+      setErrorMsg('Please select a customer or add a new customer before generating the bill.');
+      return;
+    }
+
     if (selectedCustomer && pointsToRedeem > selectedCustomer.loyalty_points) {
       setErrorMsg(`Customer only has ${selectedCustomer.loyalty_points} loyalty points available.`);
       return;
     }
 
-    if (advanceVal > (selectedCustomer?.advance_balance || 0)) {
-      setErrorMsg(`Customer only has ₹${(selectedCustomer?.advance_balance || 0).toFixed(2)} advance balance available.`);
-      return;
+    const effectiveAdvanceVal = useAdvance ? Number(advanceUsed || 0) : 0;
+
+    if (useAdvance && effectiveAdvanceVal > 0) {
+      if (effectiveAdvanceVal > (selectedCustomer?.advance_balance || 0)) {
+        setErrorMsg(`Advance amount cannot exceed the customer's available advance balance (₹${(selectedCustomer?.advance_balance || 0).toFixed(2)}).`);
+        return;
+      }
+
+      if (effectiveAdvanceVal > roundedTotal) {
+        setErrorMsg(`Advance amount cannot exceed the current bill amount (₹${roundedTotal.toFixed(2)}).`);
+        return;
+      }
     }
 
     setSaving(true);
@@ -260,13 +339,15 @@ export default function BillingPage() {
         rounding_method: roundingMethod,
         cash_paid: cashVal,
         upi_paid: upiVal,
-        card_paid: cardVal,
-        advance_used: advanceVal,
+        advance_used: effectiveAdvanceVal,
         points_to_redeem: pointsToRedeem,
         items: cart
       });
 
-      setSavedBill(createdBill);
+      const financialSummary = await ApiService.getBillFinancialSummary(createdBill);
+      const billWithSummary = { ...createdBill, financial_summary: financialSummary };
+
+      setSavedBill(billWithSummary);
       setSuccessMsg(`Bill #${createdBill.bill_number} generated successfully!`);
 
       // Reset form
@@ -274,7 +355,7 @@ export default function BillingPage() {
       setDiscountValue(0);
       setCashPaid('');
       setUpiPaid('');
-      setCardPaid('');
+      setUseAdvance(false);
       setAdvanceUsed('');
       setPointsToRedeem(0);
       setSelectedCustomerId('');
@@ -287,7 +368,7 @@ export default function BillingPage() {
     }
   };
 
-  const filteredProducts = products.filter(p => 
+  const filteredProducts = products.filter(p =>
     p.name.toLowerCase().includes(productSearch.toLowerCase()) ||
     p.category.toLowerCase().includes(productSearch.toLowerCase())
   );
@@ -326,7 +407,7 @@ export default function BillingPage() {
           {/* Customer Selection */}
           <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
             <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
-              Select Customer Account (Optional)
+              Select Customer Account *
             </label>
             <div className="flex gap-2">
               <select
@@ -335,9 +416,9 @@ export default function BillingPage() {
                   setSelectedCustomerId(e.target.value);
                   setPointsToRedeem(0);
                 }}
-                className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
               >
-                <option value="">Walk-in Customer</option>
+                <option value="">-- Select Customer * --</option>
                 {customers.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name} {c.mobile ? `(${c.mobile})` : ''}
@@ -354,16 +435,102 @@ export default function BillingPage() {
               </button>
             </div>
 
-            {/* Customer Info Card if selected */}
+            {/* Customer Info Card & Customer Advance Controls if selected */}
             {selectedCustomer && (
-              <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs space-y-1">
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Advance Balance:</span>
-                  <span className="font-bold text-emerald-700">₹{selectedCustomer.advance_balance.toFixed(2)}</span>
+              <div className="space-y-3">
+                <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-200 text-xs space-y-2 shadow-sm">
+                  <div className="flex justify-between items-center border-b pb-1.5 font-bold text-slate-800">
+                    <span>Customer Ledger & Balance</span>
+                    <span className="text-[10px] bg-blue-100 text-blue-800 px-2 py-0.5 rounded font-semibold uppercase">Live DB Record</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">Previous Outstanding:</span>
+                      <span className="font-bold text-amber-700">
+                        ₹{(customerLedgerData?.runningBalance || 0).toFixed(2)}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">Available Advance:</span>
+                      <span className="font-bold text-emerald-700">₹{selectedCustomer.advance_balance.toFixed(2)}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">Loyalty Balance:</span>
+                      <span className="font-bold text-purple-700">⭐ {selectedCustomer.loyalty_points} Pts</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block text-[10px]">Est. Total Amount Due:</span>
+                      <span className="font-extrabold text-blue-700">
+                        ₹{((customerLedgerData?.runningBalance || 0) + roundedTotal).toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Loyalty Balance:</span>
-                  <span className="font-bold text-purple-700">⭐ {selectedCustomer.loyalty_points} Points</span>
+
+                {/* CUSTOMER ADVANCE CONTROL BOX */}
+                <div className={`p-3.5 rounded-lg border text-xs space-y-2.5 transition shadow-sm ${selectedCustomer.advance_balance > 0 ? 'bg-blue-50/90 border-blue-200' : 'bg-slate-50 border-slate-200 opacity-60'
+                  }`}>
+                  <div className="flex items-center justify-between">
+                    <label className="flex items-center space-x-2 font-bold text-slate-800 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={useAdvance}
+                        disabled={selectedCustomer.advance_balance <= 0}
+                        onChange={(e) => {
+                          setUseAdvance(e.target.checked);
+                          if (!e.target.checked) {
+                            setAdvanceUsed('');
+                          } else {
+                            const maxUsable = Math.min(selectedCustomer.advance_balance, roundedTotal);
+                            setAdvanceUsed(maxUsable > 0 ? maxUsable : '');
+                          }
+                        }}
+                        className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4"
+                      />
+                      <span>Use Customer Advance</span>
+                    </label>
+                    <span className="text-[11px] font-semibold text-slate-600">
+                      Available: <strong className="text-emerald-700 font-mono">₹{selectedCustomer.advance_balance.toFixed(2)}</strong>
+                    </span>
+                  </div>
+
+                  {useAdvance && (
+                    <div className="space-y-2 pt-2 border-t border-blue-200/80">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-[11px] font-bold text-slate-700">Advance Amount to Apply (₹):</label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="any"
+                          max={Math.min(selectedCustomer.advance_balance, roundedTotal)}
+                          placeholder="0.00"
+                          value={advanceUsed}
+                          onChange={(e) => setAdvanceUsed(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
+                          className="w-28 text-right bg-white border border-slate-300 rounded px-2.5 py-1 text-xs font-bold text-slate-900 focus:ring-1 focus:ring-blue-500 shadow-inner"
+                        />
+                      </div>
+
+                      {/* Live Remaining Advance Feedback */}
+                      <div className="flex justify-between items-center text-[11px] text-slate-600 font-medium">
+                        <span>Remaining Advance Balance:</span>
+                        <span className="font-extrabold text-blue-700 font-data-mono">
+                          ₹{Math.max(0, selectedCustomer.advance_balance - Number(advanceUsed || 0)).toFixed(2)}
+                        </span>
+                      </div>
+
+                      {/* Real-time Validation Errors */}
+                      {Number(advanceUsed || 0) > selectedCustomer.advance_balance && (
+                        <p className="text-[10px] font-bold text-rose-700 bg-rose-50 p-2 rounded border border-rose-200">
+                          ⚠️ Advance amount cannot exceed the customer&apos;s available advance balance (₹{selectedCustomer.advance_balance.toFixed(2)}).
+                        </p>
+                      )}
+                      {Number(advanceUsed || 0) > roundedTotal && Number(advanceUsed || 0) <= selectedCustomer.advance_balance && (
+                        <p className="text-[10px] font-bold text-rose-700 bg-rose-50 p-2 rounded border border-rose-200">
+                          ⚠️ Advance amount cannot exceed the current bill amount (₹{roundedTotal.toFixed(2)}).
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -412,7 +579,7 @@ export default function BillingPage() {
             </div>
           </div>
 
-          {/* Quick Xerox Entry */}
+          {/* Quick Custom Entry */}
           <form onSubmit={handleAddCustomItem} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
             <div className="flex items-center justify-between">
               <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
@@ -421,43 +588,6 @@ export default function BillingPage() {
               <span className="text-[10px] font-semibold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full border border-emerald-100">
                 Fast Add
               </span>
-            </div>
-
-            {/* Stitch Quick Preset Buttons */}
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setCustomItemName('A4 B&W Single');
-                  setCustomItemPrice(2.00);
-                }}
-                className="flex flex-col items-center justify-center p-2 rounded-lg border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-200 transition active:scale-95 text-center"
-              >
-                <span className="text-[11px] font-semibold text-slate-800">A4 B&W</span>
-                <span className="text-[10px] font-data-mono text-slate-500">₹2.00</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setCustomItemName('A4 Color Copy');
-                  setCustomItemPrice(10.00);
-                }}
-                className="flex flex-col items-center justify-center p-2 rounded-lg border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-200 transition active:scale-95 text-center"
-              >
-                <span className="text-[11px] font-semibold text-slate-800">A4 Color</span>
-                <span className="text-[10px] font-data-mono text-slate-500">₹10.00</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setCustomItemName('Scan to PDF');
-                  setCustomItemPrice(5.00);
-                }}
-                className="flex flex-col items-center justify-center p-2 rounded-lg border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-200 transition active:scale-95 text-center"
-              >
-                <span className="text-[11px] font-semibold text-slate-800">Scan PDF</span>
-                <span className="text-[10px] font-data-mono text-slate-500">₹5.00</span>
-              </button>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -525,7 +655,7 @@ export default function BillingPage() {
                   <div key={idx} className="py-2.5 flex items-center justify-between gap-2 text-xs">
                     <div className="flex-1">
                       <p className="font-semibold text-slate-800">{item.product_name}</p>
-                      
+
                       {/* EDITABLE UNIT RATE INPUT */}
                       <div className="flex items-center space-x-1 text-[10px] text-slate-500 mt-0.5">
                         <span>Rate: ₹</span>
@@ -587,18 +717,16 @@ export default function BillingPage() {
                   <button
                     type="button"
                     onClick={() => setDiscountType('FLAT')}
-                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition ${
-                      discountType === 'FLAT' ? 'bg-blue-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100'
-                    }`}
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition ${discountType === 'FLAT' ? 'bg-blue-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100'
+                      }`}
                   >
                     Flat ₹
                   </button>
                   <button
                     type="button"
                     onClick={() => setDiscountType('PERCENTAGE')}
-                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition flex items-center space-x-0.5 ${
-                      discountType === 'PERCENTAGE' ? 'bg-blue-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100'
-                    }`}
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition flex items-center space-x-0.5 ${discountType === 'PERCENTAGE' ? 'bg-blue-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100'
+                      }`}
                   >
                     <span>Percent</span>
                     <Percent size={10} />
@@ -665,13 +793,12 @@ export default function BillingPage() {
                           }
                         }}
                         disabled={selectedCustomer.loyalty_points < rRule.points_required}
-                        className={`text-[10px] px-2 py-1 rounded font-bold transition border ${
-                          pointsToRedeem === rRule.points_required
+                        className={`text-[10px] px-2 py-1 rounded font-bold transition border ${pointsToRedeem === rRule.points_required
                             ? 'bg-purple-700 text-white border-purple-800'
                             : selectedCustomer.loyalty_points >= rRule.points_required
-                            ? 'bg-white text-purple-800 border-purple-300 hover:bg-purple-100'
-                            : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
-                        }`}
+                              ? 'bg-white text-purple-800 border-purple-300 hover:bg-purple-100'
+                              : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                          }`}
                       >
                         {rRule.points_required} Pts = ₹{rRule.discount_amount}
                       </button>
@@ -683,14 +810,16 @@ export default function BillingPage() {
 
             {/* REAL-TIME LOYALTY LIVE DISPLAY WIDGET */}
             {selectedCustomer && settings?.loyalty.enabled && (
-              <div className="bg-purple-900 text-white p-3.5 rounded-lg text-xs space-y-1.5 shadow">
+              <div className="bg-purple-900 text-white p-3.5 rounded-lg text-xs space-y-2 shadow">
                 <div className="flex justify-between items-center border-b border-purple-800 pb-1.5 font-bold">
                   <span className="flex items-center space-x-1 text-purple-200">
                     <Sparkles size={14} />
-                    <span>Loyalty Summary</span>
+                    <span>Loyalty Engine</span>
                   </span>
-                  <span className="text-emerald-400 font-mono">
-                    +{estimatedPointsEarned} pts Earned
+                  <span className={`font-mono font-bold ${remainingBillBalance === 0 ? 'text-emerald-400' : 'text-amber-300'}`}>
+                    {remainingBillBalance === 0
+                      ? `🎁 +${estimatedPointsEarned} pts Earned`
+                      : `⏳ +${estimatedPointsEarned} pts On Full Pay`}
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-[11px]">
@@ -707,9 +836,18 @@ export default function BillingPage() {
                     <span className="font-extrabold">{pointsToRedeem} Points</span>
                   </div>
                   <div>
-                    <span className="text-purple-300 block">Remaining Loyalty Points:</span>
+                    <span className="text-purple-300 block">Estimated Balance:</span>
                     <span className="font-extrabold text-purple-200">
-                      {Math.max(0, selectedCustomer.loyalty_points - pointsToRedeem + estimatedPointsEarned)} Points
+                      {Math.max(0, selectedCustomer.loyalty_points - pointsToRedeem + (remainingBillBalance === 0 ? estimatedPointsEarned : 0))} Points
+                    </span>
+                  </div>
+                  <div className="col-span-2 pt-1.5 border-t border-purple-800/80 flex justify-between items-center">
+                    <span className="text-purple-300 font-semibold flex items-center space-x-1">
+                      <Clock size={12} className="text-amber-400" />
+                      <span>Pending Uncredited Points:</span>
+                    </span>
+                    <span className="font-extrabold text-amber-300 font-mono">
+                      ⏳ {totalPendingPoints} Points
                     </span>
                   </div>
                 </div>
@@ -747,21 +885,30 @@ export default function BillingPage() {
             </div>
 
             {/* SPLIT PAYMENT INPUTS */}
-            <div className="pt-2 border-t border-slate-200 space-y-2">
-              <div className="flex justify-between items-center">
+            <div className="pt-2 border-t border-slate-200 space-y-2.5">
+              <div className="flex flex-wrap justify-between items-center gap-2">
                 <label className="block text-xs font-bold text-slate-700 uppercase">
-                  Split Payment Breakdown
+                  Payment Method & Breakdown
                 </label>
-                <button
-                  type="button"
-                  onClick={handleQuickPayCash}
-                  className="text-[10px] bg-emerald-100 hover:bg-emerald-200 text-emerald-800 font-bold px-2 py-0.5 rounded"
-                >
-                  ⚡ Pay Full Cash
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleQuickPayCash}
+                    className="text-[10px] bg-emerald-100 hover:bg-emerald-200 text-emerald-800 font-bold px-2 py-0.5 rounded transition"
+                  >
+                    ⚡ Cash
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleQuickPayUPI}
+                    className="text-[10px] bg-indigo-100 hover:bg-indigo-200 text-indigo-800 font-bold px-2 py-0.5 rounded transition"
+                  >
+                    ⚡ UPI
+                  </button>
+                </div>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <div>
                   <label className="text-[10px] text-slate-500 font-bold">Cash (₹)</label>
                   <input
@@ -769,7 +916,11 @@ export default function BillingPage() {
                     min="0"
                     placeholder="0"
                     value={cashPaid}
-                    onChange={(e) => setCashPaid(e.target.value === '' ? '' : Number(e.target.value))}
+                    onChange={(e) => {
+                      const val = e.target.value === '' ? '' : Number(e.target.value);
+                      setCashPaid(val);
+                      if (val !== '' && Number(val) > 0 && upiVal === roundedTotal) setUpiPaid('');
+                    }}
                     className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-bold text-slate-900"
                   />
                 </div>
@@ -780,44 +931,49 @@ export default function BillingPage() {
                     min="0"
                     placeholder="0"
                     value={upiPaid}
-                    onChange={(e) => setUpiPaid(e.target.value === '' ? '' : Number(e.target.value))}
+                    onChange={(e) => {
+                      const val = e.target.value === '' ? '' : Number(e.target.value);
+                      setUpiPaid(val);
+                      if (val !== '' && Number(val) > 0 && cashVal === roundedTotal) setCashPaid('');
+                    }}
                     className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-bold text-slate-900"
                   />
                 </div>
                 <div>
-                  <label className="text-[10px] text-slate-500 font-bold">Card (₹)</label>
+                  <label className="text-[10px] text-slate-500 font-bold">Advance Applied (₹)</label>
                   <input
                     type="number"
                     min="0"
+                    disabled={!useAdvance || !selectedCustomer || selectedCustomer.advance_balance <= 0}
                     placeholder="0"
-                    value={cardPaid}
-                    onChange={(e) => setCardPaid(e.target.value === '' ? '' : Number(e.target.value))}
-                    className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-bold text-slate-900"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] text-slate-500 font-bold">Advance (₹)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    disabled={!selectedCustomer || selectedCustomer.advance_balance <= 0}
-                    placeholder="0"
-                    value={advanceUsed}
-                    onChange={(e) => setAdvanceUsed(e.target.value === '' ? '' : Number(e.target.value))}
-                    className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-bold text-slate-900 disabled:bg-slate-100"
+                    value={useAdvance ? advanceUsed : ''}
+                    onChange={(e) => setAdvanceUsed(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
+                    className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-bold text-slate-900 disabled:bg-slate-100 disabled:text-slate-400"
                   />
                 </div>
               </div>
 
               {/* Payment Math Feedback */}
-              <div className="flex justify-between items-center text-xs pt-1 font-semibold">
-                <span className="text-slate-500">Paid Now: ₹{totalPaidNow.toFixed(2)}</span>
-                {remainingBalance > 0 ? (
-                  <span className="text-rose-600">Balance Due: ₹{remainingBalance.toFixed(2)}</span>
-                ) : customerAdvanceEarned > 0 ? (
-                  <span className="text-blue-600">Saved to Advance: ₹{customerAdvanceEarned.toFixed(2)}</span>
-                ) : (
-                  <span className="text-emerald-600">Paid Full ✓</span>
+              <div className="flex flex-col space-y-1 text-xs pt-1 font-semibold border-t border-slate-100 mt-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-600">Paid Now: <strong className="text-slate-900 font-data-mono">₹{totalPaidNow.toFixed(2)}</strong></span>
+                  {remainingBillBalance > 0 ? (
+                    <span className="text-rose-600 font-bold">Current Bill Due: ₹{remainingBillBalance.toFixed(2)}</span>
+                  ) : (
+                    <span className="text-emerald-600 font-bold">Bill Paid Full ✓</span>
+                  )}
+                </div>
+                {allocatedToPriorBalance > 0 && (
+                  <div className="flex justify-between items-center text-[11px] text-amber-700 font-bold">
+                    <span>Allocated to Prev. Due:</span>
+                    <span className="font-data-mono">₹{allocatedToPriorBalance.toFixed(2)}</span>
+                  </div>
+                )}
+                {customerAdvanceEarned > 0 && (
+                  <div className="flex justify-between items-center text-[11px] text-blue-700 font-bold">
+                    <span>Saved to Advance:</span>
+                    <span className="font-data-mono">₹{customerAdvanceEarned.toFixed(2)}</span>
+                  </div>
                 )}
               </div>
             </div>

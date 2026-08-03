@@ -77,7 +77,7 @@ export default function ReportsPage() {
       const rows = dailyBills.map(b => [
         b.bill_number,
         new Date(b.created_at).toLocaleString('en-IN'),
-        b.customer_name || 'Walk-in',
+        b.customer_name || 'N/A',
         b.payment_method,
         b.grand_total
       ]);
@@ -87,7 +87,7 @@ export default function ReportsPage() {
       const rows = monthlyBills.map(b => [
         b.bill_number,
         new Date(b.created_at).toLocaleString('en-IN'),
-        b.customer_name || 'Walk-in',
+        b.customer_name || 'N/A',
         b.payment_method,
         b.grand_total
       ]);

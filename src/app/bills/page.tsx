@@ -98,7 +98,10 @@ export default function ManageBillsPage() {
 
   const handleViewBill = async (id: string) => {
     const fullBill = await ApiService.getBillById(id);
-    if (fullBill) setSelectedBill(fullBill);
+    if (fullBill) {
+      const financial_summary = await ApiService.getBillFinancialSummary(fullBill);
+      setSelectedBill({ ...fullBill, financial_summary });
+    }
   };
 
   const filteredBills = bills.filter(b => 
@@ -166,36 +169,59 @@ export default function ManageBillsPage() {
                   <th className="px-6 py-3.5">Payment Method</th>
                   <th className="px-6 py-3.5 text-right">Discount</th>
                   <th className="px-6 py-3.5 text-right">Grand Total</th>
+                  <th className="px-6 py-3.5 text-center">Status</th>
                   <th className="px-6 py-3.5 text-center w-36">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200/60 text-slate-800">
-                {filteredBills.map((b) => (
-                  <tr key={b.id} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="px-6 py-4 font-data-mono font-bold text-slate-900">
-                      {b.bill_number}
-                      {b.edited_at && (
-                        <span className="block text-[10px] text-amber-600 font-sans font-normal flex items-center space-x-0.5 mt-0.5">
-                          <Clock size={10} />
-                          <span>Edited</span>
+                {filteredBills.map((b) => {
+                  const paid = Number(b.paid_total || 0);
+                  const grand = Number(b.grand_total || 0);
+                  const remaining = Math.max(0, grand - paid);
+                  const isFullyPaid = remaining <= 0.01;
+                  const isPartiallyPaid = !isFullyPaid && paid > 0.01;
+
+                  return (
+                    <tr key={b.id} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="px-6 py-4 font-data-mono font-bold text-slate-900">
+                        {b.bill_number}
+                        {b.edited_at && (
+                          <span className="block text-[10px] text-amber-600 font-sans font-normal flex items-center space-x-0.5 mt-0.5">
+                            <Clock size={10} />
+                            <span>Edited</span>
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 text-xs font-data-mono text-slate-500">
+                        {new Date(b.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                      </td>
+                      <td className="px-6 py-4 font-medium text-slate-800">{b.customer_name}</td>
+                      <td className="px-6 py-4">
+                        <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-slate-100 text-slate-700 uppercase border border-slate-200">
+                          {b.payment_method}
                         </span>
-                      )}
-                    </td>
-                    <td className="px-6 py-4 text-xs font-data-mono text-slate-500">
-                      {new Date(b.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
-                    </td>
-                    <td className="px-6 py-4 font-medium text-slate-800">{b.customer_name}</td>
-                    <td className="px-6 py-4">
-                      <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-slate-100 text-slate-700 uppercase border border-slate-200">
-                        {b.payment_method}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-right font-data-mono font-medium text-emerald-700">
-                      {b.discount > 0 ? `₹${b.discount.toFixed(2)}` : '-'}
-                    </td>
-                    <td className="px-6 py-4 text-right font-data-mono font-bold text-slate-900 text-base">
-                      ₹{Number(b.grand_total).toFixed(2)}
-                    </td>
+                      </td>
+                      <td className="px-6 py-4 text-right font-data-mono font-medium text-emerald-700">
+                        {b.discount > 0 ? `₹${b.discount.toFixed(2)}` : '-'}
+                      </td>
+                      <td className="px-6 py-4 text-right font-data-mono font-bold text-slate-900 text-base">
+                        ₹{Number(b.grand_total).toFixed(2)}
+                      </td>
+                      <td className="px-6 py-4 text-center">
+                        {isFullyPaid ? (
+                          <span className="inline-block px-2 py-0.5 rounded-full text-[11px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                            Fully Paid
+                          </span>
+                        ) : isPartiallyPaid ? (
+                          <span className="inline-block px-2 py-0.5 rounded-full text-[11px] font-extrabold bg-blue-100 text-blue-800 border border-blue-200">
+                            Partially Paid (₹{remaining.toFixed(2)})
+                          </span>
+                        ) : (
+                          <span className="inline-block px-2 py-0.5 rounded-full text-[11px] font-extrabold bg-amber-100 text-amber-800 border border-amber-200">
+                            Pending (₹{remaining.toFixed(2)})
+                          </span>
+                        )}
+                      </td>
                     <td className="px-6 py-4 text-center">
                       <div className="flex items-center justify-center space-x-2">
                         <button
@@ -215,7 +241,8 @@ export default function ManageBillsPage() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                );
+              })}
               </tbody>
             </table>
           </div>
