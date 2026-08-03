@@ -1,4 +1,4 @@
-export type PaymentMethod = 'Cash' | 'UPI' | 'Card' | 'Split Payment' | 'Advance Used';
+export type PaymentMethod = 'Cash' | 'UPI' | 'Split Payment' | 'Advance Used';
 
 export type ExpenseCategory = 'Shop Expense' | 'Electricity' | 'Rent' | 'Other Expense';
 
@@ -16,6 +16,8 @@ export type DateFilterOption =
   | 'custom';
 
 export interface SequenceConfig {
+  id?: string;
+  user_id?: string | null;
   key: string;
   prefix: string;
   padding: number;
@@ -25,6 +27,7 @@ export interface SequenceConfig {
 
 export interface Customer {
   id: string;
+  user_id?: string | null;
   customer_code?: string | null;
   name: string;
   mobile?: string | null;
@@ -35,6 +38,7 @@ export interface Customer {
 
 export interface Product {
   id: string;
+  user_id?: string | null;
   product_code?: string | null;
   name: string;
   category: string;
@@ -44,6 +48,7 @@ export interface Product {
 
 export interface BillItem {
   id?: string;
+  user_id?: string | null;
   bill_id?: string;
   product_id?: string | null;
   product_name: string;
@@ -55,6 +60,7 @@ export interface BillItem {
 
 export interface Bill {
   id: string;
+  user_id?: string | null;
   bill_number: string;
   customer_id?: string | null;
   customer_name?: string;
@@ -66,22 +72,54 @@ export interface Bill {
   grand_total: number;
   cash_paid: number;
   upi_paid: number;
-  card_paid: number;
+
   paid_total: number;
   advance_used: number;
   advance_earned: number;
   payment_method: string;
   loyalty_points_earned: number;
   loyalty_points_redeemed: number;
+  loyalty_discount_applied?: number;
   edited_at?: string | null;
   edited_by?: string | null;
   edit_reason?: string | null;
   created_at: string;
   items?: BillItem[];
+  financial_summary?: BillFinancialSummary;
 }
+
+export interface BillFinancialSummary {
+  previous_outstanding: number;
+  previous_advance: number;
+  current_bill_amount: number;
+  total_amount_due: number;
+  
+  cash_paid: number;
+  upi_paid: number;
+
+  advance_used: number;
+  total_paid: number;
+  
+  remaining_balance: number;
+  remaining_advance_balance: number;
+  payment_status: 'Fully Paid' | 'Partially Paid' | 'Payment Pending';
+  
+  loyalty?: {
+    enabled: boolean;
+    is_fully_paid: boolean;
+    points_awarded: boolean;
+    points_earned: number;
+    points_redeemed: number;
+    previous_points: number;
+    current_points_balance: number;
+    message: string;
+  };
+}
+
 
 export interface Payment {
   id: string;
+  user_id?: string | null;
   payment_number?: string | null;
   customer_id: string;
   bill_id?: string | null;
@@ -93,6 +131,7 @@ export interface Payment {
 
 export interface Expense {
   id: string;
+  user_id?: string | null;
   expense_number?: string | null;
   title: string;
   amount: number;
@@ -115,6 +154,7 @@ export interface CustomerLedgerEntry {
 
 export interface CustomerSummary {
   id: string;
+  user_id?: string | null;
   customer_code?: string | null;
   name: string;
   mobile?: string | null;
@@ -130,13 +170,11 @@ export interface PaymentSummary {
   total_sales: number;
   cash_collected: number;
   upi_collected: number;
-  card_collected: number;
-  mixed_payments_total: number;
   total_amount_collected: number;
   outstanding_amount: number;
   customer_advance_balance: number;
   payment_method_breakdown: { method: string; amount: number }[];
-  daily_collection_trend: { date: string; cash: number; upi: number; card: number; total: number }[];
+  daily_collection_trend: { date: string; cash: number; upi: number; total: number }[];
   monthly_collection_trend: { month: string; amount: number }[];
 }
 
@@ -156,6 +194,34 @@ export interface DashboardStats {
   monthly_revenue: { month: string; amount: number }[];
   payment_distribution: { name: string; value: number }[];
   top_products: { name: string; quantity: number; revenue: number }[];
+}
+
+// Simplified Loyalty Earning & Redemption Models
+export interface LoyaltyRule {
+  id: string;
+  user_id?: string | null;
+  rule_name: string;
+  min_bill_amount: number;
+  max_bill_amount?: number | null;
+  points_earned: number;
+  enabled: boolean;
+  sort_order: number;
+  created_at?: string;
+}
+
+export interface LoyaltyRedemptionRule {
+  id: string;
+  user_id?: string | null;
+  points_required: number;
+  discount_amount: number;
+  enabled: boolean;
+  created_at?: string;
+}
+
+export interface LoyaltySettings {
+  enabled: boolean;
+  points_required: number; // Fallback
+  discount_value: number;  // Fallback
 }
 
 // System Settings Models
@@ -180,13 +246,6 @@ export interface BillingSettings {
   default_printer_size: '80mm' | 'A4';
   auto_print: boolean;
   rounding_method: RoundingMethod;
-}
-
-export interface LoyaltySettings {
-  enabled: boolean;
-  points_per_amount: number;
-  amount_per_point: number;
-  min_redemption_points: number;
 }
 
 export interface WhatsAppSettings {
@@ -218,6 +277,7 @@ export interface AllSettings {
 
 export interface AuditLog {
   id: string;
+  user_id?: string | null;
   audit_number?: string | null;
   user_name: string;
   action: string;
@@ -229,6 +289,7 @@ export interface AuditLog {
 
 export interface LoyaltyTransaction {
   id: string;
+  user_id?: string | null;
   transaction_number?: string | null;
   customer_id: string;
   bill_id?: string | null;

@@ -37,10 +37,6 @@ export default function ProductsPage() {
   const [successMsg, setSuccessMsg] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    loadProducts();
-  }, []);
-
   const loadProducts = async () => {
     setLoading(true);
     try {
@@ -52,6 +48,10 @@ export default function ProductsPage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    loadProducts();
+  }, []);
 
   const handleOpenAdd = () => {
     setEditingProduct(null);
@@ -205,23 +205,23 @@ export default function ProductsPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm border-collapse">
               <thead>
-                <tr className="bg-slate-50 text-slate-600 uppercase text-xs font-semibold border-b border-slate-200">
+                <tr className="bg-slate-100 text-slate-700 uppercase text-[11px] font-bold tracking-wider border-b border-slate-200">
                   <th className="px-6 py-3.5">Product Name</th>
                   <th className="px-6 py-3.5">Category</th>
-                  <th className="px-6 py-3.5 text-right">Unit Price (₹)</th>
+                  <th className="px-6 py-3.5 text-right">Unit Price</th>
                   <th className="px-6 py-3.5 text-center w-32">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 text-slate-700">
+              <tbody className="divide-y divide-slate-200/60 text-slate-800">
                 {filteredProducts.map((product) => (
-                  <tr key={product.id} className="hover:bg-slate-50 transition">
+                  <tr key={product.id} className="hover:bg-slate-50/80 transition-colors">
                     <td className="px-6 py-4 font-semibold text-slate-900">{product.name}</td>
                     <td className="px-6 py-4">
-                      <span className="inline-block px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+                      <span className="inline-block px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-100">
                         {product.category}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-right font-extrabold text-slate-900">
+                    <td className="px-6 py-4 text-right font-data-mono font-bold text-slate-900 text-base">
                       ₹{Number(product.price).toFixed(2)}
                     </td>
                     <td className="px-6 py-4 text-center">
