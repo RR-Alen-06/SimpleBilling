@@ -1,4 +1,4 @@
-export type PaymentMethod = 'Cash' | 'UPI' | 'Card' | 'Split Payment' | 'Advance Used';
+export type PaymentMethod = 'Cash' | 'UPI' | 'Split Payment' | 'Advance Used';
 
 export type ExpenseCategory = 'Shop Expense' | 'Electricity' | 'Rent' | 'Other Expense';
 
@@ -72,7 +72,7 @@ export interface Bill {
   grand_total: number;
   cash_paid: number;
   upi_paid: number;
-  card_paid: number;
+
   paid_total: number;
   advance_used: number;
   advance_earned: number;
@@ -85,7 +85,37 @@ export interface Bill {
   edit_reason?: string | null;
   created_at: string;
   items?: BillItem[];
+  financial_summary?: BillFinancialSummary;
 }
+
+export interface BillFinancialSummary {
+  previous_outstanding: number;
+  previous_advance: number;
+  current_bill_amount: number;
+  total_amount_due: number;
+  
+  cash_paid: number;
+  upi_paid: number;
+
+  advance_used: number;
+  total_paid: number;
+  
+  remaining_balance: number;
+  remaining_advance_balance: number;
+  payment_status: 'Fully Paid' | 'Partially Paid' | 'Payment Pending';
+  
+  loyalty?: {
+    enabled: boolean;
+    is_fully_paid: boolean;
+    points_awarded: boolean;
+    points_earned: number;
+    points_redeemed: number;
+    previous_points: number;
+    current_points_balance: number;
+    message: string;
+  };
+}
+
 
 export interface Payment {
   id: string;
@@ -140,13 +170,11 @@ export interface PaymentSummary {
   total_sales: number;
   cash_collected: number;
   upi_collected: number;
-  card_collected: number;
-  mixed_payments_total: number;
   total_amount_collected: number;
   outstanding_amount: number;
   customer_advance_balance: number;
   payment_method_breakdown: { method: string; amount: number }[];
-  daily_collection_trend: { date: string; cash: number; upi: number; card: number; total: number }[];
+  daily_collection_trend: { date: string; cash: number; upi: number; total: number }[];
   monthly_collection_trend: { month: string; amount: number }[];
 }
 

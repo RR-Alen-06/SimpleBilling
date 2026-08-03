@@ -1,10 +1,41 @@
 @import "tailwindcss";
 
 @layer base {
-  body {
-    background-color: #f8fafc;
-    color: #0f172a;
+  :root {
+    --background: #fbf9fa;
+    --on-background: #1b1b1d;
+    --surface: #fbf9fa;
+    --surface-container-low: #f5f3f5;
+    --surface-container: #efedef;
+    --surface-container-high: #eae7e9;
+    --surface-container-highest: #e4e2e4;
+    --on-surface: #1b1b1d;
+    --on-surface-variant: #44474c;
+    --outline: #75777d;
+    --outline-variant: #c5c6cd;
+    --primary: #1d2b3e;
+    --primary-container: #334155;
+    --on-primary: #ffffff;
+    --secondary: #0058be;
+    --secondary-container: #2170e4;
+    --tertiary: #410072;
+    --accent-emerald: #10b981;
   }
+
+  body {
+    background-color: var(--background);
+    color: var(--on-surface);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+}
+
+.font-data-mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.glass-effect {
+  backdrop-filter: blur(8px);
+  background: rgba(251, 249, 250, 0.85);
 }
 
 @media print {
@@ -23,3 +54,4 @@
     margin: 5mm;
   }
 }
+

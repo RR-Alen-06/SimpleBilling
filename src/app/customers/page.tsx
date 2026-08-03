@@ -33,10 +33,6 @@ export default function CustomersPage() {
   const [successMsg, setSuccessMsg] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    loadCustomers();
-  }, []);
-
   const loadCustomers = async () => {
     setLoading(true);
     try {
@@ -48,6 +44,11 @@ export default function CustomersPage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadCustomers();
+  }, []);
 
   const handleOpenAdd = () => {
     setEditingId(null);
@@ -168,20 +169,20 @@ export default function CustomersPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm border-collapse">
               <thead>
-                <tr className="bg-slate-50 text-slate-600 uppercase text-xs font-semibold border-b border-slate-200">
+                <tr className="bg-slate-100 text-slate-700 uppercase text-[11px] font-bold tracking-wider border-b border-slate-200">
                   <th className="px-6 py-3.5">Customer Name</th>
                   <th className="px-6 py-3.5">Mobile Number</th>
-                  <th className="px-6 py-3.5 text-right">Total Billed (₹)</th>
-                  <th className="px-6 py-3.5 text-right">Total Paid (₹)</th>
-                  <th className="px-6 py-3.5 text-right">Balance Due (₹)</th>
+                  <th className="px-6 py-3.5 text-right">Total Billed</th>
+                  <th className="px-6 py-3.5 text-right">Total Paid</th>
+                  <th className="px-6 py-3.5 text-right">Balance Due</th>
                   <th className="px-6 py-3.5 text-center w-40">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 text-slate-700">
+              <tbody className="divide-y divide-slate-200/60 text-slate-800">
                 {filteredCustomers.map((cust) => (
-                  <tr key={cust.id} className="hover:bg-slate-50 transition">
+                  <tr key={cust.id} className="hover:bg-slate-50/80 transition-colors">
                     <td className="px-6 py-4 font-bold text-slate-900">{cust.name}</td>
-                    <td className="px-6 py-4 text-xs font-mono text-slate-600">
+                    <td className="px-6 py-4 text-xs font-data-mono text-slate-600">
                       {cust.mobile ? (
                         <span className="flex items-center space-x-1">
                           <Phone size={12} className="text-slate-400" />
@@ -191,14 +192,18 @@ export default function CustomersPage() {
                         <span className="text-slate-400 italic">Not provided</span>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-right font-medium text-slate-800">
+                    <td className="px-6 py-4 text-right font-data-mono font-semibold text-slate-800">
                       ₹{cust.total_billed.toFixed(2)}
                     </td>
-                    <td className="px-6 py-4 text-right font-medium text-emerald-700">
+                    <td className="px-6 py-4 text-right font-data-mono font-semibold text-emerald-700">
                       ₹{cust.total_paid.toFixed(2)}
                     </td>
                     <td className="px-6 py-4 text-right">
-                      <span className={`font-extrabold ${cust.balance_due > 0 ? 'text-amber-600' : 'text-slate-700'}`}>
+                      <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-data-mono font-bold ${
+                        cust.balance_due > 0 
+                          ? 'bg-amber-50 text-amber-700 border border-amber-200' 
+                          : 'bg-slate-100 text-slate-700 border border-slate-200'
+                      }`}>
                         ₹{cust.balance_due.toFixed(2)}
                       </span>
                     </td>
@@ -206,17 +211,17 @@ export default function CustomersPage() {
                       <div className="flex items-center justify-center space-x-2">
                         <Link
                           href={`/customers/${cust.id}`}
-                          className="bg-blue-50 text-blue-700 hover:bg-blue-100 px-2.5 py-1 rounded text-xs font-bold transition flex items-center space-x-1 border border-blue-200"
+                          className="bg-blue-600 hover:bg-blue-500 text-white px-2.5 py-1 rounded text-xs font-semibold transition flex items-center space-x-1 shadow-sm"
                         >
-                          <BookOpen size={14} />
-                          <span>View Ledger</span>
+                          <BookOpen size={13} />
+                          <span>Ledger</span>
                         </Link>
                         <button
                           onClick={() => handleOpenEdit(cust)}
-                          className="p-1.5 text-slate-500 hover:text-slate-800 rounded transition"
+                          className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded transition"
                           title="Edit Customer Info"
                         >
-                          <Edit2 size={16} />
+                          <Edit2 size={15} />
                         </button>
                       </div>
                     </td>
