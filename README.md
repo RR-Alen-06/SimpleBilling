@@ -9,6 +9,20 @@ A fast, responsive, web-based billing software designed specifically for Xerox, 
 
 ---
 
+## 📖 About The Project
+
+**SimpleBilling (PrintPro ERP)** is a modern, lightweight, and robust Point-of-Sale (POS) and ERP system tailored specifically for **Xerox centres, digital printing shops, photocopy studios, and stationery stores**.
+
+Traditional billing software is often bloated, complex, or rigid when handling dynamic printing jobs (such as custom page-count rates, variable lamination/binding services, split payment methods, and loyalty calculations). **SimpleBilling** solves this by providing:
+
+- ⚡ **High-Speed Counter Operations**: Fast item entry with quick Xerox/print job presets and on-the-fly rate adjustments.
+- 🔒 **Multi-Tenant Security**: Strict Row-Level Security (RLS) policies on Supabase PostgreSQL isolating user data cleanly (`auth.uid() = user_id`).
+- 📱 **Multi-Platform Ecosystem**: Seamless real-time sync between the **Next.js Web Admin Portal** and the companion **Flutter Mobile POS App** with offline resilience and queue management.
+- 🧾 **Flexible Print Formats**: Instant 1-click printing for **80mm Thermal POS Receipts** and **Standard A4 Tax Invoices**.
+- 👥 **Customer Ledgers & Dues**: Real-time balance tracking, advance deposits, customer running accounts, and loyalty point rewards.
+
+---
+
 ## 🌟 Key Features
 
 ### 1. 📊 Interactive Dashboard
