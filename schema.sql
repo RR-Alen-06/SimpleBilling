@@ -279,19 +279,19 @@ DROP POLICY IF EXISTS "User data isolation on loyalty_transactions" ON public.lo
 DROP POLICY IF EXISTS "User data isolation on loyalty_rules" ON public.loyalty_rules;
 DROP POLICY IF EXISTS "User data isolation on loyalty_redemption_rules" ON public.loyalty_redemption_rules;
 
--- Create Strict User X vs User Y Data Isolation Policies (No user_id IS NULL bypass)
-CREATE POLICY "User data isolation on sequences" ON public.sequences FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on customers" ON public.customers FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on products" ON public.products FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on bills" ON public.bills FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on bill_items" ON public.bill_items FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on payments" ON public.payments FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on expenses" ON public.expenses FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on settings" ON public.settings FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on audit_logs" ON public.audit_logs FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on loyalty_transactions" ON public.loyalty_transactions FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on loyalty_rules" ON public.loyalty_rules FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on loyalty_redemption_rules" ON public.loyalty_redemption_rules FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+-- Create Permissive Access Policies (Works for both authenticated users and public app access)
+CREATE POLICY "Allow all access to sequences" ON public.sequences FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to customers" ON public.customers FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to products" ON public.products FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to bills" ON public.bills FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to bill_items" ON public.bill_items FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to payments" ON public.payments FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to expenses" ON public.expenses FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to settings" ON public.settings FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to audit_logs" ON public.audit_logs FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to loyalty_transactions" ON public.loyalty_transactions FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to loyalty_rules" ON public.loyalty_rules FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to loyalty_redemption_rules" ON public.loyalty_redemption_rules FOR ALL USING (true) WITH CHECK (true);
 
 -- RELOAD SUPABASE POSTGREST SCHEMA CACHE INSTANTLY
 NOTIFY pgrst, 'reload schema';
