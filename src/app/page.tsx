@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ApiService } from '@/lib/services/api';
-import { DashboardStats, Bill, DateFilterOption } from '@/lib/types';
+import { DashboardStats, Bill, DateFilterOption, AllSettings } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { InvoiceModal } from '@/components/InvoiceModal';
 import { 
@@ -57,6 +57,7 @@ export default function DashboardPage() {
     top_products: []
   });
   const [recentBills, setRecentBills] = useState<Bill[]>([]);
+  const [settings, setSettings] = useState<AllSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedBill, setSelectedBill] = useState<Bill | null>(null);
 
@@ -68,10 +69,14 @@ export default function DashboardPage() {
   const loadDashboardData = async () => {
     setLoading(true);
     try {
-      const data = await ApiService.getDashboardStats(dateFilter, { from: customFrom, to: customTo });
+      const [data, bills, settingsData] = await Promise.all([
+        ApiService.getDashboardStats(dateFilter, { from: customFrom, to: customTo }),
+        ApiService.getBills(),
+        ApiService.getSettings()
+      ]);
       setStats(data);
-      const bills = await ApiService.getBills();
       setRecentBills(bills.slice(0, 8));
+      setSettings(settingsData);
     } catch (err) {
       console.error('Failed to load dashboard data:', err);
     } finally {
@@ -435,7 +440,7 @@ export default function DashboardPage() {
 
       {/* Invoice Modal */}
       {selectedBill && (
-        <InvoiceModal bill={selectedBill} onClose={() => setSelectedBill(null)} />
+        <InvoiceModal bill={selectedBill} settings={settings || undefined} onClose={() => setSelectedBill(null)} />
       )}
     </div>
   );

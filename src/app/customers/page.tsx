@@ -27,6 +27,7 @@ export default function CustomersPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [mobile, setMobile] = useState('');
+  const [email, setEmail] = useState('');
 
   // Status feedback
   const [errorMsg, setErrorMsg] = useState('');
@@ -54,6 +55,7 @@ export default function CustomersPage() {
     setEditingId(null);
     setName('');
     setMobile('');
+    setEmail('');
     setErrorMsg('');
     setShowModal(true);
   };
@@ -62,6 +64,7 @@ export default function CustomersPage() {
     setEditingId(cust.id);
     setName(cust.name);
     setMobile(cust.mobile || '');
+    setEmail(cust.email || '');
     setErrorMsg('');
     setShowModal(true);
   };
@@ -79,10 +82,18 @@ export default function CustomersPage() {
     setSubmitting(true);
     try {
       if (editingId) {
-        await ApiService.updateCustomer(editingId, { name: name.trim(), mobile: mobile.trim() || undefined });
+        await ApiService.updateCustomer(editingId, { 
+          name: name.trim(), 
+          mobile: mobile.trim() || undefined,
+          email: email.trim() || undefined 
+        });
         setSuccessMsg('Customer updated successfully.');
       } else {
-        await ApiService.addCustomer({ name: name.trim(), mobile: mobile.trim() || undefined });
+        await ApiService.addCustomer({ 
+          name: name.trim(), 
+          mobile: mobile.trim() || undefined,
+          email: email.trim() || undefined 
+        });
         setSuccessMsg('Customer created successfully.');
       }
       setShowModal(false);
@@ -171,7 +182,7 @@ export default function CustomersPage() {
               <thead>
                 <tr className="bg-slate-100 text-slate-700 uppercase text-[11px] font-bold tracking-wider border-b border-slate-200">
                   <th className="px-6 py-3.5">Customer Name</th>
-                  <th className="px-6 py-3.5">Mobile Number</th>
+                  <th className="px-6 py-3.5">Mobile / Email</th>
                   <th className="px-6 py-3.5 text-right">Total Billed</th>
                   <th className="px-6 py-3.5 text-right">Total Paid</th>
                   <th className="px-6 py-3.5 text-right">Balance Due</th>
@@ -182,14 +193,17 @@ export default function CustomersPage() {
                 {filteredCustomers.map((cust) => (
                   <tr key={cust.id} className="hover:bg-slate-50/80 transition-colors">
                     <td className="px-6 py-4 font-bold text-slate-900">{cust.name}</td>
-                    <td className="px-6 py-4 text-xs font-data-mono text-slate-600">
+                    <td className="px-6 py-4 text-xs font-data-mono text-slate-600 space-y-0.5">
                       {cust.mobile ? (
                         <span className="flex items-center space-x-1">
                           <Phone size={12} className="text-slate-400" />
                           <span>{cust.mobile}</span>
                         </span>
                       ) : (
-                        <span className="text-slate-400 italic">Not provided</span>
+                        <span className="text-slate-400 italic block">No phone</span>
+                      )}
+                      {cust.email && (
+                        <span className="text-[11px] text-blue-600 block">{cust.email}</span>
                       )}
                     </td>
                     <td className="px-6 py-4 text-right font-data-mono font-semibold text-slate-800">
@@ -270,6 +284,19 @@ export default function CustomersPage() {
                   placeholder="e.g. 9876543210"
                   value={mobile}
                   onChange={(e) => setMobile(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Email Address (Optional)
+                </label>
+                <input
+                  type="email"
+                  placeholder="customer@example.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
