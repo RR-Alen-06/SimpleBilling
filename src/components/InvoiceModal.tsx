@@ -30,9 +30,9 @@ interface InvoiceModalProps {
 
 export function InvoiceModal({ bill, settings: propSettings, customerEmail: propEmail, onClose }: InvoiceModalProps) {
   const [printFormat, setPrintFormat] = useState<'thermal-80' | 'thermal-58' | 'a4'>('thermal-80');
-  const [financialSummary, setFinancialSummary] = useState<BillFinancialSummary | null>(bill?.financial_summary || null);
-  const [loadingSummary, setLoadingSummary] = useState(!bill?.financial_summary);
-  const [loadedSettings, setLoadedSettings] = useState<AllSettings>(propSettings || DEFAULT_SETTINGS);
+  const [fetchedSummary, setFetchedSummary] = useState<BillFinancialSummary | null>(null);
+  const [loadingSummary, setLoadingSummary] = useState(false);
+  const [fetchedSettings, setFetchedSettings] = useState<AllSettings | null>(null);
   
   // PDF download & Email states
   const [downloadingPDF, setDownloadingPDF] = useState(false);
@@ -45,31 +45,27 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
 
   // Load settings if not passed as prop
   useEffect(() => {
-    if (propSettings) {
-      setLoadedSettings(propSettings);
-    } else {
+    if (!propSettings) {
       ApiService.getSettings().then(s => {
-        if (s) setLoadedSettings(s);
+        if (s) setFetchedSettings(s);
       }).catch(err => console.error('Failed to load settings in InvoiceModal:', err));
     }
   }, [propSettings]);
 
-  // Load financial summary
+  // Load financial summary asynchronously only if not present on bill
   useEffect(() => {
     let active = true;
-    if (bill) {
-      if (bill.financial_summary) {
-        setFinancialSummary(bill.financial_summary);
-        setLoadingSummary(false);
-      } else {
-        setLoadingSummary(true);
-        ApiService.getBillFinancialSummary(bill).then(summary => {
-          if (active) {
-            setFinancialSummary(summary);
-            setLoadingSummary(false);
-          }
-        });
-      }
+    if (bill && !bill.financial_summary) {
+      setLoadingSummary(true);
+      ApiService.getBillFinancialSummary(bill).then(summary => {
+        if (active) {
+          setFetchedSummary(summary);
+          setLoadingSummary(false);
+        }
+      }).catch(err => {
+        console.error('Failed to fetch bill financial summary:', err);
+        if (active) setLoadingSummary(false);
+      });
     }
     return () => { active = false; };
   }, [bill]);
@@ -95,10 +91,37 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
 
   if (!bill) return null;
 
-  const shop = loadedSettings.shop;
-  const billingConfig = loadedSettings.billing;
-  const waConfig = loadedSettings.whatsapp;
+  const activeSettings = propSettings || fetchedSettings || DEFAULT_SETTINGS;
+  const shop = activeSettings.shop;
+  const billingConfig = activeSettings.billing;
+  const waConfig = activeSettings.whatsapp;
   const customerEmail = propEmail || bill.customer_email || undefined;
+
+  const formattedDate = bill.created_at 
+    ? new Date(bill.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })
+    : '';
+
+  const subTotal = Number(bill.total || 0);
+  const discountVal = Number(bill.discount || 0);
+  const gstAmount = Number(bill.gst_amount || 0);
+  const roundingAdj = Number(bill.rounding_adjustment || 0);
+  const grandTotalVal = Number(bill.grand_total || 0);
+
+  const summary = bill.financial_summary || fetchedSummary || {
+    previous_outstanding: 0,
+    previous_advance: 0,
+    current_bill_amount: grandTotalVal,
+    total_amount_due: grandTotalVal,
+    cash_paid: Number(bill.cash_paid || 0),
+    upi_paid: Number(bill.upi_paid || 0),
+    advance_used: Number(bill.advance_used || 0),
+    total_paid: Number(bill.paid_total || 0),
+    remaining_balance: Math.max(0, grandTotalVal - Number(bill.paid_total || 0)),
+    remaining_advance_balance: Number(bill.advance_earned || 0),
+    payment_status: (Math.max(0, grandTotalVal - Number(bill.paid_total || 0)) === 0 ? 'Fully Paid' : 'Payment Pending') as 'Fully Paid' | 'Payment Pending'
+  };
+
+  const isPending = summary.remaining_balance > 0;
 
   const handlePrint = () => {
     document.documentElement.dataset.printFormat = printFormat;
@@ -155,7 +178,7 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
   };
 
   const handleShareWhatsAppText = () => {
-    const text = ApiService.generateWhatsAppTextReceipt(bill, financialSummary || undefined);
+    const text = ApiService.generateWhatsAppTextReceipt(bill, summary);
     const encoded = encodeURIComponent(text);
     const phone = bill.customer_mobile ? bill.customer_mobile.replace(/[^0-9]/g, '') : '';
     const url = phone ? `https://api.whatsapp.com/send?phone=${phone}&text=${encoded}` : `https://api.whatsapp.com/send?text=${encoded}`;
@@ -164,14 +187,14 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
   };
 
   const handleShareTelegram = () => {
-    const text = ApiService.generateWhatsAppTextReceipt(bill, financialSummary || undefined);
+    const text = ApiService.generateWhatsAppTextReceipt(bill, summary);
     const url = `https://t.me/share/url?url=${encodeURIComponent('')}&text=${encodeURIComponent(text)}`;
     window.open(url, '_blank');
     setShareMenuOpen(false);
   };
 
   const handleShareSMS = () => {
-    const text = ApiService.generateWhatsAppTextReceipt(bill, financialSummary || undefined);
+    const text = ApiService.generateWhatsAppTextReceipt(bill, summary);
     const phone = bill.customer_mobile ? bill.customer_mobile.replace(/[^0-9]/g, '') : '';
     const url = `sms:${phone}?body=${encodeURIComponent(text)}`;
     window.open(url);
@@ -180,7 +203,7 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
 
   const handleNativeShare = async () => {
     setShareMenuOpen(false);
-    const text = ApiService.generateWhatsAppTextReceipt(bill, financialSummary || undefined);
+    const text = ApiService.generateWhatsAppTextReceipt(bill, summary);
     if (typeof navigator !== 'undefined' && navigator.share) {
       try {
         await navigator.share({
@@ -248,32 +271,6 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
       setSendingEmail(false);
     }
   };
-
-  const formattedDate = bill.created_at 
-    ? new Date(bill.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })
-    : '';
-
-  const subTotal = Number(bill.total || 0);
-  const discountVal = Number(bill.discount || 0);
-  const gstAmount = Number(bill.gst_amount || 0);
-  const roundingAdj = Number(bill.rounding_adjustment || 0);
-  const grandTotalVal = Number(bill.grand_total || 0);
-
-  const summary = financialSummary || {
-    previous_outstanding: 0,
-    previous_advance: 0,
-    current_bill_amount: grandTotalVal,
-    total_amount_due: grandTotalVal,
-    cash_paid: Number(bill.cash_paid || 0),
-    upi_paid: Number(bill.upi_paid || 0),
-    advance_used: Number(bill.advance_used || 0),
-    total_paid: Number(bill.paid_total || 0),
-    remaining_balance: Math.max(0, grandTotalVal - Number(bill.paid_total || 0)),
-    remaining_advance_balance: Number(bill.advance_earned || 0),
-    payment_status: (Math.max(0, grandTotalVal - Number(bill.paid_total || 0)) === 0 ? 'Fully Paid' : 'Payment Pending') as 'Fully Paid' | 'Payment Pending'
-  };
-
-  const isPending = summary.remaining_balance > 0;
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto print:p-0 print:static print:bg-white print:backdrop-none">
