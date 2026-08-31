@@ -40,8 +40,8 @@
 
 @media print {
   @page {
-    margin: 4mm;
-    size: auto;
+    size: A4 portrait;
+    margin: 6mm;
   }
 
   html[data-print-format="a4"] body {
@@ -79,8 +79,8 @@
     max-width: 100% !important;
     margin: 0 auto !important;
     padding: 0 !important;
-    font-size: 11px !important;
-    line-height: 1.25 !important;
+    font-size: 10px !important;
+    line-height: 1.2 !important;
     page-break-inside: avoid !important;
     break-inside: avoid !important;
   }
@@ -88,6 +88,13 @@
   .a4-invoice * {
     page-break-inside: avoid !important;
     break-inside: avoid !important;
+  }
+
+  /* Force the 3-col grid in print mode */
+  .a4-invoice .print-summary-grid {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr 1fr !important;
+    font-size: 9px !important;
   }
 
   /* Thermal Receipt Print Rules */
