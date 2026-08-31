@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS public.customers (
 );
 ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
 ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS customer_code TEXT;
+ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS advance_balance NUMERIC(10, 2) NOT NULL DEFAULT 0.00;
 ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS loyalty_points NUMERIC(10, 2) NOT NULL DEFAULT 0.00;
 
@@ -95,6 +96,7 @@ CREATE TABLE IF NOT EXISTS public.bills (
     customer_id UUID REFERENCES public.customers(id) ON DELETE SET NULL,
     total NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (total >= 0),
     discount NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (discount >= 0),
+    gst_amount NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
     rounding_method TEXT NOT NULL DEFAULT 'None',
     rounding_adjustment NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
     grand_total NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (grand_total >= 0),
@@ -113,6 +115,7 @@ CREATE TABLE IF NOT EXISTS public.bills (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS gst_amount NUMERIC(10, 2) NOT NULL DEFAULT 0.00;
 
 -- 4. BILL ITEMS TABLE
 CREATE TABLE IF NOT EXISTS public.bill_items (

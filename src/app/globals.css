@@ -39,19 +39,68 @@
 }
 
 @media print {
+  @page {
+    margin: 4mm;
+    size: auto;
+  }
+
+  html[data-print-format="a4"] body {
+    margin: 0;
+  }
+
+  html[data-print-format="thermal-80"] body {
+    margin: 0;
+  }
+
+  html[data-print-format="thermal-58"] body {
+    margin: 0;
+  }
+
   body {
     background: #ffffff !important;
     color: #000000 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
   }
+
   header, nav, .print\:hidden {
     display: none !important;
   }
+
   main {
     padding: 0 !important;
+    margin: 0 !important;
     max-width: none !important;
   }
-  @page {
-    margin: 5mm;
+
+  /* Single-page A4 Invoice Print Rules */
+  .a4-invoice {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
+    font-size: 11px !important;
+    line-height: 1.25 !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  .a4-invoice * {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* Thermal Receipt Print Rules */
+  .thermal-receipt {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    margin: 0 auto !important;
+    padding: 2mm !important;
+  }
+
+  .thermal-receipt * {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
   }
 }
 

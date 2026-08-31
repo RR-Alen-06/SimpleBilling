@@ -31,6 +31,7 @@ export interface Customer {
   customer_code?: string | null;
   name: string;
   mobile?: string | null;
+  email?: string | null;
   advance_balance: number;
   loyalty_points: number;
   created_at: string;
@@ -65,8 +66,10 @@ export interface Bill {
   customer_id?: string | null;
   customer_name?: string;
   customer_mobile?: string | null;
+  customer_email?: string | null;
   total: number;
   discount: number;
+  gst_amount?: number;
   rounding_method: RoundingMethod;
   rounding_adjustment: number;
   grand_total: number;
@@ -122,6 +125,8 @@ export interface Payment {
   user_id?: string | null;
   payment_number?: string | null;
   customer_id: string;
+  customer_name?: string | null;
+  customer_mobile?: string | null;
   bill_id?: string | null;
   amount: number;
   payment_method: string;
@@ -158,6 +163,7 @@ export interface CustomerSummary {
   customer_code?: string | null;
   name: string;
   mobile?: string | null;
+  email?: string | null;
   total_billed: number;
   total_paid: number;
   balance_due: number;
@@ -253,6 +259,9 @@ export interface WhatsAppSettings {
   template_text: string;
   enable_pdf_sharing: boolean;
   enable_text_sharing: boolean;
+  email_service_id?: string;
+  email_template_id?: string;
+  email_public_key?: string;
 }
 
 export interface SecuritySettings {

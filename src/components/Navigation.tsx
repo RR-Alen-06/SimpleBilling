@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { 
   LayoutDashboard, 
   Receipt, 
@@ -12,16 +12,19 @@ import {
   BarChart3, 
   Settings as SettingsIcon,
   FileText,
+  CreditCard,
   Menu, 
   X, 
   Printer,
   Database,
-  QrCode
+  QrCode,
+  LogOut
 } from 'lucide-react';
-import { isSupabaseConfigured } from '@/lib/supabase/client';
+import { supabase, isSupabaseConfigured } from '@/lib/supabase/client';
 
 export function Navigation() {
   const pathname = usePathname();
+  const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const navItems = [
@@ -30,10 +33,24 @@ export function Navigation() {
     { label: 'Products', href: '/products', icon: Package },
     { label: 'Customers', href: '/customers', icon: Users },
     { label: 'Manage Bills', href: '/bills', icon: FileText },
+    { label: 'Payments', href: '/payments', icon: CreditCard },
     { label: 'Expenses', href: '/expenses', icon: DollarSign },
     { label: 'Reports', href: '/reports', icon: BarChart3 },
     { label: 'Settings', href: '/settings', icon: SettingsIcon },
   ];
+
+  const handleLogout = async () => {
+    try {
+      if (isSupabaseConfigured) {
+        await supabase.auth.signOut();
+      }
+    } catch {
+      // Ignore Supabase sign out error
+    } finally {
+      document.cookie = "printpro_local_auth=; path=/; max-age=0; SameSite=Lax";
+      router.push('/login');
+    }
+  };
 
   return (
     <>
@@ -58,14 +75,14 @@ export function Navigation() {
           </Link>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
           {!isSupabaseConfigured && (
             <span className="hidden sm:inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">
               <Database size={13} />
               <span>Offline / Local DB</span>
             </span>
           )}
-          <button className="w-9 h-9 flex items-center justify-center rounded-full text-slate-300 hover:bg-slate-800 transition active:scale-95">
+          <button className="w-9 h-9 hidden sm:flex items-center justify-center rounded-full text-slate-300 hover:bg-slate-800 transition active:scale-95" title="Scan QR">
             <QrCode size={20} />
           </button>
           <Link 
@@ -75,6 +92,14 @@ export function Navigation() {
             <Receipt size={16} />
             <span>+ New Bill</span>
           </Link>
+
+          <button
+            onClick={handleLogout}
+            className="p-2 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded-lg transition"
+            title="Sign Out"
+          >
+            <LogOut size={19} />
+          </button>
         </div>
       </header>
 
@@ -143,8 +168,17 @@ export function Navigation() {
               </div>
             </div>
 
-            <div className="pt-4 border-t border-slate-800 text-xs text-slate-400 text-center">
-              PrintPro ERP Terminal v2.0
+            <div className="pt-4 border-t border-slate-800 space-y-3">
+              <button
+                onClick={handleLogout}
+                className="w-full flex items-center justify-center space-x-2 bg-slate-800 hover:bg-rose-950/40 text-rose-400 py-2.5 rounded-lg text-xs font-semibold border border-slate-700"
+              >
+                <LogOut size={16} />
+                <span>Sign Out</span>
+              </button>
+              <div className="text-[10px] text-slate-500 text-center">
+                PrintPro ERP Terminal v2.0
+              </div>
             </div>
           </div>
         </div>
@@ -152,4 +186,3 @@ export function Navigation() {
     </>
   );
 }
-

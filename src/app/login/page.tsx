@@ -21,8 +21,9 @@ export default function LoginPage() {
     if (!isSupabaseConfigured) {
       // Local fallback sign-in
       if (email === 'admin@shop.com' && password === 'admin123') {
+        document.cookie = "printpro_local_auth=1; path=/; max-age=604800; SameSite=Lax";
         setSuccessMsg('Logged in as Admin successfully.');
-        setTimeout(() => router.push('/'), 1000);
+        setTimeout(() => router.push('/'), 600);
       } else {
         setErrorMsg('Invalid login credentials. Default fallback: admin@shop.com / admin123');
       }
@@ -44,15 +45,17 @@ export default function LoginPage() {
         });
         if (signUpErr) throw new Error(error.message);
         if (signUpData.user) {
+          document.cookie = "printpro_local_auth=1; path=/; max-age=604800; SameSite=Lax";
           setSuccessMsg('Admin account initialized. Logging in...');
-          setTimeout(() => router.push('/'), 1000);
+          setTimeout(() => router.push('/'), 600);
           return;
         }
       }
 
       if (data.user) {
+        document.cookie = "printpro_local_auth=1; path=/; max-age=604800; SameSite=Lax";
         setSuccessMsg('Authenticated successfully!');
-        setTimeout(() => router.push('/'), 800);
+        setTimeout(() => router.push('/'), 600);
       }
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Login failed');

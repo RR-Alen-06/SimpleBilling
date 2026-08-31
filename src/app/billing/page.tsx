@@ -65,6 +65,7 @@ export default function BillingPage() {
   const [showAddCustomerModal, setShowAddCustomerModal] = useState(false);
   const [newCustName, setNewCustName] = useState('');
   const [newCustMobile, setNewCustMobile] = useState('');
+  const [newCustEmail, setNewCustEmail] = useState('');
 
   // Feedback & Modal state
   const [errorMsg, setErrorMsg] = useState('');
@@ -135,7 +136,11 @@ export default function BillingPage() {
     : 0;
 
   const totalAfterDiscount = Math.max(0, subtotal - manualDiscountApplied - loyaltyDiscount);
-  const { roundedTotal, roundingAdjustment } = ApiService.calculateRounding(totalAfterDiscount, roundingMethod);
+  const gstAmount = (settings?.billing?.gst_enabled && Number(settings?.billing?.gst_rate) > 0)
+    ? Number(((totalAfterDiscount * Number(settings.billing.gst_rate)) / 100).toFixed(2))
+    : 0;
+  const totalBeforeRounding = totalAfterDiscount + gstAmount;
+  const { roundedTotal, roundingAdjustment } = ApiService.calculateRounding(totalBeforeRounding, roundingMethod);
 
   // Auto pre-fill full customer advance immediately when selecting a customer with an advance balance
   useEffect(() => {
@@ -273,13 +278,15 @@ export default function BillingPage() {
     try {
       const created = await ApiService.addCustomer({
         name: newCustName.trim(),
-        mobile: newCustMobile.trim() || undefined
+        mobile: newCustMobile.trim() || undefined,
+        email: newCustEmail.trim() || undefined
       });
       setCustomers([...customers, created]);
       setSelectedCustomerId(created.id);
       setShowAddCustomerModal(false);
       setNewCustName('');
       setNewCustMobile('');
+      setNewCustEmail('');
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to add customer');
     }
@@ -854,6 +861,14 @@ export default function BillingPage() {
               </div>
             )}
 
+            {/* GST Row (If Enabled in Settings) */}
+            {settings?.billing?.gst_enabled && Number(settings?.billing?.gst_rate) > 0 && (
+              <div className="flex justify-between items-center text-xs text-slate-700 font-medium">
+                <span>GST ({settings.billing.gst_rate}%):</span>
+                <span className="text-blue-700 font-bold">+₹{gstAmount.toFixed(2)}</span>
+              </div>
+            )}
+
             {/* Rounding Selection */}
             <div className="flex justify-between items-center text-xs">
               <span className="text-slate-600 flex items-center space-x-1">
@@ -1013,8 +1028,19 @@ export default function BillingPage() {
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Mobile Number (Optional)</label>
                 <input
                   type="text"
+                  placeholder="e.g. 9876543210"
                   value={newCustMobile}
                   onChange={(e) => setNewCustMobile(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded px-3 py-1.5 text-xs font-medium"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Email Address (Optional)</label>
+                <input
+                  type="email"
+                  placeholder="customer@example.com"
+                  value={newCustEmail}
+                  onChange={(e) => setNewCustEmail(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-300 rounded px-3 py-1.5 text-xs font-medium"
                 />
               </div>
@@ -1041,7 +1067,7 @@ export default function BillingPage() {
 
       {/* INVOICE MODAL */}
       {savedBill && (
-        <InvoiceModal bill={savedBill} onClose={() => setSavedBill(null)} />
+        <InvoiceModal bill={savedBill} settings={settings || undefined} onClose={() => setSavedBill(null)} />
       )}
     </div>
   );
