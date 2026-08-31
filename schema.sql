@@ -282,6 +282,20 @@ DROP POLICY IF EXISTS "User data isolation on loyalty_transactions" ON public.lo
 DROP POLICY IF EXISTS "User data isolation on loyalty_rules" ON public.loyalty_rules;
 DROP POLICY IF EXISTS "User data isolation on loyalty_redemption_rules" ON public.loyalty_redemption_rules;
 
+-- Drop previous policies if they exist (allows safe re-execution)
+DROP POLICY IF EXISTS "Allow all access to sequences" ON public.sequences;
+DROP POLICY IF EXISTS "Allow all access to customers" ON public.customers;
+DROP POLICY IF EXISTS "Allow all access to products" ON public.products;
+DROP POLICY IF EXISTS "Allow all access to bills" ON public.bills;
+DROP POLICY IF EXISTS "Allow all access to bill_items" ON public.bill_items;
+DROP POLICY IF EXISTS "Allow all access to payments" ON public.payments;
+DROP POLICY IF EXISTS "Allow all access to expenses" ON public.expenses;
+DROP POLICY IF EXISTS "Allow all access to settings" ON public.settings;
+DROP POLICY IF EXISTS "Allow all access to audit_logs" ON public.audit_logs;
+DROP POLICY IF EXISTS "Allow all access to loyalty_transactions" ON public.loyalty_transactions;
+DROP POLICY IF EXISTS "Allow all access to loyalty_rules" ON public.loyalty_rules;
+DROP POLICY IF EXISTS "Allow all access to loyalty_redemption_rules" ON public.loyalty_redemption_rules;
+
 -- Create Permissive Access Policies (Works for both authenticated users and public app access)
 CREATE POLICY "Allow all access to sequences" ON public.sequences FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all access to customers" ON public.customers FOR ALL USING (true) WITH CHECK (true);
