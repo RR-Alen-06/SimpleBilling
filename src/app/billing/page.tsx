@@ -1067,7 +1067,12 @@ export default function BillingPage() {
 
       {/* INVOICE MODAL */}
       {savedBill && (
-        <InvoiceModal bill={savedBill} settings={settings || undefined} onClose={() => setSavedBill(null)} />
+        <InvoiceModal 
+          bill={savedBill} 
+          settings={settings || undefined} 
+          customerEmail={customers.find(c => c.id === savedBill.customer_id)?.email || savedBill.customer_email || undefined} 
+          onClose={() => setSavedBill(null)} 
+        />
       )}
     </div>
   );

@@ -440,7 +440,12 @@ export default function DashboardPage() {
 
       {/* Invoice Modal */}
       {selectedBill && (
-        <InvoiceModal bill={selectedBill} settings={settings || undefined} onClose={() => setSelectedBill(null)} />
+        <InvoiceModal 
+          bill={selectedBill} 
+          settings={settings || undefined} 
+          customerEmail={selectedBill.customer_email || undefined} 
+          onClose={() => setSelectedBill(null)} 
+        />
       )}
     </div>
   );
