@@ -656,27 +656,27 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
           {printFormat === 'a4' && (
             <div 
               ref={invoiceRef}
-              className="a4-invoice text-slate-800 p-6 border border-slate-200 rounded-lg bg-white print:border-none print:p-0 print:scale-[0.82] print:origin-top space-y-3 print:space-y-1.5"
+              className="a4-invoice text-slate-800 p-6 border border-slate-200 rounded-lg bg-white print:border-none print:p-0 print:m-0 print:scale-[0.78] print:origin-top space-y-2.5 print:space-y-1"
             >
               {/* Header */}
-              <div className="flex justify-between items-start pb-3 print:pb-1.5 border-b border-slate-200">
+              <div className="flex justify-between items-start pb-2.5 print:pb-1 border-b border-slate-200">
                 <div>
-                  <h1 className="text-2xl print:text-lg font-extrabold text-slate-900 uppercase tracking-wide">
+                  <h1 className="text-2xl print:text-base font-extrabold text-slate-900 uppercase tracking-wide">
                     {billingConfig.gst_enabled ? 'TAX INVOICE' : 'INVOICE'}
                   </h1>
                   <p className="text-sm print:text-xs font-bold text-blue-600 mt-0.5">{shop.shop_name || 'ABC PRINTING CENTER'}</p>
-                  <p className="text-xs print:text-[9px] text-slate-500">Photocopying, Printing, Lamination & Office Supplies</p>
-                  <p className="text-xs print:text-[9px] text-slate-500">
+                  <p className="text-xs print:text-[8.5px] text-slate-500">Photocopying, Printing, Lamination & Office Supplies</p>
+                  <p className="text-xs print:text-[8.5px] text-slate-500">
                     {shop.address || 'Main Road, Shop No. 12'} • Ph: {shop.phone || '+91 98765 43210'}
                   </p>
                   {shop.gst_number && (
-                    <p className="text-xs print:text-[9px] text-slate-600 font-mono">GSTIN: {shop.gst_number}</p>
+                    <p className="text-xs print:text-[8.5px] text-slate-600 font-mono">GSTIN: {shop.gst_number}</p>
                   )}
                 </div>
                 <div className="text-right space-y-1 print:space-y-0.5">
                   <div className="text-sm print:text-xs font-bold text-slate-900">Invoice #{bill.bill_number}</div>
-                  <div className="text-xs print:text-[9px] text-slate-500">Date: {formattedDate}</div>
-                  <div className={`inline-block px-2.5 py-0.5 rounded text-xs print:text-[9px] font-bold uppercase ${
+                  <div className="text-xs print:text-[8.5px] text-slate-500">Date: {formattedDate}</div>
+                  <div className={`inline-block px-2.5 py-0.5 rounded text-xs print:text-[8.5px] font-bold uppercase ${
                     isPending ? 'bg-amber-100 text-amber-800 border border-amber-200' : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
                   }`}>
                     {summary.payment_status === 'Fully Paid' ? 'Status : Fully Paid' : 'Status : Payment Pending'}
@@ -685,9 +685,9 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
               </div>
 
               {/* Customer Info */}
-              <div className="p-3 bg-slate-50 rounded-xl text-xs print:text-[9px] grid grid-cols-2 gap-4 border border-slate-200 print:p-2">
+              <div className="p-2.5 bg-slate-50 rounded-xl text-xs print:text-[8.5px] grid grid-cols-2 gap-3 border border-slate-200 print:p-1.5">
                 <div>
-                  <span className="text-slate-400 block uppercase font-bold text-[10px] print:text-[8px] tracking-wider">Billed To:</span>
+                  <span className="text-slate-400 block uppercase font-bold text-[10px] print:text-[7.5px] tracking-wider">Billed To:</span>
                   <span className="text-base print:text-xs font-extrabold text-slate-900">{bill.customer_name || 'N/A'}</span>
                   {bill.customer_mobile ? (
                     <p className="text-slate-600 font-mono mt-0.5">Mobile: {bill.customer_mobile}</p>
@@ -695,11 +695,11 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                     <p className="text-slate-400 italic mt-0.5">No registered phone number</p>
                   )}
                   {customerEmail && (
-                    <p className="text-slate-600 text-[11px] print:text-[9px] mt-0.5">Email: {customerEmail}</p>
+                    <p className="text-slate-600 text-[11px] print:text-[8.5px] mt-0.5">Email: {customerEmail}</p>
                   )}
                 </div>
                 <div className="text-right">
-                  <span className="text-slate-400 block uppercase font-bold text-[10px] print:text-[8px] tracking-wider">Payment Mode:</span>
+                  <span className="text-slate-400 block uppercase font-bold text-[10px] print:text-[7.5px] tracking-wider">Payment Mode:</span>
                   <p className="text-sm print:text-xs font-bold text-slate-800 uppercase mt-0.5">{bill.payment_method || 'Cash'}</p>
                   <p className="text-slate-600 font-medium">Total Paid Now: ₹{summary.total_paid.toFixed(2)}</p>
                 </div>
@@ -708,22 +708,22 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
               {/* Items Table */}
               <table className="w-full text-left border-collapse">
                 <thead>
-                  <tr className="bg-slate-900 text-white text-xs print:text-[9px] uppercase font-semibold">
-                    <th className="p-2 print:p-1 rounded-l">#</th>
-                    <th className="p-2 print:p-1">Item & Description</th>
-                    <th className="p-2 print:p-1 text-center">Qty</th>
-                    <th className="p-2 print:p-1 text-right">Unit Price</th>
-                    <th className="p-2 print:p-1 text-right rounded-r">Total</th>
+                  <tr className="bg-slate-900 text-white text-xs print:text-[8.5px] uppercase font-semibold">
+                    <th className="p-2 print:p-0.5 rounded-l">#</th>
+                    <th className="p-2 print:p-0.5">Item & Description</th>
+                    <th className="p-2 print:p-0.5 text-center">Qty</th>
+                    <th className="p-2 print:p-0.5 text-right">Unit Price</th>
+                    <th className="p-2 print:p-0.5 text-right rounded-r">Total</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-200 text-xs print:text-[9px]">
+                <tbody className="divide-y divide-slate-200 text-xs print:text-[8.5px]">
                   {bill.items?.map((item, idx) => (
                     <tr key={idx}>
-                      <td className="p-2 print:p-1 text-slate-400 font-data-mono">{idx + 1}</td>
-                      <td className="p-2 print:p-1 font-medium text-slate-800">{item.product_name}</td>
-                      <td className="p-2 print:p-1 text-center font-data-mono">{item.quantity}</td>
-                      <td className="p-2 print:p-1 text-right font-data-mono">₹{item.price.toFixed(2)}</td>
-                      <td className="p-2 print:p-1 text-right font-data-mono font-bold text-slate-900">₹{item.total.toFixed(2)}</td>
+                      <td className="p-2 print:p-0.5 text-slate-400 font-data-mono">{idx + 1}</td>
+                      <td className="p-2 print:p-0.5 font-medium text-slate-800">{item.product_name}</td>
+                      <td className="p-2 print:p-0.5 text-center font-data-mono">{item.quantity}</td>
+                      <td className="p-2 print:p-0.5 text-right font-data-mono">₹{item.price.toFixed(2)}</td>
+                      <td className="p-2 print:p-0.5 text-right font-data-mono font-bold text-slate-900">₹{item.total.toFixed(2)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -731,7 +731,7 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
 
               {/* Current Bill Subtotal & Grand Total */}
               <div className="flex justify-end pt-1 border-t border-slate-200">
-                <div className="w-64 space-y-1 print:space-y-0.5 text-xs print:text-[9px]">
+                <div className="w-64 space-y-1 print:space-y-0 text-xs print:text-[8.5px]">
                   <div className="flex justify-between text-slate-600">
                     <span>Subtotal:</span>
                     <span className="font-medium">₹{subTotal.toFixed(2)}</span>
@@ -762,22 +762,22 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
               </div>
 
               {/* DEDICATED CUSTOMER ACCOUNT SUMMARY SECTION */}
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 print:p-2 space-y-2.5 print:space-y-1">
-                <div className="flex items-center justify-between border-b border-slate-200 pb-1">
-                  <h3 className="text-xs print:text-[9px] font-extrabold uppercase text-slate-900 tracking-wider">
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 print:p-1.5 space-y-2 print:space-y-0.5">
+                <div className="flex items-center justify-between border-b border-slate-200 pb-0.5">
+                  <h3 className="text-xs print:text-[8.5px] font-extrabold uppercase text-slate-900 tracking-wider">
                     Customer Account Summary
                   </h3>
-                  <span className={`px-2 py-0.5 rounded text-[10px] print:text-[8px] font-bold uppercase ${
+                  <span className={`px-2 py-0.5 rounded text-[10px] print:text-[7.5px] font-bold uppercase ${
                     isPending ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
                   }`}>
                     {summary.payment_status === 'Fully Paid' ? 'Status : Fully Paid' : 'Status : Payment Pending'}
                   </span>
                 </div>
 
-                <div className="print-summary-grid grid grid-cols-1 sm:grid-cols-3 print:grid-cols-3 gap-3 print:gap-1.5 text-xs print:text-[8px]">
+                <div className="print-summary-grid grid grid-cols-1 sm:grid-cols-3 print:grid-cols-3 gap-3 print:gap-1 text-xs print:text-[7.5px]">
                   {/* Ledger Summary */}
-                  <div className="bg-white p-2.5 print:p-1.5 rounded-lg border border-slate-200 space-y-1 print:space-y-0.5 shadow-sm">
-                    <p className="font-bold text-slate-700 uppercase text-[9px] print:text-[8px] tracking-wider border-b pb-0.5 text-blue-600">1. Ledger Summary</p>
+                  <div className="bg-white p-2.5 print:p-1 rounded-lg border border-slate-200 space-y-1 print:space-y-0 shadow-sm">
+                    <p className="font-bold text-slate-700 uppercase text-[9px] print:text-[7.5px] tracking-wider border-b pb-0.5 text-blue-600">1. Ledger Summary</p>
                     <div className="flex justify-between text-slate-600">
                       <span>Previous Outstanding:</span>
                       <span className="font-semibold text-slate-800">₹{summary.previous_outstanding.toFixed(2)}</span>
@@ -797,8 +797,8 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                   </div>
 
                   {/* Payment Summary */}
-                  <div className="bg-white p-2.5 print:p-1.5 rounded-lg border border-slate-200 space-y-1 print:space-y-0.5 shadow-sm">
-                    <p className="font-bold text-slate-700 uppercase text-[9px] print:text-[8px] tracking-wider border-b pb-0.5 text-emerald-600">2. Payment Summary</p>
+                  <div className="bg-white p-2.5 print:p-1 rounded-lg border border-slate-200 space-y-1 print:space-y-0 shadow-sm">
+                    <p className="font-bold text-slate-700 uppercase text-[9px] print:text-[7.5px] tracking-wider border-b pb-0.5 text-emerald-600">2. Payment Summary</p>
                     <div className="flex justify-between text-slate-600">
                       <span>Cash Paid:</span>
                       <span className="font-medium">₹{summary.cash_paid.toFixed(2)}</span>
@@ -818,10 +818,10 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                   </div>
 
                   {/* Balance Summary */}
-                  <div className={`p-2.5 print:p-1.5 rounded-lg border space-y-1 print:space-y-0.5 shadow-sm ${
+                  <div className={`p-2.5 print:p-1 rounded-lg border space-y-1 print:space-y-0 shadow-sm ${
                     isPending ? 'bg-amber-50/70 border-amber-200' : 'bg-emerald-50/70 border-emerald-200'
                   }`}>
-                    <p className={`font-bold uppercase text-[9px] print:text-[8px] tracking-wider border-b pb-0.5 ${
+                    <p className={`font-bold uppercase text-[9px] print:text-[7.5px] tracking-wider border-b pb-0.5 ${
                       isPending ? 'text-amber-800 border-amber-200' : 'text-emerald-800 border-emerald-200'
                     }`}>
                       3. Balance Summary
@@ -832,7 +832,7 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                         ₹{summary.remaining_balance.toFixed(2)}
                       </span>
                     </div>
-                    <p className="text-[9px] print:text-[7.5px] text-right font-medium">
+                    <p className="text-[9px] print:text-[7px] text-right font-medium">
                       Status : {summary.payment_status}
                     </p>
                     <div className="flex justify-between text-slate-600 pt-0.5 border-t border-slate-200/60">
@@ -844,35 +844,35 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
 
                 {/* Loyalty Summary (If Enabled) */}
                 {summary.loyalty && summary.loyalty.enabled && (
-                  <div className="bg-white p-2 print:p-1 rounded-lg border border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs print:text-[8px] shadow-sm">
+                  <div className="bg-white p-2 print:p-0.5 rounded-lg border border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs print:text-[7.5px] shadow-sm">
                     <div className="flex items-center space-x-1.5">
                       <span>{summary.remaining_balance === 0 || summary.loyalty.is_fully_paid ? '🎁' : '⏳'}</span>
-                      <span className="font-bold text-slate-800 uppercase text-[9px] print:text-[7.5px] tracking-wider">Loyalty Summary</span>
+                      <span className="font-bold text-slate-800 uppercase text-[9px] print:text-[7px] tracking-wider">Loyalty Summary</span>
                     </div>
 
                     {summary.remaining_balance === 0 || summary.loyalty.is_fully_paid ? (
                       <div className="flex flex-wrap items-center gap-3">
                         <div className="bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                          <span className="text-emerald-800 block text-[8px] font-bold">Earned</span>
-                          <span className="font-extrabold text-emerald-700 text-xs print:text-[9px]">+{summary.loyalty.points_earned} Pts</span>
+                          <span className="text-emerald-800 block text-[7.5px] font-bold">Earned</span>
+                          <span className="font-extrabold text-emerald-700 text-xs print:text-[8.5px]">+{summary.loyalty.points_earned} Pts</span>
                         </div>
                         <div>
-                          <span className="text-slate-500 block text-[8px]">Previous</span>
+                          <span className="text-slate-500 block text-[7.5px]">Previous</span>
                           <span className="font-bold text-slate-800">{summary.loyalty.previous_points} pts</span>
                         </div>
                         {summary.loyalty.points_redeemed > 0 && (
                           <div>
-                            <span className="text-slate-500 block text-[8px]">Redeemed</span>
+                            <span className="text-slate-500 block text-[7.5px]">Redeemed</span>
                             <span className="font-bold text-rose-600">-{summary.loyalty.points_redeemed} pts</span>
                           </div>
                         )}
                         <div className="bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                          <span className="text-slate-500 block text-[8px] font-bold uppercase">Balance</span>
-                          <span className="font-extrabold text-blue-700 text-xs print:text-[9px]">{summary.loyalty.current_points_balance} pts</span>
+                          <span className="text-slate-500 block text-[7.5px] font-bold uppercase">Balance</span>
+                          <span className="font-extrabold text-blue-700 text-xs print:text-[8.5px]">{summary.loyalty.current_points_balance} pts</span>
                         </div>
                       </div>
                     ) : (
-                      <div className="text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 font-semibold text-[9px] print:text-[7.5px]">
+                      <div className="text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 font-semibold text-[8.5px] print:text-[7px]">
                         ⏳ Loyalty Points will be credited after this bill is fully paid.
                       </div>
                     )}
@@ -880,7 +880,7 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                 )}
               </div>
 
-              <div className="pt-1.5 border-t border-slate-200 text-center text-[11px] print:text-[9px] text-slate-500">
+              <div className="pt-1 border-t border-slate-200 text-center text-[11px] print:text-[8.5px] text-slate-500">
                 {shop.footer_message || 'Thank you for visiting. Powered by PrintPro ERP'}
               </div>
             </div>

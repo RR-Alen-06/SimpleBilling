@@ -133,6 +133,7 @@ ALTER TABLE public.bill_items ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES a
 -- 5. PAYMENTS TABLE
 CREATE TABLE IF NOT EXISTS public.payments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    payment_number TEXT,
     customer_id UUID NOT NULL REFERENCES public.customers(id) ON DELETE CASCADE,
     bill_id UUID REFERENCES public.bills(id) ON DELETE SET NULL,
     amount NUMERIC(10, 2) NOT NULL CHECK (amount > 0),
@@ -141,6 +142,7 @@ CREATE TABLE IF NOT EXISTS public.payments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS payment_number TEXT;
 
 -- 6. EXPENSES TABLE
 CREATE TABLE IF NOT EXISTS public.expenses (
@@ -197,11 +199,15 @@ CREATE TABLE IF NOT EXISTS public.loyalty_rules (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- In-place Migration: Remove NOT NULL constraints on legacy reward_type & reward_value
+-- In-place Migration: Ensure user_id and points_earned, handle legacy columns safely
 ALTER TABLE public.loyalty_rules ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
 ALTER TABLE public.loyalty_rules ADD COLUMN IF NOT EXISTS points_earned NUMERIC(10, 2) NOT NULL DEFAULT 1.00;
-ALTER TABLE public.loyalty_rules ALTER COLUMN reward_type DROP NOT NULL;
-ALTER TABLE public.loyalty_rules ALTER COLUMN reward_value DROP NOT NULL;
+
+DO $$ BEGIN
+    ALTER TABLE public.loyalty_rules ALTER COLUMN reward_type DROP NOT NULL;
+    ALTER TABLE public.loyalty_rules ALTER COLUMN reward_value DROP NOT NULL;
+EXCEPTION WHEN undefined_column THEN NULL;
+END $$;
 
 -- 11. DYNAMIC LOYALTY REDEMPTION RULES TABLE
 CREATE TABLE IF NOT EXISTS public.loyalty_redemption_rules (
@@ -214,12 +220,12 @@ CREATE TABLE IF NOT EXISTS public.loyalty_redemption_rules (
 );
 ALTER TABLE public.loyalty_redemption_rules ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
 
--- Seed Default Simplified Earning Rules (Includes legacy columns as fallback)
-INSERT INTO public.loyalty_rules (user_id, rule_name, min_bill_amount, max_bill_amount, points_earned, reward_type, reward_value, enabled, sort_order)
+-- Seed Default Simplified Earning Rules
+INSERT INTO public.loyalty_rules (user_id, rule_name, min_bill_amount, max_bill_amount, points_earned, enabled, sort_order)
 VALUES
-    (auth.uid(), 'Standard Earning Rule', 0.00, 100.00, 1.00, 'FLAT', 1.00, true, 1),
-    (auth.uid(), 'Medium Purchase Bonus', 101.00, 500.00, 5.00, 'FLAT', 5.00, true, 2),
-    (auth.uid(), 'Bulk Purchase Bonus', 501.00, NULL, 15.00, 'FLAT', 15.00, true, 3)
+    (auth.uid(), 'Standard Earning Rule', 0.00, 100.00, 1.00, true, 1),
+    (auth.uid(), 'Medium Purchase Bonus', 101.00, 500.00, 5.00, true, 2),
+    (auth.uid(), 'Bulk Purchase Bonus', 501.00, NULL, 15.00, true, 3)
 ON CONFLICT DO NOTHING;
 
 -- Seed Default Redemption Rules

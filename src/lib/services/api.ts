@@ -824,12 +824,31 @@ export class ApiService {
     const bill = await this.getBillById(billId);
     if (!bill) throw new Error('Bill not found');
 
-    const newGrandTotal = Math.max(0, bill.total - newDiscount + bill.rounding_adjustment);
+    const settings = await this.getSettings();
+    const subtotalAfterDiscount = Math.max(0, Number(bill.total || 0) - newDiscount);
+
+    let newGstAmount = 0;
+    if (settings.billing.gst_enabled && Number(settings.billing.gst_rate) > 0) {
+      const rate = Number(settings.billing.gst_rate);
+      newGstAmount = Number(((subtotalAfterDiscount * rate) / 100).toFixed(2));
+    } else if (Number(bill.gst_amount || 0) > 0 && Number(bill.total || 0) > 0) {
+      const prevNet = Math.max(1, Number(bill.total || 0) - Number(bill.discount || 0));
+      const priorRate = (Number(bill.gst_amount) / prevNet) * 100;
+      newGstAmount = Number(((subtotalAfterDiscount * priorRate) / 100).toFixed(2));
+    }
+
+    const preRoundTotal = subtotalAfterDiscount + newGstAmount;
+    const { roundedTotal: newGrandTotal, roundingAdjustment: newAdjustment } = this.calculateRounding(
+      preRoundTotal,
+      (bill.rounding_method as RoundingMethod) || 'None'
+    );
 
     const { data: updatedBill, error } = await supabase
       .from('bills')
       .update({
         discount: newDiscount,
+        gst_amount: newGstAmount,
+        rounding_adjustment: newAdjustment,
         grand_total: newGrandTotal,
         edited_at: new Date().toISOString(),
         edited_by: userName,
