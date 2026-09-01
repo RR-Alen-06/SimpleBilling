@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Database, ExternalLink } from 'lucide-react';
+import { Database } from 'lucide-react';
 import { isSupabaseConfigured } from '@/lib/supabase/client';
 
 export function SupabaseBanner() {

@@ -606,7 +606,7 @@ export class ApiService {
 
     // 3. Payments, Prior Balance & Advance Math
     let priorOutstanding = 0;
-    const priorUnpaidBillsList: Array<{ id: string; due: number; bill: any }> = [];
+    const priorUnpaidBillsList: Array<{ id: string; due: number; bill: Bill }> = [];
 
     if (billData.customer_id) {
       const { data: priorUnpaid } = await supabase
@@ -1459,7 +1459,7 @@ export class ApiService {
       .order('created_at', { ascending: false });
 
     if (error) return [];
-    return (data || []).map((p: any) => ({
+    return (data || []).map((p: Payment & { customers?: { name?: string; mobile?: string } | null }) => ({
       ...p,
       customer_name: p.customers?.name || undefined,
       customer_mobile: p.customers?.mobile || undefined

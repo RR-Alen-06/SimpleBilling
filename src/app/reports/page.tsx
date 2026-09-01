@@ -7,7 +7,6 @@ import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { 
   BarChart3, 
   Printer, 
-  Calendar, 
   Users, 
   Receipt,
   FileSpreadsheet,
