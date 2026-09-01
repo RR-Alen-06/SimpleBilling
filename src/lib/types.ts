@@ -1,6 +1,7 @@
 export type PaymentMethod = 'Cash' | 'UPI' | 'Split Payment' | 'Advance Used';
 
-export type ExpenseCategory = 'Shop Expense' | 'Electricity' | 'Rent' | 'Other Expense';
+export type ExpenseCategory = string;
+export type ExpensePaymentMode = 'Cash' | 'UPI' | 'Bank Transfer' | 'Card' | 'Cheque' | 'Other';
 
 export type RoundingMethod = 'None' | 'Round Down' | 'Round Up' | 'Standard';
 
@@ -142,6 +143,8 @@ export interface Expense {
   title: string;
   amount: number;
   category: ExpenseCategory;
+  payment_mode?: ExpensePaymentMode | string;
+  notes?: string | null;
   created_at: string;
 }
 
@@ -276,6 +279,11 @@ export interface ApplicationSettings {
   time_format: string;
 }
 
+export interface ExpenseSettings {
+  categories: string[];
+  default_payment_mode?: ExpensePaymentMode | string;
+}
+
 export interface AllSettings {
   shop: ShopSettings;
   billing: BillingSettings;
@@ -283,6 +291,7 @@ export interface AllSettings {
   whatsapp: WhatsAppSettings;
   security: SecuritySettings;
   app: ApplicationSettings;
+  expenses?: ExpenseSettings;
 }
 
 export interface AuditLog {

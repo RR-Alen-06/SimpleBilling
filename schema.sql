@@ -149,10 +149,14 @@ CREATE TABLE IF NOT EXISTS public.expenses (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title TEXT NOT NULL,
     amount NUMERIC(10, 2) NOT NULL CHECK (amount > 0),
-    category TEXT NOT NULL CHECK (category IN ('Shop Expense', 'Electricity', 'Rent', 'Other Expense')),
+    category TEXT NOT NULL DEFAULT 'Shop Expense',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS payment_mode TEXT DEFAULT 'Cash';
+ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS notes TEXT;
+ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS expense_number TEXT;
+ALTER TABLE public.expenses DROP CONSTRAINT IF EXISTS expenses_category_check;
 
 -- 7. SETTINGS TABLE
 CREATE TABLE IF NOT EXISTS public.settings (
