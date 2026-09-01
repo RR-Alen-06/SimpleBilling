@@ -1574,19 +1574,22 @@ export class ApiService {
 
     let billsQuery = supabase.from('bills').select('*, bill_items(*)');
     let paymentsQuery = supabase.from('payments').select('*');
+    let expensesQuery = supabase.from('expenses').select('*');
 
     if (startDate) {
       billsQuery = billsQuery.gte('created_at', startDate.toISOString());
       paymentsQuery = paymentsQuery.gte('created_at', startDate.toISOString());
+      expensesQuery = expensesQuery.gte('created_at', startDate.toISOString());
     }
     if (endDate) {
       billsQuery = billsQuery.lte('created_at', endDate.toISOString());
       paymentsQuery = paymentsQuery.lte('created_at', endDate.toISOString());
+      expensesQuery = expensesQuery.lte('created_at', endDate.toISOString());
     }
 
     const { data: bills } = await billsQuery;
     const { data: payments } = await paymentsQuery;
-    const { data: expenses } = await supabase.from('expenses').select('*');
+    const { data: expenses } = await expensesQuery;
 
     const allBills = bills || [];
     const allPayments = payments || [];

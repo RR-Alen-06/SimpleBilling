@@ -5,6 +5,7 @@ export type ExpenseCategory = 'Shop Expense' | 'Electricity' | 'Rent' | 'Other E
 export type RoundingMethod = 'None' | 'Round Down' | 'Round Up' | 'Standard';
 
 export type DateFilterOption = 
+  | 'all_time'
   | 'today' 
   | 'yesterday' 
   | 'weekly' 

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '@/lib/services/api';
-import { Expense, ExpenseCategory } from '@/lib/types';
+import { Expense, ExpenseCategory, DateFilterOption } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { 
   DollarSign, 
@@ -13,16 +13,36 @@ import {
   AlertTriangle, 
   CheckCircle2, 
   X,
-  PieChart
+  PieChart,
+  Filter,
+  Search,
+  FileSpreadsheet
 } from 'lucide-react';
 
 const CATEGORIES: ExpenseCategory[] = ['Shop Expense', 'Electricity', 'Rent', 'Other Expense'];
+
+const dateFilterButtons: { id: DateFilterOption; label: string }[] = [
+  { id: 'all_time', label: 'All Time' },
+  { id: 'today', label: 'Today' },
+  { id: 'weekly', label: 'This Week' },
+  { id: 'monthly', label: 'This Month' },
+  { id: 'yearly', label: 'This Year' },
+  { id: 'financial_year', label: 'Financial Year' },
+  { id: 'custom', label: 'Custom' },
+];
 
 export default function ExpensesPage() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [totalIncome, setTotalIncome] = useState(0);
   const [totalExpense, setTotalExpense] = useState(0);
   const [loading, setLoading] = useState(true);
+
+  // Filters & Search
+  const [dateFilter, setDateFilter] = useState<DateFilterOption>('all_time');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Add Modal state
   const [showAddModal, setShowAddModal] = useState(false);
@@ -41,14 +61,15 @@ export default function ExpensesPage() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const expData = await ApiService.getExpenses();
+      const [expData, stats] = await Promise.all([
+        ApiService.getExpenses(),
+        ApiService.getDashboardStats(dateFilter, { from: customFrom, to: customTo })
+      ]);
       setExpenses(expData);
-
-      const stats = await ApiService.getDashboardStats();
       setTotalIncome(stats.total_income);
       setTotalExpense(stats.total_expense);
     } catch (err) {
-      console.error('Error fetching expenses:', err);
+      console.error('Error fetching expenses & accounting stats:', err);
     } finally {
       setLoading(false);
     }
@@ -57,7 +78,8 @@ export default function ExpensesPage() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     loadData();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateFilter, customFrom, customTo]);
 
   const handleOpenAdd = () => {
     setTitle('');
@@ -112,7 +134,46 @@ export default function ExpensesPage() {
     }
   };
 
-  const netProfit = totalIncome - totalExpense;
+  // Filter expenses list by date, category, and search query
+  const dateBounds = ApiService.getDateRangeBounds(dateFilter, { from: customFrom, to: customTo });
+  const filteredExpenses = expenses.filter((exp) => {
+    const expDate = new Date(exp.created_at);
+    if (dateBounds.startDate && expDate < dateBounds.startDate) return false;
+    if (dateBounds.endDate && expDate > dateBounds.endDate) return false;
+    if (selectedCategory !== 'ALL' && exp.category !== selectedCategory) return false;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      if (!exp.title.toLowerCase().includes(q) && !exp.category.toLowerCase().includes(q)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  const periodExpenseSum = filteredExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+  const effectiveExpense = dateFilter === 'all_time' && selectedCategory === 'ALL' && !searchQuery ? totalExpense : periodExpenseSum;
+  const netProfit = totalIncome - effectiveExpense;
+
+  const handleExportCSV = () => {
+    const headers = ['Expense Number', 'Date Time', 'Description', 'Category', 'Amount (INR)'];
+    const rows = filteredExpenses.map(e => [
+      e.expense_number || 'N/A',
+      new Date(e.created_at).toLocaleString('en-IN'),
+      e.title,
+      e.category,
+      Number(e.amount).toFixed(2)
+    ]);
+
+    const csvContent = 'data:text/csv;charset=utf-8,' + 
+      [headers.join(','), ...rows.map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))].join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `Expenses_Report_${dateFilter}_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   return (
     <div className="space-y-6">
@@ -125,16 +186,29 @@ export default function ExpensesPage() {
             <DollarSign className="text-blue-600" size={26} />
             <span>Simple Accounting & Expenses</span>
           </h1>
-          <p className="text-sm text-slate-500 mt-0.5">Track shop electricity, paper stock purchases, rent, and monthly profit</p>
+          <p className="text-sm text-slate-500 mt-0.5">Track shop electricity, paper stock purchases, rent, and calculate net profit</p>
         </div>
 
-        <button
-          onClick={handleOpenAdd}
-          className="bg-rose-600 hover:bg-rose-500 text-white font-semibold text-sm px-4 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5 self-start sm:self-auto"
-        >
-          <Plus size={18} />
-          <span>Record Expense</span>
-        </button>
+        <div className="flex items-center space-x-2 self-start sm:self-auto">
+          {filteredExpenses.length > 0 && (
+            <button
+              onClick={handleExportCSV}
+              className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 font-semibold text-xs px-3.5 py-2.5 rounded-lg shadow-sm transition flex items-center space-x-1.5 cursor-pointer"
+              title="Export filtered expenses to CSV"
+            >
+              <FileSpreadsheet size={16} className="text-emerald-600" />
+              <span>Export CSV</span>
+            </button>
+          )}
+
+          <button
+            onClick={handleOpenAdd}
+            className="bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs px-4 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5 cursor-pointer"
+          >
+            <Plus size={16} />
+            <span>Record Expense</span>
+          </button>
+        </div>
       </div>
 
       {/* Feedback Messages */}
@@ -151,12 +225,64 @@ export default function ExpensesPage() {
         </div>
       )}
 
+      {/* DATE RANGE & PERIOD FILTER STRIP */}
+      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center space-x-1.5 text-xs font-bold text-slate-700 uppercase tracking-wider">
+            <Filter size={15} className="text-blue-600" />
+            <span>Period:</span>
+          </div>
+
+          {/* Quick Date Pills */}
+          <div className="flex flex-wrap gap-1.5">
+            {dateFilterButtons.map((btn) => (
+              <button
+                key={btn.id}
+                onClick={() => setDateFilter(btn.id)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  dateFilter === btn.id
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {btn.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Custom Date Pickers */}
+        {dateFilter === 'custom' && (
+          <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center gap-3 text-xs">
+            <div className="flex items-center space-x-2">
+              <span className="font-semibold text-slate-600">From:</span>
+              <input
+                type="date"
+                value={customFrom}
+                onChange={(e) => setCustomFrom(e.target.value)}
+                className="bg-slate-50 border border-slate-300 rounded px-2.5 py-1 text-xs font-medium"
+              />
+            </div>
+            <div className="flex items-center space-x-2">
+              <span className="font-semibold text-slate-600">To:</span>
+              <input
+                type="date"
+                value={customTo}
+                onChange={(e) => setCustomTo(e.target.value)}
+                className="bg-slate-50 border border-slate-300 rounded px-2.5 py-1 text-xs font-medium"
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* FINANCIAL PROFIT & LOSS SUMMARY */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
             <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Total Income (Sales)</p>
             <p className="text-2xl font-data-mono font-extrabold text-emerald-600 mt-1">₹{totalIncome.toFixed(2)}</p>
+            <p className="text-[11px] text-slate-400 mt-0.5 capitalize">{dateFilter.replace('_', ' ')} revenue</p>
           </div>
           <div className="bg-emerald-50 text-emerald-600 p-3 rounded-xl border border-emerald-100">
             <TrendingUp size={24} />
@@ -166,7 +292,8 @@ export default function ExpensesPage() {
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
             <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Total Expenses</p>
-            <p className="text-2xl font-data-mono font-extrabold text-rose-600 mt-1">₹{totalExpense.toFixed(2)}</p>
+            <p className="text-2xl font-data-mono font-extrabold text-rose-600 mt-1">₹{effectiveExpense.toFixed(2)}</p>
+            <p className="text-[11px] text-slate-400 mt-0.5 capitalize">{dateFilter.replace('_', ' ')} expenditures</p>
           </div>
           <div className="bg-rose-50 text-rose-600 p-3 rounded-xl border border-rose-100">
             <TrendingDown size={24} />
@@ -179,6 +306,9 @@ export default function ExpensesPage() {
             <p className={`text-2xl font-data-mono font-extrabold mt-1 ${netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
               ₹{netProfit.toFixed(2)}
             </p>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              {netProfit >= 0 ? 'Net positive earnings' : 'Net operating deficit'}
+            </p>
           </div>
           <div className="bg-slate-800 text-blue-400 p-3 rounded-xl border border-slate-700">
             <PieChart size={24} />
@@ -186,28 +316,57 @@ export default function ExpensesPage() {
         </div>
       </div>
 
-      {/* EXPENSES TABLE */}
+      {/* EXPENSES SEARCH & CATEGORY FILTER */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-          <h2 className="font-bold text-slate-800 text-lg flex items-center space-x-2">
+        <div className="p-4 border-b border-slate-200 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 bg-slate-50/50">
+          <div className="flex items-center space-x-2">
             <DollarSign className="text-rose-600" size={20} />
-            <span>Shop Expense Log</span>
-          </h2>
+            <h2 className="font-bold text-slate-800 text-base">Shop Expense Log</h2>
+            <span className="text-xs bg-slate-200 text-slate-700 px-2 py-0.5 rounded-full font-bold">
+              {filteredExpenses.length}
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Search Input */}
+            <div className="relative min-w-[200px]">
+              <Search className="absolute left-3 top-2.5 text-slate-400" size={14} />
+              <input
+                type="text"
+                placeholder="Search expenses..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+
+            {/* Category Select */}
+            <select
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value)}
+              className="px-3 py-1.5 text-xs font-semibold bg-white border border-slate-300 rounded-lg text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+            >
+              <option value="ALL">All Categories</option>
+              {CATEGORIES.map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {loading ? (
           <div className="p-12 text-center text-slate-500 text-sm">Loading expenses...</div>
-        ) : expenses.length === 0 ? (
+        ) : filteredExpenses.length === 0 ? (
           <div className="p-12 text-center text-slate-500">
             <DollarSign className="mx-auto text-slate-300 mb-3" size={40} />
-            <p className="font-medium text-base text-slate-700">No expenses recorded.</p>
-            <p className="text-xs text-slate-400 mt-1">Record shop expenses (Paper rolls, Toner, Rent, Electricity) to monitor net profit.</p>
+            <p className="font-medium text-base text-slate-700">No expenses found for the selected period.</p>
+            <p className="text-xs text-slate-400 mt-1">Try changing the date period, category filter, or record a new expense.</p>
             <button
               onClick={handleOpenAdd}
-              className="mt-4 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold px-4 py-2 rounded-lg shadow inline-flex items-center space-x-1.5"
+              className="mt-4 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold px-4 py-2 rounded-lg shadow inline-flex items-center space-x-1.5 cursor-pointer"
             >
               <Plus size={14} />
-              <span>Record First Expense</span>
+              <span>Record Expense</span>
             </button>
           </div>
         ) : (
@@ -215,6 +374,7 @@ export default function ExpensesPage() {
             <table className="w-full text-left text-sm border-collapse">
               <thead>
                 <tr className="bg-slate-100 text-slate-700 uppercase text-[11px] font-bold tracking-wider border-b border-slate-200">
+                  <th className="px-6 py-3.5">Expense #</th>
                   <th className="px-6 py-3.5">Date & Time</th>
                   <th className="px-6 py-3.5">Expense Description</th>
                   <th className="px-6 py-3.5">Category</th>
@@ -223,12 +383,16 @@ export default function ExpensesPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200/60 text-slate-800">
-                {expenses.map((exp) => (
+                {filteredExpenses.map((exp) => (
                   <tr key={exp.id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="px-6 py-4 text-xs font-data-mono font-bold text-slate-500">
+                      {exp.expense_number || 'EXP-—'}
+                    </td>
                     <td className="px-6 py-4 text-xs font-data-mono text-slate-500">
                       {new Date(exp.created_at).toLocaleString('en-IN', {
                         day: '2-digit',
                         month: 'short',
+                        year: 'numeric',
                         hour: '2-digit',
                         minute: '2-digit'
                       })}
@@ -245,7 +409,7 @@ export default function ExpensesPage() {
                     <td className="px-6 py-4 text-center">
                       <button
                         onClick={() => setDeletingExpense(exp)}
-                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition mx-auto"
+                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition mx-auto cursor-pointer"
                         title="Delete Expense"
                       >
                         <Trash2 size={16} />
@@ -265,7 +429,7 @@ export default function ExpensesPage() {
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4">
             <div className="flex justify-between items-center border-b border-slate-200 pb-3">
               <h2 className="text-lg font-bold text-slate-900">Record Shop Expense</h2>
-              <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-600">
+              <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-600 cursor-pointer">
                 <X size={20} />
               </button>
             </div>
@@ -290,7 +454,7 @@ export default function ExpensesPage() {
                 <select
                   value={category}
                   onChange={(e) => setCategory(e.target.value as ExpenseCategory)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-500"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
                 >
                   {CATEGORIES.map(c => (
                     <option key={c} value={c}>{c}</option>
@@ -318,14 +482,14 @@ export default function ExpensesPage() {
                 <button
                   type="button"
                   onClick={() => setShowAddModal(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="px-5 py-2 text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white rounded-lg shadow disabled:opacity-50"
+                  className="px-5 py-2 text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white rounded-lg shadow disabled:opacity-50 cursor-pointer"
                 >
                   {submitting ? 'Saving...' : 'Record Expense'}
                 </button>
@@ -342,18 +506,18 @@ export default function ExpensesPage() {
             <AlertTriangle className="mx-auto text-rose-600" size={40} />
             <h3 className="text-lg font-bold text-slate-900">Confirm Expense Deletion</h3>
             <p className="text-sm text-slate-600">
-              Are you sure you want to remove <span className="font-bold text-slate-900">&quot;{deletingExpense.title}&quot;</span> (₹{deletingExpense.amount})?
+              Are you sure you want to remove <span className="font-bold text-slate-900">&quot;{deletingExpense.title}&quot;</span> (₹{Number(deletingExpense.amount).toFixed(2)})?
             </p>
             <div className="flex justify-center space-x-3 pt-2">
               <button
                 onClick={() => setDeletingExpense(null)}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 onClick={handleDelete}
-                className="px-5 py-2 text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white rounded-lg shadow"
+                className="px-5 py-2 text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white rounded-lg shadow cursor-pointer"
               >
                 Yes, Delete
               </button>
