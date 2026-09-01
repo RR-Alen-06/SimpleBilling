@@ -38,10 +38,6 @@ export default function ExpensesPage() {
   const [successMsg, setSuccessMsg] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
   const loadData = async () => {
     setLoading(true);
     try {
@@ -57,6 +53,11 @@ export default function ExpensesPage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadData();
+  }, []);
 
   const handleOpenAdd = () => {
     setTitle('');
