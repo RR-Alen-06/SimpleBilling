@@ -66,6 +66,19 @@ export const DEFAULT_SETTINGS: AllSettings = {
     theme: 'light',
     date_format: 'DD/MM/YYYY',
     time_format: '12h'
+  },
+  expenses: {
+    categories: [
+      'Shop Expense',
+      'Electricity',
+      'Rent',
+      'Paper Stock & Rolls',
+      'Toner & Cartridges',
+      'Machine Maintenance',
+      'Staff Wages',
+      'Other Expense'
+    ],
+    default_payment_mode: 'Cash'
   }
 };
 
@@ -1478,13 +1491,26 @@ export class ApiService {
     return data || [];
   }
 
-  static async addExpense(expense: { title: string; amount: number; category: 'Shop Expense' | 'Electricity' | 'Rent' | 'Other Expense' }, userName = 'Admin'): Promise<Expense> {
+  static async addExpense(expense: { 
+    title: string; 
+    amount: number; 
+    category: string;
+    payment_mode?: string;
+    notes?: string;
+  }, userName = 'Admin'): Promise<Expense> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const expense_number = await this.getNextSequence('EXPENSE');
 
     const { data, error } = await supabase
       .from('expenses')
-      .insert([{ ...expense, expense_number }])
+      .insert([{
+        title: expense.title,
+        amount: expense.amount,
+        category: expense.category,
+        payment_mode: expense.payment_mode || 'Cash',
+        notes: expense.notes || null,
+        expense_number
+      }])
       .select()
       .single();
 
@@ -1510,6 +1536,30 @@ export class ApiService {
       action: 'DELETE_EXPENSE',
       entity: `Expense ID ${id}`
     });
+  }
+
+  static async addExpenseCategory(categoryName: string, userName = 'Admin'): Promise<string[]> {
+    const settings = await this.getSettings();
+    const existing = settings.expenses?.categories || [
+      'Shop Expense', 'Electricity', 'Rent', 'Paper Stock & Rolls', 
+      'Toner & Cartridges', 'Machine Maintenance', 'Staff Wages', 'Other Expense'
+    ];
+    if (!existing.includes(categoryName)) {
+      const updated = [...existing, categoryName];
+      await this.saveSettings('expenses', { ...settings.expenses, categories: updated }, userName);
+      return updated;
+    }
+    return existing;
+  }
+
+  static async removeExpenseCategory(categoryName: string, userName = 'Admin'): Promise<string[]> {
+    const settings = await this.getSettings();
+    const existing = settings.expenses?.categories || [
+      'Shop Expense', 'Electricity', 'Rent', 'Other Expense'
+    ];
+    const updated = existing.filter(c => c !== categoryName);
+    await this.saveSettings('expenses', { ...settings.expenses, categories: updated }, userName);
+    return updated;
   }
 
   // --- SUPER ADMIN PURGE ---
