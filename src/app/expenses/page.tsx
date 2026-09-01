@@ -456,91 +456,101 @@ export default function ExpensesPage() {
         </div>
       </div>
 
-      {/* CATEGORY BREAKDOWN & PAYMENT METHOD METRICS */}
-      {filteredExpenses.length > 0 && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Visual Chart Card */}
-          <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div>
-                <h3 className="text-sm font-bold text-slate-900 flex items-center space-x-2">
-                  <PieIcon size={18} className="text-blue-600" />
-                  <span>Expense Category Breakdown</span>
-                </h3>
-                <p className="text-xs text-slate-400 mt-0.5">Distribution of spending across shop categories</p>
-              </div>
-
-              <div className="flex items-center space-x-1 bg-slate-100 p-1 rounded-lg">
-                <button
-                  onClick={() => setChartView('pie')}
-                  className={`px-2.5 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
-                    chartView === 'pie' ? 'bg-white text-blue-600 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Pie
-                </button>
-                <button
-                  onClick={() => setChartView('bar')}
-                  className={`px-2.5 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
-                    chartView === 'bar' ? 'bg-white text-blue-600 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Bar
-                </button>
-              </div>
+      {/* CATEGORY BREAKDOWN & PAYMENT METHOD METRICS (Always visible) */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Visual Chart Card */}
+        <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-4">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 flex items-center space-x-2">
+                <PieIcon size={18} className="text-blue-600" />
+                <span>Expense Category Breakdown</span>
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">Distribution of spending across shop categories</p>
             </div>
 
-            <div className="h-64 w-full">
-              {chartView === 'pie' ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <RechartsPieChart>
-                    <Pie
-                      data={categoryChartData}
-                      dataKey="value"
-                      nameKey="name"
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={50}
-                      outerRadius={85}
-                      paddingAngle={3}
-                      label={({ name, percent }) => `${name} (${((percent || 0) * 100).toFixed(0)}%)`}
-                    >
-                      {categoryChartData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                      ))}
-                    </Pie>
-                    <RechartsTooltip formatter={(val) => [`₹${Number(val).toFixed(2)}`, 'Amount']} />
-                    <Legend />
-                  </RechartsPieChart>
-                </ResponsiveContainer>
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={categoryChartData} margin={{ top: 10, right: 20, left: 10, bottom: 20 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
-                    <XAxis dataKey="name" tick={{ fontSize: 11 }} interval={0} angle={-15} textAnchor="end" />
-                    <YAxis tick={{ fontSize: 11 }} />
-                    <RechartsTooltip formatter={(val) => [`₹${Number(val).toFixed(2)}`, 'Amount']} />
-                    <Bar dataKey="value" fill="#3B82F6" radius={[4, 4, 0, 0]}>
-                      {categoryChartData.map((entry, index) => (
-                        <Cell key={`cell-bar-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              )}
+            <div className="flex items-center space-x-1 bg-slate-100 p-1 rounded-lg">
+              <button
+                onClick={() => setChartView('pie')}
+                className={`px-2.5 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
+                  chartView === 'pie' ? 'bg-white text-blue-600 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Pie
+              </button>
+              <button
+                onClick={() => setChartView('bar')}
+                className={`px-2.5 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
+                  chartView === 'bar' ? 'bg-white text-blue-600 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Bar
+              </button>
             </div>
           </div>
 
-          {/* Payment Mode & Category Stats Sidebar */}
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-4 flex flex-col justify-between">
-            <div>
-              <h3 className="text-sm font-bold text-slate-900 flex items-center space-x-2 border-b border-slate-100 pb-3">
-                <CreditCard size={18} className="text-emerald-600" />
-                <span>Payment Mode Breakdown</span>
-              </h3>
+          <div className="h-64 w-full">
+            {categoryChartData.length === 0 ? (
+              <div className="h-full w-full flex flex-col items-center justify-center bg-slate-50 rounded-lg border border-dashed border-slate-200 text-center p-6">
+                <PieIcon className="text-slate-300 mb-2" size={40} />
+                <p className="text-sm font-semibold text-slate-700">No Expense Data to Visualize</p>
+                <p className="text-xs text-slate-400 mt-1 max-w-xs">
+                  Click &quot;Record Expense&quot; to log shop expenses and view interactive category breakdown.
+                </p>
+              </div>
+            ) : chartView === 'pie' ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <RechartsPieChart>
+                  <Pie
+                    data={categoryChartData}
+                    dataKey="value"
+                    nameKey="name"
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={50}
+                    outerRadius={85}
+                    paddingAngle={3}
+                    label={({ name, percent }) => `${name} (${((percent || 0) * 100).toFixed(0)}%)`}
+                  >
+                    {categoryChartData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <RechartsTooltip formatter={(val) => [`₹${Number(val).toFixed(2)}`, 'Amount']} />
+                  <Legend />
+                </RechartsPieChart>
+              </ResponsiveContainer>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={categoryChartData} margin={{ top: 10, right: 20, left: 10, bottom: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
+                  <XAxis dataKey="name" tick={{ fontSize: 11 }} interval={0} angle={-15} textAnchor="end" />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <RechartsTooltip formatter={(val) => [`₹${Number(val).toFixed(2)}`, 'Amount']} />
+                  <Bar dataKey="value" fill="#3B82F6" radius={[4, 4, 0, 0]}>
+                    {categoryChartData.map((entry, index) => (
+                      <Cell key={`cell-bar-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </div>
 
-              <div className="space-y-3 mt-3">
-                {Array.from(paymentModeMap.entries()).map(([mode, amt]) => {
+        {/* Payment Mode & Category Stats Sidebar */}
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-4 flex flex-col justify-between">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900 flex items-center space-x-2 border-b border-slate-100 pb-3">
+              <CreditCard size={18} className="text-emerald-600" />
+              <span>Payment Mode Breakdown</span>
+            </h3>
+
+            <div className="space-y-3 mt-3">
+              {paymentModeMap.size === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-6">No payment records yet</p>
+              ) : (
+                Array.from(paymentModeMap.entries()).map(([mode, amt]) => {
                   const pct = periodExpenseSum > 0 ? ((amt / periodExpenseSum) * 100).toFixed(1) : '0';
                   return (
                     <div key={mode} className="bg-slate-50 p-3 rounded-lg border border-slate-100 flex items-center justify-between">
@@ -554,22 +564,22 @@ export default function ExpensesPage() {
                       </div>
                     </div>
                   );
-                })}
-              </div>
+                })
+              )}
             </div>
+          </div>
 
-            <div className="pt-3 border-t border-slate-100">
-              <p className="text-xs text-slate-500 font-medium">Top Category:</p>
-              <div className="flex items-center justify-between mt-1">
-                <span className="text-sm font-bold text-slate-900">{categoryChartData[0]?.name || 'N/A'}</span>
-                <span className="text-xs font-extrabold text-rose-600 font-data-mono">
-                  ₹{categoryChartData[0]?.value.toFixed(2) || '0.00'}
-                </span>
-              </div>
+          <div className="pt-3 border-t border-slate-100">
+            <p className="text-xs text-slate-500 font-medium">Top Category:</p>
+            <div className="flex items-center justify-between mt-1">
+              <span className="text-sm font-bold text-slate-900">{categoryChartData[0]?.name || 'None'}</span>
+              <span className="text-xs font-extrabold text-rose-600 font-data-mono">
+                ₹{categoryChartData[0]?.value.toFixed(2) || '0.00'}
+              </span>
             </div>
           </div>
         </div>
-      )}
+      </div>
 
       {/* EXPENSES LOG & FILTERS TABLE */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
