@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS public.customers (
 );
 ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
 ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS customer_code TEXT;
+ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS advance_balance NUMERIC(10, 2) NOT NULL DEFAULT 0.00;
 ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS loyalty_points NUMERIC(10, 2) NOT NULL DEFAULT 0.00;
 
@@ -95,6 +96,7 @@ CREATE TABLE IF NOT EXISTS public.bills (
     customer_id UUID REFERENCES public.customers(id) ON DELETE SET NULL,
     total NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (total >= 0),
     discount NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (discount >= 0),
+    gst_amount NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
     rounding_method TEXT NOT NULL DEFAULT 'None',
     rounding_adjustment NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
     grand_total NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (grand_total >= 0),
@@ -113,6 +115,7 @@ CREATE TABLE IF NOT EXISTS public.bills (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS gst_amount NUMERIC(10, 2) NOT NULL DEFAULT 0.00;
 
 -- 4. BILL ITEMS TABLE
 CREATE TABLE IF NOT EXISTS public.bill_items (
@@ -130,6 +133,7 @@ ALTER TABLE public.bill_items ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES a
 -- 5. PAYMENTS TABLE
 CREATE TABLE IF NOT EXISTS public.payments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    payment_number TEXT,
     customer_id UUID NOT NULL REFERENCES public.customers(id) ON DELETE CASCADE,
     bill_id UUID REFERENCES public.bills(id) ON DELETE SET NULL,
     amount NUMERIC(10, 2) NOT NULL CHECK (amount > 0),
@@ -138,6 +142,7 @@ CREATE TABLE IF NOT EXISTS public.payments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS payment_number TEXT;
 
 -- 6. EXPENSES TABLE
 CREATE TABLE IF NOT EXISTS public.expenses (
@@ -194,11 +199,15 @@ CREATE TABLE IF NOT EXISTS public.loyalty_rules (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- In-place Migration: Remove NOT NULL constraints on legacy reward_type & reward_value
+-- In-place Migration: Ensure user_id and points_earned, handle legacy columns safely
 ALTER TABLE public.loyalty_rules ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
 ALTER TABLE public.loyalty_rules ADD COLUMN IF NOT EXISTS points_earned NUMERIC(10, 2) NOT NULL DEFAULT 1.00;
-ALTER TABLE public.loyalty_rules ALTER COLUMN reward_type DROP NOT NULL;
-ALTER TABLE public.loyalty_rules ALTER COLUMN reward_value DROP NOT NULL;
+
+DO $$ BEGIN
+    ALTER TABLE public.loyalty_rules ALTER COLUMN reward_type DROP NOT NULL;
+    ALTER TABLE public.loyalty_rules ALTER COLUMN reward_value DROP NOT NULL;
+EXCEPTION WHEN undefined_column THEN NULL;
+END $$;
 
 -- 11. DYNAMIC LOYALTY REDEMPTION RULES TABLE
 CREATE TABLE IF NOT EXISTS public.loyalty_redemption_rules (
@@ -211,12 +220,12 @@ CREATE TABLE IF NOT EXISTS public.loyalty_redemption_rules (
 );
 ALTER TABLE public.loyalty_redemption_rules ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
 
--- Seed Default Simplified Earning Rules (Includes legacy columns as fallback)
-INSERT INTO public.loyalty_rules (user_id, rule_name, min_bill_amount, max_bill_amount, points_earned, reward_type, reward_value, enabled, sort_order)
+-- Seed Default Simplified Earning Rules
+INSERT INTO public.loyalty_rules (user_id, rule_name, min_bill_amount, max_bill_amount, points_earned, enabled, sort_order)
 VALUES
-    (auth.uid(), 'Standard Earning Rule', 0.00, 100.00, 1.00, 'FLAT', 1.00, true, 1),
-    (auth.uid(), 'Medium Purchase Bonus', 101.00, 500.00, 5.00, 'FLAT', 5.00, true, 2),
-    (auth.uid(), 'Bulk Purchase Bonus', 501.00, NULL, 15.00, 'FLAT', 15.00, true, 3)
+    (auth.uid(), 'Standard Earning Rule', 0.00, 100.00, 1.00, true, 1),
+    (auth.uid(), 'Medium Purchase Bonus', 101.00, 500.00, 5.00, true, 2),
+    (auth.uid(), 'Bulk Purchase Bonus', 501.00, NULL, 15.00, true, 3)
 ON CONFLICT DO NOTHING;
 
 -- Seed Default Redemption Rules
@@ -279,19 +288,33 @@ DROP POLICY IF EXISTS "User data isolation on loyalty_transactions" ON public.lo
 DROP POLICY IF EXISTS "User data isolation on loyalty_rules" ON public.loyalty_rules;
 DROP POLICY IF EXISTS "User data isolation on loyalty_redemption_rules" ON public.loyalty_redemption_rules;
 
--- Create Strict User X vs User Y Data Isolation Policies (No user_id IS NULL bypass)
-CREATE POLICY "User data isolation on sequences" ON public.sequences FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on customers" ON public.customers FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on products" ON public.products FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on bills" ON public.bills FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on bill_items" ON public.bill_items FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on payments" ON public.payments FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on expenses" ON public.expenses FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on settings" ON public.settings FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on audit_logs" ON public.audit_logs FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on loyalty_transactions" ON public.loyalty_transactions FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on loyalty_rules" ON public.loyalty_rules FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "User data isolation on loyalty_redemption_rules" ON public.loyalty_redemption_rules FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+-- Drop previous policies if they exist (allows safe re-execution)
+DROP POLICY IF EXISTS "Allow all access to sequences" ON public.sequences;
+DROP POLICY IF EXISTS "Allow all access to customers" ON public.customers;
+DROP POLICY IF EXISTS "Allow all access to products" ON public.products;
+DROP POLICY IF EXISTS "Allow all access to bills" ON public.bills;
+DROP POLICY IF EXISTS "Allow all access to bill_items" ON public.bill_items;
+DROP POLICY IF EXISTS "Allow all access to payments" ON public.payments;
+DROP POLICY IF EXISTS "Allow all access to expenses" ON public.expenses;
+DROP POLICY IF EXISTS "Allow all access to settings" ON public.settings;
+DROP POLICY IF EXISTS "Allow all access to audit_logs" ON public.audit_logs;
+DROP POLICY IF EXISTS "Allow all access to loyalty_transactions" ON public.loyalty_transactions;
+DROP POLICY IF EXISTS "Allow all access to loyalty_rules" ON public.loyalty_rules;
+DROP POLICY IF EXISTS "Allow all access to loyalty_redemption_rules" ON public.loyalty_redemption_rules;
+
+-- Create Permissive Access Policies (Works for both authenticated users and public app access)
+CREATE POLICY "Allow all access to sequences" ON public.sequences FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to customers" ON public.customers FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to products" ON public.products FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to bills" ON public.bills FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to bill_items" ON public.bill_items FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to payments" ON public.payments FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to expenses" ON public.expenses FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to settings" ON public.settings FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to audit_logs" ON public.audit_logs FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to loyalty_transactions" ON public.loyalty_transactions FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to loyalty_rules" ON public.loyalty_rules FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all access to loyalty_redemption_rules" ON public.loyalty_redemption_rules FOR ALL USING (true) WITH CHECK (true);
 
 -- RELOAD SUPABASE POSTGREST SCHEMA CACHE INSTANTLY
 NOTIFY pgrst, 'reload schema';

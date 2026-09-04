@@ -547,6 +547,41 @@ export default function SettingsPage() {
                       <option value="A4">Standard A4 Tax Invoice</option>
                     </select>
                   </div>
+
+                  {/* GST Configuration */}
+                  <div className="md:col-span-2 bg-blue-50/60 p-4 rounded-xl border border-blue-200 space-y-3">
+                    <div className="flex items-center space-x-3">
+                      <input
+                        type="checkbox"
+                        id="gst_enabled"
+                        checked={settings.billing.gst_enabled}
+                        onChange={(e) => setSettings({ ...settings, billing: { ...settings.billing, gst_enabled: e.target.checked } })}
+                        className="w-4 h-4 text-blue-600 rounded"
+                      />
+                      <label htmlFor="gst_enabled" className="text-sm font-bold text-blue-900">
+                        Enable GST Calculation on Invoices
+                      </label>
+                    </div>
+
+                    {settings.billing.gst_enabled && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-700 mb-1">Default GST Rate (%)</label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.5"
+                            value={settings.billing.gst_rate}
+                            onChange={(e) => setSettings({ ...settings, billing: { ...settings.billing, gst_rate: Number(e.target.value) } })}
+                            className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold"
+                          />
+                        </div>
+                        <div className="flex items-center text-xs text-slate-500 pt-5">
+                          Calculates GST after discount deductions on bills & invoices.
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <div className="pt-3 border-t flex justify-end">
@@ -810,10 +845,14 @@ export default function SettingsPage() {
               </div>
             )}
 
-            {/* 5. WHATSAPP TAB */}
+            {/* 5. WHATSAPP & EMAIL INTEGRATION TAB */}
             {activeTab === 'whatsapp' && (
-              <div className="space-y-5">
-                <h2 className="text-lg font-bold text-slate-900 border-b pb-2">WhatsApp Receipt Integration</h2>
+              <div className="space-y-6">
+                <div>
+                  <h2 className="text-lg font-bold text-slate-900 border-b pb-2">WhatsApp & Email Sharing Configuration</h2>
+                  <p className="text-xs text-slate-500 mt-1">Configure automated sharing via WhatsApp, EmailJS (PDF attachments), Telegram, and SMS.</p>
+                </div>
+
                 <div className="flex items-center space-x-3 bg-emerald-50 p-4 rounded-xl border border-emerald-200">
                   <input
                     type="checkbox"
@@ -823,8 +862,63 @@ export default function SettingsPage() {
                     className="w-4 h-4 text-emerald-600 rounded"
                   />
                   <label htmlFor="wa_enable" className="text-sm font-bold text-emerald-900">
-                    Enable WhatsApp Receipt Sharing
+                    Enable WhatsApp & Social Sharing Buttons on Invoices
                   </label>
+                </div>
+
+                {/* EMAILJS CONFIGURATION CARD */}
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 space-y-4">
+                  <div className="flex items-center space-x-2 border-b border-slate-200 pb-2">
+                    <h3 className="text-sm font-bold text-slate-900">EmailJS PDF Attachment Setup</h3>
+                    <span className="text-[10px] bg-blue-100 text-blue-800 font-bold px-2 py-0.5 rounded-full">Client-Side PDF Delivery</span>
+                  </div>
+                  <p className="text-xs text-slate-600">
+                    Enter your EmailJS credentials below to send generated invoice PDFs directly to customer emails. Free tier is 100% sufficient.
+                  </p>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Service ID</label>
+                      <input
+                        type="text"
+                        placeholder="service_xxxxxxx"
+                        value={settings.whatsapp.email_service_id || ''}
+                        onChange={(e) => setSettings({
+                          ...settings,
+                          whatsapp: { ...settings.whatsapp, email_service_id: e.target.value }
+                        })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Template ID</label>
+                      <input
+                        type="text"
+                        placeholder="template_xxxxxxx"
+                        value={settings.whatsapp.email_template_id || ''}
+                        onChange={(e) => setSettings({
+                          ...settings,
+                          whatsapp: { ...settings.whatsapp, email_template_id: e.target.value }
+                        })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Public Key / User ID</label>
+                      <input
+                        type="password"
+                        placeholder="Public Key"
+                        value={settings.whatsapp.email_public_key || ''}
+                        onChange={(e) => setSettings({
+                          ...settings,
+                          whatsapp: { ...settings.whatsapp, email_public_key: e.target.value }
+                        })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono"
+                      />
+                    </div>
+                  </div>
                 </div>
 
                 <div className="pt-3 border-t flex justify-end">
@@ -834,7 +928,7 @@ export default function SettingsPage() {
                     className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-5 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5"
                   >
                     <Save size={16} />
-                    <span>Save WhatsApp Config</span>
+                    <span>Save Sharing & Email Config</span>
                   </button>
                 </div>
               </div>
@@ -842,8 +936,39 @@ export default function SettingsPage() {
 
             {/* 6. SECURITY & SUPER ADMIN PURGE TAB */}
             {activeTab === 'security' && (
-              <div className="space-y-5">
-                <h2 className="text-lg font-bold text-slate-900 border-b pb-2">Security PIN & Super Admin Data Purge</h2>
+              <div className="space-y-6">
+                <div>
+                  <h2 className="text-lg font-bold text-slate-900 border-b pb-2">Security PIN & Super Admin Controls</h2>
+                  <p className="text-xs text-slate-500 mt-1">Configure admin security PIN for authorizing discounts and sensitive operations.</p>
+                </div>
+
+                {/* SECURITY PIN CONFIGURATION CARD */}
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 space-y-4">
+                  <h3 className="text-sm font-bold text-slate-900">Super Admin Security PIN</h3>
+                  <div className="max-w-xs">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Super Admin PIN (Used for discount adjustments)</label>
+                    <input
+                      type="password"
+                      placeholder="Default: 1234"
+                      value={settings.security.super_admin_pin}
+                      onChange={(e) => setSettings({
+                        ...settings,
+                        security: { ...settings.security, super_admin_pin: e.target.value }
+                      })}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono font-bold"
+                    />
+                  </div>
+                  <div className="pt-2">
+                    <button
+                      onClick={() => handleSaveSection('security')}
+                      disabled={saving}
+                      className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2 rounded-lg shadow transition flex items-center space-x-1.5"
+                    >
+                      <Save size={15} />
+                      <span>Save Security PIN</span>
+                    </button>
+                  </div>
+                </div>
 
                 <div className="bg-rose-50 border-l-4 border-rose-500 p-5 rounded-r-xl space-y-3">
                   <div className="flex items-center space-x-2 text-rose-900 font-extrabold text-base">

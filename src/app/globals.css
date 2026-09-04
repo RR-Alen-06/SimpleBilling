@@ -39,19 +39,75 @@
 }
 
 @media print {
+  @page {
+    size: A4 portrait;
+    margin: 4mm;
+  }
+
+  html[data-print-format="a4"] body {
+    margin: 0;
+    padding: 0;
+  }
+
+  html[data-print-format="thermal-80"] body {
+    margin: 0;
+    padding: 0;
+  }
+
+  html[data-print-format="thermal-58"] body {
+    margin: 0;
+    padding: 0;
+  }
+
   body {
     background: #ffffff !important;
     color: #000000 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
   }
+
   header, nav, .print\:hidden {
     display: none !important;
   }
+
   main {
     padding: 0 !important;
+    margin: 0 !important;
     max-width: none !important;
   }
-  @page {
-    margin: 5mm;
+
+  /* Single-page A4 Invoice Print Rules */
+  .a4-invoice {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
+    font-size: 9px !important;
+    line-height: 1.15 !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* Force the 3-col grid in print mode */
+  .a4-invoice .print-summary-grid {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr 1fr !important;
+    gap: 4px !important;
+    font-size: 7.5px !important;
+  }
+
+  .a4-invoice .print-summary-grid > div {
+    padding: 3px 4px !important;
+    font-size: 7.5px !important;
+    line-height: 1.15 !important;
+  }
+
+  /* Thermal Receipt Print Rules */
+  .thermal-receipt {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    margin: 0 auto !important;
+    padding: 2mm !important;
   }
 }
 
