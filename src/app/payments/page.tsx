@@ -13,11 +13,10 @@ import {
   AlertTriangle, 
   Users, 
   Wallet, 
-  ArrowRight,
-  BookOpen,
-  Receipt,
-  Clock,
-  History
+  BookOpen, 
+  Receipt, 
+  Clock, 
+  History 
 } from 'lucide-react';
 
 function PaymentsContent() {
@@ -63,6 +62,7 @@ function PaymentsContent() {
 
   useEffect(() => {
     if (initialCustomerId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedCustomerId(initialCustomerId);
     }
   }, [initialCustomerId]);

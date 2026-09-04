@@ -56,6 +56,7 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
   useEffect(() => {
     let active = true;
     if (bill && !bill.financial_summary) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoadingSummary(true);
       ApiService.getBillFinancialSummary(bill).then(summary => {
         if (active) {
