@@ -53,7 +53,10 @@ export const DEFAULT_SETTINGS: AllSettings = {
     enabled: true,
     template_text: '',
     enable_pdf_sharing: true,
-    enable_text_sharing: true
+    enable_text_sharing: true,
+    email_service_id: '',
+    email_template_id: '',
+    email_public_key: ''
   },
   security: {
     super_admin_pin: '1234',
@@ -474,7 +477,7 @@ export class ApiService {
     return data || [];
   }
 
-  static async addCustomer(customer: { name: string; mobile?: string }, userName = 'Admin'): Promise<Customer> {
+  static async addCustomer(customer: { name: string; mobile?: string; email?: string }, userName = 'Admin'): Promise<Customer> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const customer_code = await this.getNextSequence('CUSTOMER');
 
@@ -484,6 +487,7 @@ export class ApiService {
         customer_code,
         name: customer.name, 
         mobile: customer.mobile || null,
+        email: customer.email || null,
         advance_balance: 0,
         loyalty_points: 0
       }])
@@ -502,11 +506,15 @@ export class ApiService {
     return data;
   }
 
-  static async updateCustomer(id: string, customer: { name: string; mobile?: string }, userName = 'Admin'): Promise<Customer> {
+  static async updateCustomer(id: string, customer: { name: string; mobile?: string; email?: string }, userName = 'Admin'): Promise<Customer> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const { data, error } = await supabase
       .from('customers')
-      .update({ name: customer.name, mobile: customer.mobile || null })
+      .update({ 
+        name: customer.name, 
+        mobile: customer.mobile || null,
+        email: customer.email || null 
+      })
       .eq('id', id)
       .select()
       .single();
@@ -545,6 +553,7 @@ export class ApiService {
         customer_code: cust.customer_code,
         name: cust.name,
         mobile: cust.mobile,
+        email: cust.email,
         total_billed: totalBilled,
         total_paid: totalPaid,
         balance_due: Math.max(0, totalBilled - totalPaid - Number(cust.advance_balance || 0)),
@@ -585,9 +594,15 @@ export class ApiService {
     const redemptionDiscount = this.calculateLoyaltyDiscount(billData.points_to_redeem, settings.loyalty, activeRedemptionRules);
     const totalDiscountApplied = billData.discount + redemptionDiscount;
 
-    // 2. Calculate Rounding
+    // 2. Calculate Subtotal after discount and optional GST
     const subtotalAfterDiscount = Math.max(0, billData.total - totalDiscountApplied);
-    const { roundedTotal, roundingAdjustment } = this.calculateRounding(subtotalAfterDiscount, billData.rounding_method);
+    let gstAmount = 0;
+    if (settings.billing.gst_enabled && Number(settings.billing.gst_rate) > 0) {
+      gstAmount = Number(((subtotalAfterDiscount * Number(settings.billing.gst_rate)) / 100).toFixed(2));
+    }
+    const totalBeforeRounding = subtotalAfterDiscount + gstAmount;
+
+    const { roundedTotal, roundingAdjustment } = this.calculateRounding(totalBeforeRounding, billData.rounding_method);
 
     // 3. Payments, Prior Balance & Advance Math
     let priorOutstanding = 0;
@@ -642,6 +657,7 @@ export class ApiService {
         customer_id: billData.customer_id || null,
         total: billData.total,
         discount: totalDiscountApplied,
+        gst_amount: gstAmount,
         rounding_method: billData.rounding_method,
         rounding_adjustment: roundingAdjustment,
         grand_total: roundedTotal,
@@ -808,12 +824,31 @@ export class ApiService {
     const bill = await this.getBillById(billId);
     if (!bill) throw new Error('Bill not found');
 
-    const newGrandTotal = Math.max(0, bill.total - newDiscount + bill.rounding_adjustment);
+    const settings = await this.getSettings();
+    const subtotalAfterDiscount = Math.max(0, Number(bill.total || 0) - newDiscount);
+
+    let newGstAmount = 0;
+    if (settings.billing.gst_enabled && Number(settings.billing.gst_rate) > 0) {
+      const rate = Number(settings.billing.gst_rate);
+      newGstAmount = Number(((subtotalAfterDiscount * rate) / 100).toFixed(2));
+    } else if (Number(bill.gst_amount || 0) > 0 && Number(bill.total || 0) > 0) {
+      const prevNet = Math.max(1, Number(bill.total || 0) - Number(bill.discount || 0));
+      const priorRate = (Number(bill.gst_amount) / prevNet) * 100;
+      newGstAmount = Number(((subtotalAfterDiscount * priorRate) / 100).toFixed(2));
+    }
+
+    const preRoundTotal = subtotalAfterDiscount + newGstAmount;
+    const { roundedTotal: newGrandTotal, roundingAdjustment: newAdjustment } = this.calculateRounding(
+      preRoundTotal,
+      (bill.rounding_method as RoundingMethod) || 'None'
+    );
 
     const { data: updatedBill, error } = await supabase
       .from('bills')
       .update({
         discount: newDiscount,
+        gst_amount: newGstAmount,
+        rounding_adjustment: newAdjustment,
         grand_total: newGrandTotal,
         edited_at: new Date().toISOString(),
         edited_by: userName,
@@ -841,7 +876,7 @@ export class ApiService {
     
     const { data: bills, error } = await supabase
       .from('bills')
-      .select('*, customers(name, mobile)')
+      .select('*, customers(name, mobile, email)')
       .order('created_at', { ascending: false });
 
     if (error) return [];
@@ -849,7 +884,46 @@ export class ApiService {
     return (bills || []).map(b => ({
       ...b,
       customer_name: b.customers?.name || 'N/A',
-      customer_mobile: b.customers?.mobile || null
+      customer_mobile: b.customers?.mobile || null,
+      customer_email: b.customers?.email || null
+    }));
+  }
+
+  static async getBillsByDateRange(filter: DateFilterOption, customRange?: { from: string; to: string }): Promise<Bill[]> {
+    if (!isSupabaseConfigured) {
+      const allBills = await this.getBills();
+      const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
+      return allBills.filter(b => {
+        const bTime = new Date(b.created_at).getTime();
+        if (startDate && bTime < startDate.getTime()) return false;
+        if (endDate && bTime > endDate.getTime()) return false;
+        return true;
+      });
+    }
+
+    const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
+
+    let query = supabase
+      .from('bills')
+      .select('*, customers(name, mobile, email), bill_items(*)')
+      .order('created_at', { ascending: false });
+
+    if (startDate) {
+      query = query.gte('created_at', startDate.toISOString());
+    }
+    if (endDate) {
+      query = query.lte('created_at', endDate.toISOString());
+    }
+
+    const { data: bills, error } = await query;
+    if (error) return [];
+
+    return (bills || []).map(b => ({
+      ...b,
+      customer_name: b.customers?.name || 'N/A',
+      customer_mobile: b.customers?.mobile || null,
+      customer_email: b.customers?.email || null,
+      items: b.bill_items || []
     }));
   }
 
@@ -858,7 +932,7 @@ export class ApiService {
 
     const { data: bill, error } = await supabase
       .from('bills')
-      .select('*, customers(name, mobile)')
+      .select('*, customers(name, mobile, email)')
       .eq('id', id)
       .single();
 
@@ -873,6 +947,7 @@ export class ApiService {
       ...bill,
       customer_name: bill.customers?.name || 'N/A',
       customer_mobile: bill.customers?.mobile || null,
+      customer_email: bill.customers?.email || null,
       items: items || []
     };
   }
@@ -1376,6 +1451,21 @@ export class ApiService {
     return data;
   }
 
+  static async getPayments(): Promise<Payment[]> {
+    if (!isSupabaseConfigured) return [];
+    const { data, error } = await supabase
+      .from('payments')
+      .select('*, customers(name, mobile)')
+      .order('created_at', { ascending: false });
+
+    if (error) return [];
+    return (data || []).map((p: any) => ({
+      ...p,
+      customer_name: p.customers?.name || undefined,
+      customer_mobile: p.customers?.mobile || undefined
+    }));
+  }
+
   // --- EXPENSES ---
   static async getExpenses(): Promise<Expense[]> {
     if (!isSupabaseConfigured) return [];
@@ -1671,7 +1761,7 @@ export class ApiService {
     };
   }
 
-  private static getDateRangeBounds(filter: DateFilterOption, customRange?: { from: string; to: string }): {
+  static getDateRangeBounds(filter: DateFilterOption, customRange?: { from: string; to: string }): {
     startDate?: Date;
     endDate?: Date;
   } {

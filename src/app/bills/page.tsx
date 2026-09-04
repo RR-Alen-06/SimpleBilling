@@ -1,8 +1,9 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { ApiService } from '@/lib/services/api';
-import { Bill } from '@/lib/types';
+import { Bill, AllSettings } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { InvoiceModal } from '@/components/InvoiceModal';
 import { 
@@ -14,11 +15,13 @@ import {
   CheckCircle2, 
   X, 
   ShieldAlert,
-  Clock
+  Clock,
+  CreditCard
 } from 'lucide-react';
 
 export default function ManageBillsPage() {
   const [bills, setBills] = useState<Bill[]>([]);
+  const [settings, setSettings] = useState<AllSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedBill, setSelectedBill] = useState<Bill | null>(null);
@@ -34,13 +37,17 @@ export default function ManageBillsPage() {
   const [successMsg, setSuccessMsg] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  const loadBills = async () => {
+  const loadData = async () => {
     setLoading(true);
     try {
-      const data = await ApiService.getBills();
-      setBills(data);
+      const [billsData, settingsData] = await Promise.all([
+        ApiService.getBills(),
+        ApiService.getSettings()
+      ]);
+      setBills(billsData);
+      setSettings(settingsData);
     } catch (err) {
-      console.error('Error fetching bills:', err);
+      console.error('Error fetching bills & settings:', err);
     } finally {
       setLoading(false);
     }
@@ -48,7 +55,7 @@ export default function ManageBillsPage() {
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadBills();
+    loadData();
   }, []);
 
   const handleOpenEdit = (bill: Bill) => {
@@ -67,7 +74,8 @@ export default function ManageBillsPage() {
 
     if (!editingBill) return;
 
-    if (adminPin !== '1234') {
+    const expectedPin = settings?.security?.super_admin_pin || '1234';
+    if (adminPin !== expectedPin) {
       setErrorMsg('Invalid Super Admin Security PIN.');
       return;
     }
@@ -88,7 +96,7 @@ export default function ManageBillsPage() {
       await ApiService.editBillDiscount(editingBill.id, disc, editReason.trim(), 'Super Admin');
       setSuccessMsg('Bill discount updated & audit trail logged.');
       setEditingBill(null);
-      loadBills();
+      loadData();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to update discount');
     } finally {
@@ -224,6 +232,15 @@ export default function ManageBillsPage() {
                       </td>
                     <td className="px-6 py-4 text-center">
                       <div className="flex items-center justify-center space-x-2">
+                        {!isFullyPaid && b.customer_id && (
+                          <Link
+                            href={`/payments?customerId=${b.customer_id}`}
+                            className="p-1.5 text-emerald-700 hover:text-emerald-800 hover:bg-emerald-50 rounded transition"
+                            title="Collect Payment"
+                          >
+                            <CreditCard size={16} />
+                          </Link>
+                        )}
                         <button
                           onClick={() => handleViewBill(b.id)}
                           className="p-1.5 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded transition"
@@ -324,7 +341,12 @@ export default function ManageBillsPage() {
 
       {/* Invoice Modal */}
       {selectedBill && (
-        <InvoiceModal bill={selectedBill} onClose={() => setSelectedBill(null)} />
+        <InvoiceModal 
+          bill={selectedBill} 
+          settings={settings || undefined} 
+          customerEmail={selectedBill.customer_email || undefined} 
+          onClose={() => setSelectedBill(null)} 
+        />
       )}
     </div>
   );
