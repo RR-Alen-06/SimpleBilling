@@ -1968,4 +1968,70 @@ Points Redeemed : -${summary.loyalty.points_redeemed} pts
 
     return text;
   }
+
+  // --- DATABASE SEED UTILITY ---
+  static async seedDefaultCatalogAndCustomers(userName = 'Super Admin'): Promise<{ productsAdded: number; customersAdded: number }> {
+    if (!isSupabaseConfigured) return { productsAdded: 0, customersAdded: 0 };
+
+    let productsAdded = 0;
+    let customersAdded = 0;
+
+    try {
+      const existingProds = await this.getProducts();
+      if (existingProds.length === 0) {
+        const seedProducts = [
+          { name: 'A4 B&W Single', category: 'Xerox & Print', price: 2.00, product_code: 'PRD-000001' },
+          { name: 'A4 B&W Both Sides', category: 'Xerox & Print', price: 3.00, product_code: 'PRD-000002' },
+          { name: 'A4 Color Print Single', category: 'Xerox & Print', price: 10.00, product_code: 'PRD-000003' },
+          { name: 'A4 Color Both Sides', category: 'Xerox & Print', price: 18.00, product_code: 'PRD-000004' },
+          { name: 'Legal B&W Print', category: 'Xerox & Print', price: 3.00, product_code: 'PRD-000005' },
+          { name: 'A3 B&W Print', category: 'Xerox & Print', price: 5.00, product_code: 'PRD-000006' },
+          { name: 'A3 Color Print', category: 'Xerox & Print', price: 25.00, product_code: 'PRD-000007' },
+          { name: 'Glossy Photo Print 4x6', category: 'Xerox & Print', price: 15.00, product_code: 'PRD-000008' },
+          { name: 'Glossy Photo Print A4', category: 'Xerox & Print', price: 40.00, product_code: 'PRD-000009' },
+          { name: 'PVC ID Card Print', category: 'Xerox & Print', price: 50.00, product_code: 'PRD-000010' },
+          { name: 'A4 Document Lamination', category: 'Lamination & Binding', price: 30.00, product_code: 'PRD-000011' },
+          { name: 'A3 Certificate Lamination', category: 'Lamination & Binding', price: 50.00, product_code: 'PRD-000012' },
+          { name: 'ID Card Lamination (Pouch)', category: 'Lamination & Binding', price: 15.00, product_code: 'PRD-000013' },
+          { name: 'Spiral Binding (Up to 100 pgs)', category: 'Lamination & Binding', price: 40.00, product_code: 'PRD-000014' },
+          { name: 'Spiral Binding (Over 100 pgs)', category: 'Lamination & Binding', price: 60.00, product_code: 'PRD-000015' },
+          { name: 'Hard Cover Project Binding', category: 'Lamination & Binding', price: 200.00, product_code: 'PRD-000016' },
+          { name: 'Ballpoint Pen (Blue/Black)', category: 'Stationery', price: 10.00, product_code: 'PRD-000017' },
+          { name: 'Gel Pen 0.5mm', category: 'Stationery', price: 20.00, product_code: 'PRD-000018' },
+          { name: 'A4 75GSM Copier Paper Ream', category: 'Paper & Envelopes', price: 280.00, product_code: 'PRD-000019' },
+          { name: 'Long Ruled Notebook 180 Pgs', category: 'Stationery', price: 60.00, product_code: 'PRD-000020' },
+          { name: 'A4 Clear Display Folder (20 Pockets)', category: 'Stationery', price: 80.00, product_code: 'PRD-000021' }
+        ];
+
+        const { error: pErr } = await supabase.from('products').insert(seedProducts);
+        if (!pErr) productsAdded = seedProducts.length;
+      }
+
+      const existingCusts = await this.getCustomers();
+      if (existingCusts.length === 0) {
+        const seedCustomers = [
+          { name: 'Rajesh Sharma (College Staff)', mobile: '9876543210', email: 'rajesh.sharma@campus.edu', advance_balance: 200.00, loyalty_points: 45.0, customer_code: 'CUS-000001' },
+          { name: 'Priya Patel (Architecture Student)', mobile: '9876543211', email: 'priya.patel@student.edu', advance_balance: 50.00, loyalty_points: 20.0, customer_code: 'CUS-000002' },
+          { name: 'Apex Coaching Center (Monthly Account)', mobile: '9876543212', email: 'admin@apexcoaching.org', advance_balance: 0.00, loyalty_points: 110.0, customer_code: 'CUS-000003' }
+        ];
+
+        const { error: cErr } = await supabase.from('customers').insert(seedCustomers);
+        if (!cErr) customersAdded = seedCustomers.length;
+      }
+
+      if (productsAdded > 0 || customersAdded > 0) {
+        await this.logAudit({
+          user_name: userName,
+          action: 'SEED_DEFAULT_DATABASE_CATALOG',
+          entity: 'System Seed Data',
+          new_value: `Added ${productsAdded} products, ${customersAdded} customers`
+        });
+      }
+    } catch (e) {
+      console.error('Database seed error:', e);
+    }
+
+    return { productsAdded, customersAdded };
+  }
 }
+
