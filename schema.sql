@@ -240,6 +240,40 @@ VALUES
     (auth.uid(), 50, 25.00, true)
 ON CONFLICT DO NOTHING;
 
+-- Seed Default Xerox, Printing, Lamination, Binding & Stationery Catalog
+INSERT INTO public.products (user_id, product_code, name, category, price)
+VALUES
+    (auth.uid(), 'PRD-000001', 'A4 B&W Single', 'Xerox & Print', 2.00),
+    (auth.uid(), 'PRD-000002', 'A4 B&W Both Sides', 'Xerox & Print', 3.00),
+    (auth.uid(), 'PRD-000003', 'A4 Color Print Single', 'Xerox & Print', 10.00),
+    (auth.uid(), 'PRD-000004', 'A4 Color Both Sides', 'Xerox & Print', 18.00),
+    (auth.uid(), 'PRD-000005', 'Legal B&W Print', 'Xerox & Print', 3.00),
+    (auth.uid(), 'PRD-000006', 'A3 B&W Print', 'Xerox & Print', 5.00),
+    (auth.uid(), 'PRD-000007', 'A3 Color Print', 'Xerox & Print', 25.00),
+    (auth.uid(), 'PRD-000008', 'Glossy Photo Print 4x6', 'Xerox & Print', 15.00),
+    (auth.uid(), 'PRD-000009', 'Glossy Photo Print A4', 'Xerox & Print', 40.00),
+    (auth.uid(), 'PRD-000010', 'PVC ID Card Print', 'Xerox & Print', 50.00),
+    (auth.uid(), 'PRD-000011', 'A4 Document Lamination', 'Lamination & Binding', 30.00),
+    (auth.uid(), 'PRD-000012', 'A3 Certificate Lamination', 'Lamination & Binding', 50.00),
+    (auth.uid(), 'PRD-000013', 'ID Card Lamination (Pouch)', 'Lamination & Binding', 15.00),
+    (auth.uid(), 'PRD-000014', 'Spiral Binding (Up to 100 pgs)', 'Lamination & Binding', 40.00),
+    (auth.uid(), 'PRD-000015', 'Spiral Binding (Over 100 pgs)', 'Lamination & Binding', 60.00),
+    (auth.uid(), 'PRD-000016', 'Hard Cover Project Binding', 'Lamination & Binding', 200.00),
+    (auth.uid(), 'PRD-000017', 'Ballpoint Pen (Blue/Black)', 'Stationery', 10.00),
+    (auth.uid(), 'PRD-000018', 'Gel Pen 0.5mm', 'Stationery', 20.00),
+    (auth.uid(), 'PRD-000019', 'A4 75GSM Copier Paper Ream (500 Pgs)', 'Paper & Envelopes', 280.00),
+    (auth.uid(), 'PRD-000020', 'Long Ruled Notebook 180 Pgs', 'Stationery', 60.00),
+    (auth.uid(), 'PRD-000021', 'A4 Clear Display Folder (20 Pockets)', 'Stationery', 80.00)
+ON CONFLICT DO NOTHING;
+
+-- Seed Default Sample Customers with running balances & loyalty
+INSERT INTO public.customers (user_id, customer_code, name, mobile, email, advance_balance, loyalty_points)
+VALUES
+    (auth.uid(), 'CUS-000001', 'Rajesh Sharma (College Staff)', '9876543210', 'rajesh.sharma@campus.edu', 200.00, 45.00),
+    (auth.uid(), 'CUS-000002', 'Priya Patel (Architecture Student)', '9876543211', 'priya.patel@student.edu', 50.00, 20.00),
+    (auth.uid(), 'CUS-000003', 'Apex Coaching Center (Monthly Account)', '9876543212', 'admin@apexcoaching.org', 0.00, 110.00)
+ON CONFLICT DO NOTHING;
+
 -- Indexes for fast query performance
 CREATE INDEX IF NOT EXISTS idx_customers_user_id ON public.customers(user_id);
 CREATE INDEX IF NOT EXISTS idx_products_user_id ON public.products(user_id);
