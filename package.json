@@ -8,7 +8,9 @@
     "build": "next build",
     "start": "next start",
     "start:host": "next start -H 0.0.0.0",
-    "lint": "eslint"
+    "lint": "eslint",
+    "clean": "node -e \"fs.rmSync('.next', {recursive: true, force: true})\"",
+    "clean:all": "node -e \"['.next', 'node_modules'].forEach(p => fs.rmSync(p, {recursive: true, force: true}))\""
   },
   "dependencies": {
     "@emailjs/browser": "^4.4.1",
