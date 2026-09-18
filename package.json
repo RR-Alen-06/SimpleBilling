@@ -3,8 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node -e \"try{fs.rmSync('.next', {recursive: true, force: true})}catch(e){}\"",
     "dev": "next dev",
     "dev:host": "next dev -H 0.0.0.0",
+    "prebuild": "node -e \"try{fs.rmSync('.next', {recursive: true, force: true})}catch(e){}\"",
     "build": "next build",
     "start": "next start",
     "start:host": "next start -H 0.0.0.0",
