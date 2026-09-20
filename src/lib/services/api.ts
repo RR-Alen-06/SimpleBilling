@@ -1707,27 +1707,20 @@ export class ApiService {
     let cashCollected = 0;
     let upiCollected = 0;
 
-    const billsWithPaymentRecords = new Set<string>();
-
-    // Primary Single Source of Truth: Sum from payment records
+    // Single Source of Truth: All collections are recorded in the payments table
     allPayments.forEach(p => {
-      if (p.bill_id) billsWithPaymentRecords.add(p.bill_id);
-
       const amt = Number(p.amount || 0);
       if (p.payment_method === 'Cash') cashCollected += amt;
       else if (p.payment_method === 'UPI') upiCollected += amt;
     });
 
-    // Fallback for bills without payment records to ensure backward compatibility without duplication
-    allBills.forEach(b => {
-      const c = Number(b.cash_paid || 0);
-      const u = Number(b.upi_paid || 0);
-
-      if (!billsWithPaymentRecords.has(b.id)) {
-        cashCollected += c;
-        upiCollected += u;
-      }
-    });
+    // Fallback ONLY for walk-in / legacy bills when no payment records exist at all
+    if (allPayments.length === 0) {
+      allBills.forEach(b => {
+        cashCollected += Number(b.cash_paid || 0);
+        upiCollected += Number(b.upi_paid || 0);
+      });
+    }
 
     const totalAmountCollected = cashCollected + upiCollected;
     const totalSales = allBills.reduce((sum, b) => sum + Number(b.grand_total), 0);

@@ -8,6 +8,10 @@ const nextConfig: NextConfig = {
     "*.loca.lt",
     "*.ngrok-free.app",
   ],
+  experimental: {
+    turbopackFileSystemCacheForDev: false,
+    turbopackFileSystemCacheForBuild: false,
+  },
 };
 
 export default nextConfig;
