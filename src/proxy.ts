@@ -13,14 +13,8 @@ export async function proxy(request: NextRequest) {
 
   let hasSession = false;
 
-  // Check local auth cookie (used in offline / demo / local mode)
-  const localAuthCookie = request.cookies.get('printpro_local_auth');
-  if (localAuthCookie?.value === '1') {
-    hasSession = true;
-  }
-
-  // If Supabase is configured, verify real session with Supabase SSR
-  if (supabaseUrl && supabaseKey && supabaseUrl !== 'https://your-project.supabase.co' && !supabaseUrl.includes('placeholder')) {
+  // Verify real session with Supabase SSR
+  if (supabaseUrl && supabaseKey && supabaseUrl !== 'https://your-supabase-project.supabase.co' && !supabaseUrl.includes('placeholder')) {
     try {
       const supabase = createServerClient(supabaseUrl, supabaseKey, {
         cookies: {
@@ -44,7 +38,7 @@ export async function proxy(request: NextRequest) {
         hasSession = true;
       }
     } catch {
-      // If Supabase call fails, fallback to local cookie check
+      hasSession = false;
     }
   }
 

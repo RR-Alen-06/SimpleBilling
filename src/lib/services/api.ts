@@ -1571,7 +1571,6 @@ export class ApiService {
     await supabase.from('bills').delete().neq('id', '00000000-0000-0000-0000-000000000000');
     await supabase.from('expenses').delete().neq('id', '00000000-0000-0000-0000-000000000000');
     await supabase.from('loyalty_transactions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-    await supabase.from('audit_logs').delete().neq('id', '00000000-0000-0000-0000-000000000000');
 
     await supabase.from('customers').update({ advance_balance: 0, loyalty_points: 0 }).neq('id', '00000000-0000-0000-0000-000000000000');
 

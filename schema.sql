@@ -45,13 +45,18 @@ DECLARE
 BEGIN
     INSERT INTO public.sequences (user_id, key, prefix, padding, current_val)
     VALUES (v_user_id, UPPER(p_key), UPPER(p_key), 6, 1)
-    ON CONFLICT DO NOTHING;
-
-    UPDATE public.sequences
+    ON CONFLICT (user_id, key) DO UPDATE
     SET current_val = sequences.current_val + 1,
         updated_at = now()
-    WHERE (user_id = v_user_id OR user_id IS NULL) AND UPPER(key) = UPPER(p_key)
     RETURNING prefix, padding, current_val INTO v_prefix, v_padding, v_next_val;
+
+    IF v_prefix IS NULL THEN
+        UPDATE public.sequences
+        SET current_val = sequences.current_val + 1,
+            updated_at = now()
+        WHERE (user_id = v_user_id OR (v_user_id IS NULL AND user_id IS NULL)) AND UPPER(key) = UPPER(p_key)
+        RETURNING prefix, padding, current_val INTO v_prefix, v_padding, v_next_val;
+    END IF;
 
     IF v_prefix IS NULL THEN
         v_prefix := UPPER(p_key);
@@ -274,7 +279,7 @@ VALUES
     (auth.uid(), 'CUS-000003', 'Apex Coaching Center (Monthly Account)', '9876543212', 'admin@apexcoaching.org', 0.00, 110.00)
 ON CONFLICT DO NOTHING;
 
--- Indexes for fast query performance
+-- Indexes for fast query performance & data integrity
 CREATE INDEX IF NOT EXISTS idx_customers_user_id ON public.customers(user_id);
 CREATE INDEX IF NOT EXISTS idx_products_user_id ON public.products(user_id);
 CREATE INDEX IF NOT EXISTS idx_bills_user_id ON public.bills(user_id);
@@ -284,6 +289,8 @@ CREATE INDEX IF NOT EXISTS idx_bill_items_bill_id ON public.bill_items(bill_id);
 CREATE INDEX IF NOT EXISTS idx_payments_user_id ON public.payments(user_id);
 CREATE INDEX IF NOT EXISTS idx_expenses_user_id ON public.expenses(user_id);
 CREATE INDEX IF NOT EXISTS idx_loyalty_redemption_user ON public.loyalty_redemption_rules(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sequences_user_key ON public.sequences(user_id, key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_settings_user_key ON public.settings(user_id, key);
 
 -- Enable RLS Policies on ALL tables
 ALTER TABLE public.sequences ENABLE ROW LEVEL SECURITY;
@@ -340,19 +347,22 @@ DROP POLICY IF EXISTS "Allow all access to loyalty_transactions" ON public.loyal
 DROP POLICY IF EXISTS "Allow all access to loyalty_rules" ON public.loyalty_rules;
 DROP POLICY IF EXISTS "Allow all access to loyalty_redemption_rules" ON public.loyalty_redemption_rules;
 
--- Create Permissive Access Policies (Works for both authenticated users and public app access)
-CREATE POLICY "Allow all access to sequences" ON public.sequences FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all access to customers" ON public.customers FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all access to products" ON public.products FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all access to bills" ON public.bills FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all access to bill_items" ON public.bill_items FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all access to payments" ON public.payments FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all access to expenses" ON public.expenses FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all access to settings" ON public.settings FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all access to audit_logs" ON public.audit_logs FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all access to loyalty_transactions" ON public.loyalty_transactions FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all access to loyalty_rules" ON public.loyalty_rules FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all access to loyalty_redemption_rules" ON public.loyalty_redemption_rules FOR ALL USING (true) WITH CHECK (true);
+-- Create Strict Multi-Tenant Access Policies (Enforces auth.uid() = user_id for authenticated sessions)
+CREATE POLICY "Tenant isolation on sequences" ON public.sequences FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Tenant isolation on customers" ON public.customers FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Tenant isolation on products" ON public.products FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Tenant isolation on bills" ON public.bills FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Tenant isolation on bill_items" ON public.bill_items FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Tenant isolation on payments" ON public.payments FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Tenant isolation on expenses" ON public.expenses FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Tenant isolation on settings" ON public.settings FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Tenant isolation on loyalty_transactions" ON public.loyalty_transactions FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Tenant isolation on loyalty_rules" ON public.loyalty_rules FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Tenant isolation on loyalty_redemption_rules" ON public.loyalty_redemption_rules FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+-- Immutable Audit Log Policies (Append-only & read-only for tenant, disallow update/delete)
+CREATE POLICY "Tenant insert on audit_logs" ON public.audit_logs FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Tenant select on audit_logs" ON public.audit_logs FOR SELECT TO authenticated USING (auth.uid() = user_id);
 
 -- RELOAD SUPABASE POSTGREST SCHEMA CACHE INSTANTLY
 NOTIFY pgrst, 'reload schema';

@@ -1,6 +1,6 @@
-# SimpleBilling 🖨️🧾
+# SimpleBilling (PrintPro ERP) 🖨️🧾
 
-A fast, responsive, web-based billing software designed specifically for Xerox, photocopying, and stationery shops. Built with Next.js 16 (App Router), TypeScript, Tailwind CSS, and Supabase PostgreSQL.
+A fast, robust, web-based Point-of-Sale (POS) and shop management system designed specifically for **Xerox centres, digital print shops, photocopy studios, and stationery businesses**. Built with Next.js 16 (App Router), TypeScript, Tailwind CSS, and Supabase PostgreSQL with strict multi-tenant Row-Level Security (RLS).
 
 ![Next.js](https://img.shields.io/badge/Next.js-16.2-black?style=for-the-badge&logo=next.js)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue?style=for-the-badge&logo=typescript)
@@ -11,62 +11,74 @@ A fast, responsive, web-based billing software designed specifically for Xerox, 
 
 ## 📖 About The Project
 
-**SimpleBilling (PrintPro ERP)** is a modern, lightweight, and robust Point-of-Sale (POS) and ERP system tailored specifically for **Xerox centres, digital printing shops, photocopy studios, and stationery stores**.
+Traditional billing software is rigid when handling dynamic printing jobs (such as custom per-page copy counts, variable lamination/binding rates, split payment methods, customer advances, and loyalty points). **SimpleBilling** solves this by providing:
 
-Traditional billing software is often bloated, complex, or rigid when handling dynamic printing jobs (such as custom page-count rates, variable lamination/binding services, split payment methods, and loyalty calculations). **SimpleBilling** solves this by providing:
-
-- ⚡ **High-Speed Counter Operations**: Fast item entry with quick Xerox/print job presets and on-the-fly rate adjustments.
-- 🔒 **Multi-Tenant Security**: Strict Row-Level Security (RLS) policies on Supabase PostgreSQL isolating user data cleanly (`auth.uid() = user_id`).
-- 📱 **Multi-Platform Ecosystem**: Seamless real-time sync between the **Next.js Web Admin Portal** and the companion **Flutter Mobile POS App** with offline resilience and queue management.
-- 🧾 **Flexible Print Formats**: Instant 1-click printing for **80mm Thermal POS Receipts** and **Standard A4 Tax Invoices**.
-- 👥 **Customer Ledgers & Dues**: Real-time balance tracking, advance deposits, customer running accounts, and loyalty point rewards.
+- ⚡ **High-Speed Counter POS**: Instant entry for custom Xerox/print rates and catalog products.
+- 🔒 **Multi-Tenant Security**: Strict Row-Level Security (RLS) policies on Supabase PostgreSQL isolating each shop's data (`auth.uid() = user_id`).
+- 🧾 **Dual-Mode Invoice Printing**: 1-click printing for **80mm Thermal POS Receipts** and **Standard A4 Tax Invoices**, plus PDF generation via `jsPDF`.
+- 👥 **Customer Ledgers & Dues Engine**: FIFO payment allocations, advance deposits, running balance ledgers, and dynamic loyalty point rewards.
+- 💰 **Accounting & Expense Tracking**: Expense category breakdown, period P&L synchronization, and Net Profit calculations.
+- 📊 **Business Reports & CSV Export**: Sales analytics, item volume tracking, and 1-click CSV report exports.
 
 ---
 
-## 🌟 Key Features
+## 🏗️ System & Data Flow Architecture
 
-### 1. 📊 Interactive Dashboard
-- **Daily Metrics**: Today's Sales (₹), Today's Bills count, Pending Customer Dues balance, Total Customers.
-- **Financial Summary**: Total Income, Total Expenses, and Net Profit overview.
-- **Recent Bills List**: Quick 1-click preview and print trigger.
+```text
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │                              Next.js 16 UI                             │
+ │   (/billing, /customers, /expenses, /reports, /settings, /bills)       │
+ └───────────────────┬───────────────────────────────┬────────────────────┘
+                     │ (1. User Input)               │ (7. Print / Share)
+                     ▼                               ▼
+ ┌──────────────────────────────────────┐  ┌──────────────────────────────┐
+ │     ApiService (src/lib/services)    │  │       InvoiceModal.tsx       │
+ │ - Loyalty Engine (Earn/Redeem Rules) │  │ - 80mm Thermal Receipt View  │
+ │ - Rounding Engine (Floor/Ceil/Std)   │  │ - Standard A4 Tax Invoice    │
+ │ - FIFO Payment & Advance Allocator   │  │ - PDF Generator (jsPDF/html2)│
+ └───────────────────┬──────────────────┘  │ - WhatsApp Direct URL Link   │
+                     │ (2. PostgREST API)  │ - EmailJS Customer Dispatch  │
+                     ▼                     └──────────────────────────────┘
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │                      Supabase PostgreSQL Database                      │
+ │ ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────────────┐ │
+ │ │  sequences (RPC) │ │ bills & items    │ │ payments (Ledger)        │ │
+ │ │  customers       │ │ expenses         │ │ loyalty_transactions     │ │
+ │ └──────────────────┘ └──────────────────┘ └──────────────────────────┘ │
+ └────────────────────────────────────────────────────────────────────────┘
+```
 
-### 2. 📄 Dual-Mode Invoice Printer
-- **Thermal POS Receipt (80mm)**: Compact receipt format tailored for POS thermal printers.
-- **Standard A4 Tax Invoice**: Full-page clean invoice format for standard A4 printers.
-- **Print Optimization**: Clean `@media print` rules hide UI navigation, headers, and buttons during printing.
+### How Data Flows Through SimpleBilling
 
-### 3. 📑 POS Billing Workflow
-- **Customer Selection**: Walk-in customer or registered account select.
-- **Editable Item Rates**: Adjust page rates (e.g. 45 A4 B&W copies @ ₹1.50/page) on-the-fly during billing.
-- **Calculations**: Auto-calculates Subtotal, Discount, Grand Total, and Amount Received.
-- **Payment Options**: Cash, UPI, and Card.
-
-### 4. 👥 Customer Directory & Running Ledgers
-- **Customer Dues Tracking**: Calculates real-time running balance from actual bill history and payments.
-- **Ledger Timeline**: Chronological view of Bills (+) and Payments (-).
-- **Payment Settlements**: Record partial or full cash/UPI payments against customer balances.
-
-### 5. 📦 Products Catalog
-- **Stationery & Xerox Services**: A4 B&W, A4 Color, A3 Color, Lamination, Spiral Binding, Pens, Notebooks.
-- **Full CRUD**: Add, edit, search, and delete catalog products.
-
-### 6. 💰 Simple Accounting & Expenses
-- **Expense Log**: Category tracking for Shop Expenses, Electricity Bills, Rent, and Miscellaneous expenses.
-- **Net Profit Engine**: Net Profit = Total Income (Sales) - Total Expenses.
-
-### 7. 📈 Business Reports & Export
-- **Daily Sales Report**, **Monthly Summary**, and **Customer Due List**.
-- **1-Click Export**: Download reports directly as **CSV** or print formatted **PDFs**.
+1. **Authentication Guard (`src/middleware.ts`)**:
+   - Server-side verification via Supabase SSR (`supabase.auth.getUser()`).
+   - Unauthenticated requests are redirected to `/login`.
+2. **POS Billing Workflow (`/billing`)**:
+   - The cashier adds print jobs or catalog products with custom quantities and unit rates.
+   - Calculates $\text{Subtotal}$, $\text{Loyalty/Manual Discount}$, $\text{GST}$, and applies the selected $\text{Rounding Method}$.
+   - Invokes PostgreSQL function `get_next_sequence('BILL')` to atomically generate unique sequential identifiers (`BILL-000001`).
+   - If a customer overpays, surplus funds are allocated via FIFO to settle earlier outstanding bills, with any remainder credited to `customers.advance_balance`.
+   - Inserts records into `bills`, `bill_items`, `payments`, and logs to immutable `audit_logs`.
+3. **Invoice Rendering & Dispatch (`InvoiceModal.tsx`)**:
+   - Automatically adapts layout to **80mm Thermal POS** or **Standard A4 Invoice**.
+   - Generates client-side single-page PDFs using `html2canvas` and `jsPDF`.
+   - Supports 1-click invoice sharing via WhatsApp URL schemes or EmailJS.
+4. **Customer Ledger Reconciliation (`/customers/[id]`)**:
+   - Reconstructs running balances from historical `bills` and `payments`.
+5. **P&L Accounting Engine (`/expenses`)**:
+   - Calculates $\text{Net Profit} = \text{Total Income} - \text{Total Expenses}$ synchronized across date filters.
 
 ---
 
 ## 🚀 Tech Stack
 
 - **Framework**: Next.js 16 (App Router)
-- **Language**: TypeScript
-- **Styling**: Tailwind CSS
+- **Language**: TypeScript 5
+- **Styling**: Tailwind CSS v4
 - **Icons**: Lucide React
-- **Database & Auth**: Supabase (PostgreSQL)
+- **Charts**: Recharts
+- **PDF & Export**: jsPDF, html2canvas
+- **Database & Auth**: Supabase PostgreSQL with Row Level Security (RLS)
 
 ---
 
@@ -76,7 +88,7 @@ Traditional billing software is often bloated, complex, or rigid when handling d
 
 - Node.js (v18.x or higher)
 - npm or pnpm
-- A free [Supabase](https://supabase.com) account
+- A [Supabase](https://supabase.com) project
 
 ### 1. Clone & Install Dependencies
 
@@ -97,11 +109,11 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
 
 ### 3. Initialize Database Schema
 
-1. Open your Supabase Project Dashboard.
+1. Open your Supabase Dashboard.
 2. Navigate to the **SQL Editor**.
-3. Copy and run the contents of [`schema.sql`](./schema.sql).
+3. Run the contents of [`schema.sql`](./schema.sql).
 
-This initializes all necessary tables (`customers`, `products`, `bills`, `bill_items`, `payments`, `expenses`) and configures automated bill numbering (`BILL-000001`).
+This initializes all tables (`sequences`, `customers`, `products`, `bills`, `bill_items`, `payments`, `expenses`, `settings`, `audit_logs`, `loyalty_rules`, `loyalty_redemption_rules`), indexes, and configures multi-tenant Row-Level Security policies.
 
 ### 4. Run Development Server
 
@@ -117,24 +129,34 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ```text
 SimpleBilling/
-├── schema.sql                 # Complete Supabase PostgreSQL DDL & triggers
+├── schema.sql                 # PostgreSQL DDL, triggers, and multi-tenant RLS policies
 ├── src/
+│   ├── middleware.ts          # Server-side Supabase SSR session validation
 │   ├── app/
-│   │   ├── billing/           # POS Billing page with editable prices
-│   │   ├── customers/         # Customer directory & [id] ledger page
-│   │   ├── expenses/          # Simple accounting & expense tracker
-│   │   ├── login/             # Single admin login page
-│   │   ├── products/          # Product catalog management
+│   │   ├── audit/             # Immutable audit log viewer
+│   │   ├── billing/           # POS Billing counter with live price calculations
+│   │   ├── bills/             # Invoice management & admin adjustments
+│   │   ├── customers/         # Customer directory & [id] running ledger
+│   │   ├── expenses/          # Accounting suite, category charts & P&L
+│   │   ├── login/             # Admin authentication
+│   │   ├── payments/          # Standalone customer payment collection
+│   │   ├── products/          # Catalog product & pricing management
 │   │   ├── reports/           # Sales reports & CSV export
-│   │   ├── layout.tsx         # Root app layout & global navigation
-│   │   └── page.tsx           # Dashboard & business summary
+│   │   ├── settings/          # Shop configuration, sequences, and loyalty rules
+│   │   ├── error.tsx          # Root Error Boundary for runtime resilience
+│   │   ├── layout.tsx         # Root layout
+│   │   └── page.tsx           # Dashboard & financial reconciliation
 │   ├── components/
-│   │   ├── InvoiceModal.tsx    # Dual-mode (80mm & A4) print invoice modal
-│   │   ├── Navigation.tsx      # Top bar & sidebar navigation
-│   │   └── SupabaseBanner.tsx  # Database status indicator
+│   │   ├── InvoiceModal.tsx    # Dual-mode (80mm / A4) print & PDF modal
+│   │   ├── Navigation.tsx      # Responsive navigation bar
+│   │   └── SupabaseBanner.tsx  # Database connection status indicator
 │   └── lib/
+│       ├── constants/filters.ts# Shared date filter button configurations
 │       ├── services/api.ts    # Supabase CRUD API service layer
 │       ├── supabase/client.ts # Supabase client initialization
+│       ├── utils/
+│       │   ├── csv.ts         # Shared CSV export & download engine
+│       │   └── format.ts      # Centralized currency & date formatters
 │       └── types.ts           # TypeScript interfaces & domain models
 └── README.md
 ```

@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase/client';
-import { Printer, Lock, Mail, AlertTriangle, CheckCircle2, Zap, ShieldCheck } from 'lucide-react';
+import { Printer, Lock, Mail, AlertTriangle, CheckCircle2 } from 'lucide-react';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -12,17 +12,10 @@ export default function LoginPage() {
   const [successMsg, setSuccessMsg] = useState('');
 
   const grantAccessAndRedirect = (msg: string) => {
-    document.cookie = "printpro_local_auth=1; path=/; max-age=604800; SameSite=Lax";
     setSuccessMsg(msg);
     setTimeout(() => {
       window.location.href = '/';
     }, 400);
-  };
-
-  const handleQuickAdminLogin = () => {
-    setEmail('admin@shop.com');
-    setPassword('admin123');
-    grantAccessAndRedirect('Logged in as Master Admin!');
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -33,23 +26,16 @@ export default function LoginPage() {
     const cleanEmail = email.trim();
     const cleanPassword = password.trim();
 
-    // 1. Master Admin Built-in Bypass (Always works for shopkeeper)
-    if (cleanEmail === 'admin@shop.com' && cleanPassword === 'admin123') {
-      grantAccessAndRedirect('Logged in as Admin successfully.');
+    if (!cleanEmail || !cleanPassword) {
+      setErrorMsg('Please enter both email and password.');
       return;
     }
 
-    // 2. If Supabase is not configured or in offline mode
     if (!isSupabaseConfigured) {
-      if (cleanEmail === 'admin@shop.com' && cleanPassword === 'admin123') {
-        grantAccessAndRedirect('Logged in as Admin successfully.');
-      } else {
-        setErrorMsg('Invalid credentials. Use default admin: admin@shop.com / admin123');
-      }
+      setErrorMsg('Supabase is not configured. Please check your environment variables.');
       return;
     }
 
-    // 3. Supabase Authentication
     setLoading(true);
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -58,23 +44,14 @@ export default function LoginPage() {
       });
 
       if (error) {
-        // Try sign-up if first time admin initialization
-        const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
-          email: cleanEmail,
-          password: cleanPassword
-        });
-        if (signUpErr) throw new Error(error.message);
-        if (signUpData.user) {
-          grantAccessAndRedirect('Admin account initialized. Logging in...');
-          return;
-        }
+        throw new Error(error.message || 'Invalid email or password.');
       }
 
       if (data.user) {
-        grantAccessAndRedirect('Authenticated successfully!');
+        grantAccessAndRedirect('Authenticated successfully! Redirecting...');
       }
     } catch (err: unknown) {
-      setErrorMsg(err instanceof Error ? err.message : 'Login failed. Default fallback: admin@shop.com / admin123');
+      setErrorMsg(err instanceof Error ? err.message : 'Authentication failed. Please verify your credentials.');
     } finally {
       setLoading(false);
     }
@@ -130,27 +107,6 @@ export default function LoginPage() {
               <span>{successMsg}</span>
             </div>
           )}
-
-          {/* Quick Demo Login Preset Banner */}
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 flex items-center justify-between text-xs">
-            <div className="space-y-0.5">
-              <div className="font-bold text-slate-800 flex items-center space-x-1.5">
-                <ShieldCheck size={14} className="text-emerald-600" />
-                <span>Default Admin Login</span>
-              </div>
-              <div className="text-[11px] text-slate-500 font-mono">
-                admin@shop.com • admin123
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={handleQuickAdminLogin}
-              className="bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs px-3 py-1.5 rounded-lg shadow transition flex items-center space-x-1 active:scale-95"
-            >
-              <Zap size={13} />
-              <span>1-Click Login</span>
-            </button>
-          </div>
 
           <form onSubmit={handleLogin} className="space-y-4">
             <div>

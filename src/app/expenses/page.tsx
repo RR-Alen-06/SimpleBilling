@@ -4,6 +4,8 @@ import React, { useState, useEffect } from 'react';
 import { ApiService } from '@/lib/services/api';
 import { Expense, DateFilterOption, ExpensePaymentMode } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
+import { downloadCSV } from '@/lib/utils/csv';
+import { EXPENSES_DATE_FILTER_BUTTONS } from '@/lib/constants/filters';
 import { 
   PieChart as RechartsPieChart, 
   Pie, 
@@ -66,15 +68,7 @@ const CHART_COLORS = [
   '#F97316'  // Orange
 ];
 
-const dateFilterButtons: { id: DateFilterOption; label: string }[] = [
-  { id: 'all_time', label: 'All Time' },
-  { id: 'today', label: 'Today' },
-  { id: 'weekly', label: 'This Week' },
-  { id: 'monthly', label: 'This Month' },
-  { id: 'yearly', label: 'This Year' },
-  { id: 'financial_year', label: 'Financial Year' },
-  { id: 'custom', label: 'Custom' },
-];
+const dateFilterButtons = EXPENSES_DATE_FILTER_BUTTONS;
 
 export default function ExpensesPage() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -285,15 +279,7 @@ export default function ExpensesPage() {
       Number(e.amount).toFixed(2)
     ]);
 
-    const csvContent = 'data:text/csv;charset=utf-8,' + 
-      [headers.join(','), ...rows.map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `Expenses_Report_${dateFilter}_${new Date().toISOString().split('T')[0]}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    downloadCSV(`Expenses_Report_${dateFilter}_${new Date().toISOString().split('T')[0]}`, headers, rows);
   };
 
   const getCategoryIcon = (catName: string) => {
