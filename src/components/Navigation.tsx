@@ -47,9 +47,8 @@ export function Navigation() {
         await supabase.auth.signOut();
       }
     } catch {
-      // Ignore Supabase sign out error
+      // Ignore sign out error
     } finally {
-      document.cookie = "printpro_local_auth=; path=/; max-age=0; SameSite=Lax";
       router.push('/login');
     }
   };
