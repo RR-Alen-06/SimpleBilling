@@ -10,7 +10,10 @@ export async function proxy(request: NextRequest) {
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   const pathname = request.nextUrl.pathname;
-  const isLoginPage = pathname === '/login';
+  const isPublicAuthRoute =
+    pathname === '/login' ||
+    pathname.startsWith('/auth/') ||
+    pathname === '/reset-password';
 
   // If Supabase credentials are missing or placeholder, permit access
   if (
@@ -28,13 +31,13 @@ export async function proxy(request: NextRequest) {
     (c) => c.name.includes('-auth-token') || c.name.includes('supabase') || c.name.startsWith('sb-')
   );
 
-  // If on login page and no auth token present, serve login page immediately
-  if (isLoginPage && !hasAuthToken) {
+  // If on a public auth route (like /login, /auth/callback, /auth/confirm, /reset-password) and no auth token present, serve immediately
+  if (isPublicAuthRoute && !hasAuthToken) {
     return supabaseResponse;
   }
 
   // If on protected page and no auth token present, redirect to login immediately
-  if (!isLoginPage && !hasAuthToken) {
+  if (!isPublicAuthRoute && !hasAuthToken) {
     const url = request.nextUrl.clone();
     url.pathname = '/login';
     return NextResponse.redirect(url);
@@ -63,20 +66,20 @@ export async function proxy(request: NextRequest) {
     } = await supabase.auth.getUser();
 
     // Unauthenticated user attempting to access protected route
-    if (!user && !isLoginPage) {
+    if (!user && !isPublicAuthRoute) {
       const url = request.nextUrl.clone();
       url.pathname = '/login';
       return NextResponse.redirect(url);
     }
 
     // Authenticated user accessing /login -> redirect to dashboard
-    if (user && isLoginPage) {
+    if (user && pathname === '/login') {
       const url = request.nextUrl.clone();
       url.pathname = '/';
       return NextResponse.redirect(url);
     }
   } catch {
-    if (!isLoginPage) {
+    if (!isPublicAuthRoute) {
       const url = request.nextUrl.clone();
       url.pathname = '/login';
       return NextResponse.redirect(url);
