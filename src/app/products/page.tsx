@@ -2,8 +2,10 @@
 
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '@/lib/services/api';
-import { Product } from '@/lib/types';
+import { Product, Bill } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
+import { ProductSalesHistoryModal } from '@/components/ProductSalesHistoryModal';
+import { InvoiceModal } from '@/components/InvoiceModal';
 import { 
   Package, 
   Plus, 
@@ -12,7 +14,9 @@ import {
   Search, 
   AlertTriangle, 
   CheckCircle2, 
-  X 
+  X,
+  TrendingUp,
+  BarChart2
 } from 'lucide-react';
 
 const CATEGORIES = ['Xerox & Print', 'Lamination & Binding', 'Stationery', 'Paper & Envelopes', 'Other Services'];
@@ -21,6 +25,10 @@ export default function ProductsPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+
+  // Analytics Modal state
+  const [analyticsProduct, setAnalyticsProduct] = useState<Product | null>(null);
+  const [viewingBill, setViewingBill] = useState<Bill | null>(null);
 
   // Add / Edit Modal state
   const [showModal, setShowModal] = useState(false);
@@ -126,6 +134,15 @@ export default function ProductsPage() {
     }
   };
 
+  const handleViewInvoice = async (billId: string) => {
+    try {
+      const b = await ApiService.getBillById(billId);
+      if (b) setViewingBill(b);
+    } catch (err) {
+      console.error('Failed to load bill for preview:', err);
+    }
+  };
+
   const filteredProducts = products.filter(p =>
     p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     p.category.toLowerCase().includes(searchTerm.toLowerCase())
@@ -135,48 +152,48 @@ export default function ProductsPage() {
     <div className="space-y-6">
       <SupabaseBanner />
 
-      {/* Header */}
+      {/* HEADER SECTION */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 flex items-center space-x-2">
-            <Package className="text-blue-600" size={26} />
+          <h1 className="text-2xl font-black tracking-tight text-slate-900 flex items-center space-x-2">
+            <Package className="text-blue-600" />
             <span>Product Catalog</span>
           </h1>
-          <p className="text-sm text-slate-500 mt-0.5">Manage Xerox rates, printing prices, and stationery items</p>
+          <p className="text-xs text-slate-500 mt-1">Manage rate cards, items, standard printing charges and track unit sales analytics.</p>
         </div>
 
         <button
           onClick={handleOpenAdd}
-          className="bg-blue-600 hover:bg-blue-500 text-white font-semibold text-sm px-4 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5 self-start sm:self-auto"
+          className="bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm flex items-center justify-center space-x-2 transition"
         >
-          <Plus size={18} />
-          <span>Add Product</span>
+          <Plus size={16} />
+          <span>Add New Product</span>
         </button>
       </div>
 
-      {/* Feedback Messages */}
+      {/* FEEDBACK NOTICES */}
       {errorMsg && (
-        <div className="bg-rose-50 border-l-4 border-rose-500 p-4 rounded-r-lg flex items-center space-x-3 text-rose-800 text-sm">
-          <AlertTriangle size={20} className="text-rose-600 flex-shrink-0" />
+        <div className="bg-rose-50 border border-rose-200 text-rose-700 px-4 py-3 rounded-lg text-xs flex items-center space-x-2">
+          <AlertTriangle size={16} className="shrink-0" />
           <span>{errorMsg}</span>
         </div>
       )}
       {successMsg && (
-        <div className="bg-emerald-50 border-l-4 border-emerald-500 p-4 rounded-r-lg flex items-center space-x-3 text-emerald-800 text-sm">
-          <CheckCircle2 size={20} className="text-emerald-600 flex-shrink-0" />
+        <div className="bg-emerald-50 border border-emerald-200 text-emerald-700 px-4 py-3 rounded-lg text-xs flex items-center space-x-2">
+          <CheckCircle2 size={16} className="shrink-0" />
           <span>{successMsg}</span>
         </div>
       )}
 
-      {/* Search Bar */}
-      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center space-x-3">
-        <Search size={18} className="text-slate-400" />
+      {/* SEARCH BAR */}
+      <div className="flex items-center bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-xs max-w-md">
+        <Search size={16} className="text-slate-400 mr-2 shrink-0" />
         <input
           type="text"
           placeholder="Search products by name or category..."
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
-          className="w-full bg-transparent text-sm focus:outline-none text-slate-800"
+          className="w-full text-xs text-slate-800 placeholder-slate-400 bg-transparent focus:outline-hidden"
         />
         {searchTerm && (
           <button onClick={() => setSearchTerm('')} className="text-xs text-slate-400 hover:text-slate-600">
@@ -210,13 +227,18 @@ export default function ProductsPage() {
                   <th className="px-6 py-3.5">Product Name</th>
                   <th className="px-6 py-3.5">Category</th>
                   <th className="px-6 py-3.5 text-right">Unit Price</th>
-                  <th className="px-6 py-3.5 text-center w-32">Actions</th>
+                  <th className="px-6 py-3.5 text-center w-40">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200/60 text-slate-800">
                 {filteredProducts.map((product) => (
                   <tr key={product.id} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="px-6 py-4 font-semibold text-slate-900">{product.name}</td>
+                    <td className="px-6 py-4 font-semibold text-slate-900">
+                      <div>{product.name}</div>
+                      {product.product_code && (
+                        <div className="text-[11px] font-mono text-slate-400 font-normal">{product.product_code}</div>
+                      )}
+                    </td>
                     <td className="px-6 py-4">
                       <span className="inline-block px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-100">
                         {product.category}
@@ -226,20 +248,28 @@ export default function ProductsPage() {
                       ₹{Number(product.price).toFixed(2)}
                     </td>
                     <td className="px-6 py-4 text-center">
-                      <div className="flex items-center justify-center space-x-2">
+                      <div className="flex items-center justify-center space-x-1.5">
+                        <button
+                          onClick={() => setAnalyticsProduct(product)}
+                          className="p-1.5 text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 rounded-md transition flex items-center gap-1 font-semibold text-xs border border-indigo-200/60"
+                          title="Sales History & Analytics"
+                        >
+                          <BarChart2 size={15} />
+                          <span className="text-[11px]">Analytics</span>
+                        </button>
                         <button
                           onClick={() => handleOpenEdit(product)}
                           className="p-1.5 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded transition"
                           title="Edit Product"
                         >
-                          <Edit2 size={16} />
+                          <Edit2 size={15} />
                         </button>
                         <button
                           onClick={() => setDeletingProduct(product)}
                           className="p-1.5 text-slate-600 hover:text-rose-600 hover:bg-rose-50 rounded transition"
                           title="Delete Product"
                         >
-                          <Trash2 size={16} />
+                          <Trash2 size={15} />
                         </button>
                       </div>
                     </td>
@@ -253,7 +283,7 @@ export default function ProductsPage() {
 
       {/* ADD / EDIT MODAL */}
       {showModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4">
             <div className="flex justify-between items-center border-b border-slate-200 pb-3">
               <h2 className="text-lg font-bold text-slate-900">
@@ -275,7 +305,7 @@ export default function ProductsPage() {
                   placeholder="e.g. A4 B&W Xerox, Spiral Binding, Pen"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
@@ -284,7 +314,7 @@ export default function ProductsPage() {
                 <select
                   value={category}
                   onChange={(e) => setCategory(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-blue-500"
                 >
                   {CATEGORIES.map(c => (
                     <option key={c} value={c}>{c}</option>
@@ -304,7 +334,7 @@ export default function ProductsPage() {
                   placeholder="0.00"
                   value={price}
                   onChange={(e) => setPrice(e.target.value === '' ? '' : Number(e.target.value))}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-semibold focus:outline-hidden focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
@@ -331,7 +361,7 @@ export default function ProductsPage() {
 
       {/* DELETE CONFIRMATION MODAL */}
       {deletingProduct && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 space-y-4 text-center">
             <AlertTriangle className="mx-auto text-rose-600" size={40} />
             <h3 className="text-lg font-bold text-slate-900">Confirm Product Deletion</h3>
@@ -354,6 +384,23 @@ export default function ProductsPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* PRODUCT SALES HISTORY & ANALYTICS MODAL */}
+      {analyticsProduct && (
+        <ProductSalesHistoryModal
+          product={analyticsProduct}
+          onClose={() => setAnalyticsProduct(null)}
+          onViewInvoice={handleViewInvoice}
+        />
+      )}
+
+      {/* INVOICE PREVIEW MODAL */}
+      {viewingBill && (
+        <InvoiceModal
+          bill={viewingBill}
+          onClose={() => setViewingBill(null)}
+        />
       )}
     </div>
   );
