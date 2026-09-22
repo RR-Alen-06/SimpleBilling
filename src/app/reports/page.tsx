@@ -4,6 +4,8 @@ import React, { useState, useEffect } from 'react';
 import { ApiService } from '@/lib/services/api';
 import { Bill, CustomerSummary, DateFilterOption } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
+import { downloadCSV } from '@/lib/utils/csv';
+import { REPORTS_DATE_FILTER_BUTTONS } from '@/lib/constants/filters';
 import { 
   BarChart3, 
   Printer, 
@@ -75,23 +77,6 @@ export default function ReportsPage() {
   const dueCustomers = customers.filter(c => c.balance_due > 0);
   const totalDuesAmount = dueCustomers.reduce((sum, c) => sum + c.balance_due, 0);
 
-  // CSV Export Helper
-  const exportToCSV = (filename: string, headers: string[], rows: (string | number)[][]) => {
-    const csvContent = [
-      headers.join(','),
-      ...rows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
-    ].join('\n');
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `${filename}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
   const handleExportCSV = () => {
     const filterLabel = dateFilter.replace('_', '-');
     if (activeTab === 'sales') {
@@ -108,7 +93,7 @@ export default function ReportsPage() {
         b.paid_total,
         Number(b.paid_total) >= Number(b.grand_total) ? 'Paid' : 'Pending'
       ]);
-      exportToCSV(`Sales_Report_${filterLabel}`, headers, rows);
+      downloadCSV(`Sales_Report_${filterLabel}`, headers, rows);
     } else if (activeTab === 'items') {
       const headers = ['Product / Service Name', 'Quantity Sold', 'Revenue Generated (INR)'];
       const rows = itemSales.map(it => [
@@ -116,7 +101,7 @@ export default function ReportsPage() {
         it.qty,
         it.total.toFixed(2)
       ]);
-      exportToCSV(`Item_Sales_Report_${filterLabel}`, headers, rows);
+      downloadCSV(`Item_Sales_Report_${filterLabel}`, headers, rows);
     } else {
       const headers = ['Customer Name', 'Mobile Number', 'Email', 'Total Billed (INR)', 'Total Paid (INR)', 'Balance Due (INR)'];
       const rows = dueCustomers.map(c => [
@@ -127,7 +112,7 @@ export default function ReportsPage() {
         c.total_paid,
         c.balance_due
       ]);
-      exportToCSV(`Customer_Due_List_${new Date().toISOString().split('T')[0]}`, headers, rows);
+      downloadCSV(`Customer_Due_List_${new Date().toISOString().split('T')[0]}`, headers, rows);
     }
   };
 
@@ -135,15 +120,7 @@ export default function ReportsPage() {
     window.print();
   };
 
-  const dateFilterButtons: { id: DateFilterOption; label: string }[] = [
-    { id: 'today', label: 'Today' },
-    { id: 'yesterday', label: 'Yesterday' },
-    { id: 'weekly', label: 'This Week' },
-    { id: 'monthly', label: 'This Month' },
-    { id: 'quarterly', label: 'Quarter' },
-    { id: 'financial_year', label: 'Financial Year' },
-    { id: 'custom', label: 'Custom' },
-  ];
+  const dateFilterButtons = REPORTS_DATE_FILTER_BUTTONS;
 
   return (
     <div className="space-y-6">

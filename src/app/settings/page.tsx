@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { ApiService, DEFAULT_SETTINGS } from '@/lib/services/api';
 import { AllSettings, RoundingMethod, SequenceConfig, LoyaltyRule, LoyaltyRedemptionRule } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
+import { ChangeEmailForm } from '@/components/ChangeEmailForm';
 import { 
   Settings as SettingsIcon, 
   Store, 
@@ -938,9 +939,12 @@ export default function SettingsPage() {
             {activeTab === 'security' && (
               <div className="space-y-6">
                 <div>
-                  <h2 className="text-lg font-bold text-slate-900 border-b pb-2">Security PIN & Super Admin Controls</h2>
-                  <p className="text-xs text-slate-500 mt-1">Configure admin security PIN for authorizing discounts and sensitive operations.</p>
+                  <h2 className="text-lg font-bold text-slate-900 border-b pb-2">Security & Account Controls</h2>
+                  <p className="text-xs text-slate-500 mt-1">Manage your login credentials, email address, security PIN, and administrative actions.</p>
                 </div>
+
+                {/* CHANGE EMAIL SECTION */}
+                <ChangeEmailForm />
 
                 {/* SECURITY PIN CONFIGURATION CARD */}
                 <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 space-y-4">
