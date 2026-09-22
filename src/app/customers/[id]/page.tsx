@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useState, useEffect, use } from 'react';
+import React, { useState, useEffect, useCallback, use } from 'react';
 import Link from 'next/link';
 import { ApiService } from '@/lib/services/api';
 import { Customer, CustomerLedgerEntry, PaymentMethod } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
+import { CustomerStatementModal } from '@/components/CustomerStatementModal';
 import { 
   BookOpen, 
   ArrowLeft, 
@@ -13,8 +14,11 @@ import {
   AlertTriangle, 
   CheckCircle2, 
   X,
-  Wallet,
-  Receipt
+  Receipt,
+  FileText,
+  ChevronDown,
+  ChevronUp,
+  Package
 } from 'lucide-react';
 
 export default function CustomerLedgerPage({ params }: { params: Promise<{ id: string }> }) {
@@ -27,6 +31,33 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
   const [runningBalance, setRunningBalance] = useState(0);
   const [loading, setLoading] = useState(true);
 
+  // Statement Modal State
+  const [showStatementModal, setShowStatementModal] = useState(false);
+
+  // Expanded Bill Details State
+  const [expandedBillIds, setExpandedBillIds] = useState<Set<string>>(new Set());
+
+  const toggleBillExpanded = (refNo: string) => {
+    setExpandedBillIds(prev => {
+      const next = new Set(prev);
+      if (next.has(refNo)) {
+        next.delete(refNo);
+      } else {
+        next.add(refNo);
+      }
+      return next;
+    });
+  };
+
+  const toggleAllBills = () => {
+    const billEntries = entries.filter(e => e.type === 'BILL' && e.items && e.items.length > 0);
+    if (expandedBillIds.size >= billEntries.length) {
+      setExpandedBillIds(new Set());
+    } else {
+      setExpandedBillIds(new Set(billEntries.map(b => b.reference_no)));
+    }
+  };
+
   // Record Payment Modal State
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState<number | ''>('');
@@ -38,8 +69,7 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
   const [successMsg, setSuccessMsg] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  const loadLedgerData = async () => {
-    setLoading(true);
+  const loadLedgerData = useCallback(async () => {
     try {
       const data = await ApiService.getCustomerLedger(customerId);
       setCustomer(data.customer);
@@ -53,12 +83,35 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
     } finally {
       setLoading(false);
     }
-  };
+  }, [customerId]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadLedgerData();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    let isCurrent = true;
+    const run = async () => {
+      try {
+        const data = await ApiService.getCustomerLedger(customerId);
+        if (!isCurrent) return;
+        setCustomer(data.customer);
+        setEntries(data.entries);
+        setTotalBilled(data.totalBilled);
+        setTotalPaid(data.totalPaid);
+        setRunningBalance(data.runningBalance);
+      } catch (err: unknown) {
+        if (!isCurrent) return;
+        console.error('Error loading ledger:', err);
+        setErrorMsg(err instanceof Error ? err.message : 'Failed to load ledger data');
+      } finally {
+        if (isCurrent) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void run();
+
+    return () => {
+      isCurrent = false;
+    };
   }, [customerId]);
 
   const handleOpenPayment = () => {
@@ -149,6 +202,14 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
                 </p>
               </div>
               <button
+                onClick={() => setShowStatementModal(true)}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm px-4 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5"
+                title="Generate Consolidated Purchase Statement PDF"
+              >
+                <FileText size={16} />
+                <span>Statement PDF</span>
+              </button>
+              <button
                 onClick={handleOpenPayment}
                 className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm px-4 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5"
               >
@@ -176,11 +237,20 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
 
       {/* LEDGER TIMELINE TABLE */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+        <div className="px-6 py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
           <h2 className="font-bold text-slate-800 text-lg flex items-center space-x-2">
             <BookOpen className="text-blue-600" size={20} />
             <span>Customer Ledger History</span>
           </h2>
+          {entries.some(e => e.type === 'BILL' && e.items && e.items.length > 0) && (
+            <button
+              onClick={toggleAllBills}
+              className="text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-lg transition flex items-center gap-1.5"
+            >
+              <Package size={13} className="text-blue-600" />
+              <span>{expandedBillIds.size > 0 ? 'Collapse All Items' : 'Expand All Purchases'}</span>
+            </button>
+          )}
         </div>
 
         {loading ? (
@@ -196,58 +266,113 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
             <table className="w-full text-left text-sm border-collapse">
               <thead>
                 <tr className="bg-slate-100 text-slate-700 uppercase text-[11px] font-bold tracking-wider border-b border-slate-200">
-                  <th className="px-6 py-3.5">Date & Time</th>
+                  <th className="px-6 py-3.5">Date &amp; Time</th>
                   <th className="px-6 py-3.5">Type</th>
                   <th className="px-6 py-3.5">Reference No</th>
-                  <th className="px-6 py-3.5">Description</th>
+                  <th className="px-6 py-3.5">Description &amp; Items</th>
                   <th className="px-6 py-3.5 text-right">Bill Amount</th>
                   <th className="px-6 py-3.5 text-right">Paid Amount</th>
                   <th className="px-6 py-3.5 text-right">Running Balance</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200/60 text-slate-800">
-                {entries.map((entry) => (
-                  <tr key={entry.id} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="px-6 py-4 text-xs font-data-mono text-slate-500">
-                      {new Date(entry.date).toLocaleString('en-IN', {
-                        dateStyle: 'medium',
-                        timeStyle: 'short'
-                      })}
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className={`inline-block px-3 py-0.5 rounded-full text-[11px] font-bold ${
-                        entry.type === 'BILL'
-                          ? 'bg-blue-50 text-blue-700 border border-blue-100'
-                          : 'bg-emerald-50 text-emerald-700 border border-emerald-100'
-                      }`}>
-                        {entry.type}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 font-data-mono font-bold text-slate-900">{entry.reference_no}</td>
-                    <td className="px-6 py-4 text-xs text-slate-600">{entry.description}</td>
-                    <td className="px-6 py-4 text-right font-data-mono font-medium text-slate-800">
-                      {entry.bill_amount > 0 ? `₹${entry.bill_amount.toFixed(2)}` : '-'}
-                    </td>
-                    <td className="px-6 py-4 text-right font-data-mono font-medium text-emerald-700">
-                      {entry.paid_amount > 0 ? `₹${entry.paid_amount.toFixed(2)}` : '-'}
-                    </td>
-                    <td className="px-6 py-4 text-right font-data-mono font-bold text-base">
-                      {entry.running_balance > 0.001 ? (
-                        <span className="text-amber-700">
-                          ₹{entry.running_balance.toFixed(2)}{' '}
-                          <span className="text-[10px] font-semibold text-amber-600 uppercase">Due</span>
-                        </span>
-                      ) : entry.running_balance < -0.001 ? (
-                        <span className="text-emerald-700">
-                          ₹{Math.abs(entry.running_balance).toFixed(2)}{' '}
-                          <span className="text-[10px] font-semibold text-emerald-600 uppercase">Adv</span>
-                        </span>
-                      ) : (
-                        <span className="text-slate-600">₹0.00</span>
+                {entries.map((entry) => {
+                  const hasItems = entry.type === 'BILL' && entry.items && entry.items.length > 0;
+                  const isExpanded = expandedBillIds.has(entry.reference_no);
+
+                  return (
+                    <React.Fragment key={entry.id}>
+                      <tr className={`transition-colors ${isExpanded ? 'bg-blue-50/40' : 'hover:bg-slate-50/80'}`}>
+                        <td className="px-6 py-4 text-xs font-data-mono text-slate-500">
+                          {new Date(entry.date).toLocaleString('en-IN', {
+                            dateStyle: 'medium',
+                            timeStyle: 'short'
+                          })}
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={`inline-block px-3 py-0.5 rounded-full text-[11px] font-bold ${
+                            entry.type === 'BILL'
+                              ? 'bg-blue-50 text-blue-700 border border-blue-100'
+                              : 'bg-emerald-50 text-emerald-700 border border-emerald-100'
+                          }`}>
+                            {entry.type}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 font-data-mono font-bold text-slate-900">{entry.reference_no}</td>
+                        <td className="px-6 py-4 text-xs text-slate-600">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span>{entry.description}</span>
+                            {hasItems && (
+                              <button
+                                onClick={() => toggleBillExpanded(entry.reference_no)}
+                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded-md transition border border-blue-200/60 shadow-2xs cursor-pointer"
+                              >
+                                <Package size={12} />
+                                <span>{entry.items!.length} {entry.items!.length === 1 ? 'item' : 'items'}</span>
+                                {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 text-right font-data-mono font-medium text-slate-800">
+                          {entry.bill_amount > 0 ? `₹${entry.bill_amount.toFixed(2)}` : '-'}
+                        </td>
+                        <td className="px-6 py-4 text-right font-data-mono font-medium text-emerald-700">
+                          {entry.paid_amount > 0 ? `₹${entry.paid_amount.toFixed(2)}` : '-'}
+                        </td>
+                        <td className="px-6 py-4 text-right font-data-mono font-bold text-base">
+                          {entry.running_balance > 0.001 ? (
+                            <span className="text-amber-700">
+                              ₹{entry.running_balance.toFixed(2)}{' '}
+                              <span className="text-[10px] font-semibold text-amber-600 uppercase">Due</span>
+                            </span>
+                          ) : entry.running_balance < -0.001 ? (
+                            <span className="text-emerald-700">
+                              ₹{Math.abs(entry.running_balance).toFixed(2)}{' '}
+                              <span className="text-[10px] font-semibold text-emerald-600 uppercase">Adv</span>
+                            </span>
+                          ) : (
+                            <span className="text-slate-600">₹0.00</span>
+                          )}
+                        </td>
+                      </tr>
+
+                      {/* Expandable Purchase Item Drawer */}
+                      {isExpanded && hasItems && (
+                        <tr className="bg-slate-50/90 border-b border-slate-200">
+                          <td colSpan={7} className="px-8 py-3.5">
+                            <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs space-y-2.5">
+                              <div className="flex items-center justify-between text-xs font-bold text-slate-800 border-b border-slate-100 pb-2">
+                                <span className="flex items-center gap-2">
+                                  <Package size={15} className="text-blue-600" />
+                                  <span>Purchased Items on {new Date(entry.date).toLocaleDateString('en-IN', { dateStyle: 'medium' })} ({entry.reference_no})</span>
+                                </span>
+                                <span className="text-[11px] text-slate-400 font-normal">
+                                  {entry.items!.length} distinct line item{entry.items!.length > 1 ? 's' : ''}
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 pt-1">
+                                {entry.items!.map((it, idx) => (
+                                  <div key={idx} className="flex items-center justify-between bg-slate-50/80 border border-slate-200/70 rounded-lg px-3.5 py-2.5 text-xs">
+                                    <div className="pr-2">
+                                      <p className="font-bold text-slate-900 leading-snug">{it.product_name}</p>
+                                      <p className="text-[11px] text-slate-500 font-mono mt-0.5">
+                                        Qty: {it.quantity} &times; ₹{it.price.toFixed(2)}
+                                      </p>
+                                    </div>
+                                    <span className="font-data-mono font-bold text-slate-800 text-sm flex-shrink-0">
+                                      ₹{it.total.toFixed(2)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
                       )}
-                    </td>
-                  </tr>
-                ))}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -259,10 +384,7 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4">
             <div className="flex justify-between items-center border-b border-slate-200 pb-3">
-              <h2 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
-                <Wallet className="text-emerald-600" size={20} />
-                <span>Record Customer Payment</span>
-              </h2>
+              <h2 className="text-lg font-bold text-slate-900">Record Customer Payment</h2>
               <button onClick={() => setShowPaymentModal(false)} className="text-slate-400 hover:text-slate-600">
                 <X size={20} />
               </button>
@@ -276,12 +398,12 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
                 <input
                   type="number"
                   required
-                  min="1"
-                  step="1"
-                  placeholder="Enter amount"
+                  min="0.01"
+                  step="0.01"
+                  placeholder="0.00"
                   value={paymentAmount}
                   onChange={(e) => setPaymentAmount(e.target.value === '' ? '' : Number(e.target.value))}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-base font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
 
@@ -293,10 +415,10 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
                       key={mode}
                       type="button"
                       onClick={() => setPaymentMethod(mode)}
-                      className={`py-2 rounded-lg text-xs font-bold border transition ${
+                      className={`py-2 text-xs font-semibold rounded-lg border transition ${
                         paymentMethod === mode
-                          ? 'bg-emerald-600 text-white border-emerald-600 shadow'
-                          : 'bg-slate-50 text-slate-700 border-slate-300 hover:bg-slate-100'
+                          ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
                       }`}
                     >
                       {mode}
@@ -306,35 +428,44 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Notes (Optional)</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Payment Notes (Optional)</label>
                 <input
                   type="text"
-                  placeholder="e.g. Received partial cash against pending balance"
+                  placeholder="e.g. Cleared pending dues for Xerox"
                   value={paymentNotes}
                   onChange={(e) => setPaymentNotes(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
 
-              <div className="flex justify-end space-x-2 pt-3 border-t border-slate-100">
+              <div className="flex justify-end space-x-3 pt-3 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setShowPaymentModal(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="px-5 py-2 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg shadow disabled:opacity-50"
+                  className="px-5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg shadow transition disabled:opacity-50 flex items-center space-x-1.5"
                 >
-                  {submitting ? 'Recording...' : 'Record Payment'}
+                  <PlusCircle size={14} />
+                  <span>{submitting ? 'Recording...' : 'Save Payment'}</span>
                 </button>
               </div>
             </form>
           </div>
         </div>
+      )}
+
+      {/* CONSOLIDATED CUSTOMER STATEMENT MODAL */}
+      {showStatementModal && (
+        <CustomerStatementModal
+          customerId={customerId}
+          onClose={() => setShowStatementModal(false)}
+        />
       )}
     </div>
   );

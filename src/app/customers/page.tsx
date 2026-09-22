@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { ApiService } from '@/lib/services/api';
 import { CustomerSummary } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
+import { CustomerStatementModal } from '@/components/CustomerStatementModal';
 import { 
   Users, 
   UserPlus, 
@@ -14,13 +15,17 @@ import {
   AlertTriangle, 
   CheckCircle2, 
   X,
-  Phone
+  Phone,
+  FileText
 } from 'lucide-react';
 
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+
+  // Statement PDF Modal state
+  const [statementCustomerId, setStatementCustomerId] = useState<string | null>(null);
 
   // Add / Edit modal
   const [showModal, setShowModal] = useState(false);
@@ -222,14 +227,23 @@ export default function CustomersPage() {
                       </span>
                     </td>
                     <td className="px-6 py-4 text-center">
-                      <div className="flex items-center justify-center space-x-2">
+                      <div className="flex items-center justify-center space-x-1.5">
                         <Link
                           href={`/customers/${cust.id}`}
-                          className="bg-blue-600 hover:bg-blue-500 text-white px-2.5 py-1 rounded text-xs font-semibold transition flex items-center space-x-1 shadow-sm"
+                          className="bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded text-xs font-semibold transition flex items-center space-x-1 shadow-xs"
+                          title="View Ledger & Payments"
                         >
                           <BookOpen size={13} />
                           <span>Ledger</span>
                         </Link>
+                        <button
+                          onClick={() => setStatementCustomerId(cust.id)}
+                          className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/80 px-2 py-1 rounded text-xs font-semibold transition flex items-center space-x-1"
+                          title="Generate Consolidated Purchase Statement PDF"
+                        >
+                          <FileText size={13} />
+                          <span>Statement</span>
+                        </button>
                         <button
                           onClick={() => handleOpenEdit(cust)}
                           className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded transition"
@@ -249,7 +263,7 @@ export default function CustomersPage() {
 
       {/* ADD / EDIT CUSTOMER MODAL */}
       {showModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4">
             <div className="flex justify-between items-center border-b border-slate-200 pb-3">
               <h2 className="text-lg font-bold text-slate-900">
@@ -271,7 +285,7 @@ export default function CustomersPage() {
                   placeholder="e.g. Rahul Sharma"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
@@ -284,7 +298,7 @@ export default function CustomersPage() {
                   placeholder="e.g. 9876543210"
                   value={mobile}
                   onChange={(e) => setMobile(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
@@ -297,7 +311,7 @@ export default function CustomersPage() {
                   placeholder="customer@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
@@ -320,6 +334,14 @@ export default function CustomersPage() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* CONSOLIDATED STATEMENT PDF MODAL */}
+      {statementCustomerId && (
+        <CustomerStatementModal
+          customerId={statementCustomerId}
+          onClose={() => setStatementCustomerId(null)}
+        />
       )}
     </div>
   );

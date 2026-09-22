@@ -58,7 +58,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(`${origin}${next}`);
     }
     return NextResponse.redirect(
-      `${origin}/login?error=${encodeURIComponent(error.message || 'Email link is invalid or has expired.')}`
+      `${origin}/auth/confirm?error=${encodeURIComponent(error.message || 'Email link is invalid or has expired.')}&type=${encodeURIComponent(type || '')}`
     );
   }
 
@@ -69,11 +69,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(`${origin}${next}`);
     }
     return NextResponse.redirect(
-      `${origin}/login?error=${encodeURIComponent(error.message || 'Authorization code is invalid or has expired.')}`
+      `${origin}/auth/confirm?error=${encodeURIComponent(error.message || 'Authorization code is invalid or has expired.')}`
     );
   }
 
-  return NextResponse.redirect(
-    `${origin}/login?error=${encodeURIComponent('Missing verification code or token.')}`
-  );
+  // Fallback: If no query params are present (e.g. Supabase redirected with hash fragments #access_token=...
+  // which are client-side only), hand off to /auth/confirm client component.
+  const confirmUrl = new URL('/auth/confirm', origin);
+  if (type) confirmUrl.searchParams.set('type', type);
+  if (next) confirmUrl.searchParams.set('next', next);
+  return NextResponse.redirect(confirmUrl.toString());
 }
