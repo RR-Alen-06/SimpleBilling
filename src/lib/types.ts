@@ -159,6 +159,12 @@ export interface CustomerLedgerEntry {
   advance_used: number;
   loyalty_points: number;
   running_balance: number;
+  items?: {
+    product_name: string;
+    quantity: number;
+    price: number;
+    total: number;
+  }[];
 }
 
 export interface CustomerSummary {
@@ -317,3 +323,75 @@ export interface LoyaltyTransaction {
   notes?: string | null;
   created_at: string;
 }
+
+export interface ProductSalesHistoryItem {
+  bill_id: string;
+  bill_number: string;
+  created_at: string;
+  customer_id?: string | null;
+  customer_name?: string | null;
+  quantity: number;
+  price: number;
+  total: number;
+  is_custom_rate: boolean;
+  catalog_price: number;
+}
+
+export interface ProductSalesAnalytics {
+  product: Product;
+  total_quantity_sold: number;
+  total_revenue: number;
+  average_selling_rate: number;
+  orders_count: number;
+  transactions: ProductSalesHistoryItem[];
+}
+
+export interface CustomerStatementBillItem {
+  item_index: number;
+  product_name: string;
+  quantity: number;
+  price: number;
+  total: number;
+}
+
+export interface CustomerStatementBill {
+  bill_id: string;
+  bill_number: string;
+  created_at: string;
+  items: CustomerStatementBillItem[];
+  subtotal: number;
+  discount: number;
+  grand_total: number;
+  paid_amount: number;
+  balance_due: number;
+}
+
+export interface CustomerStatementDateGroup {
+  date_formatted: string;
+  raw_date: string;
+  bills: CustomerStatementBill[];
+}
+
+export interface CustomerStatementData {
+  customer: Customer;
+  shop_settings: ShopSettings;
+  period: {
+    filter_label: string;
+    start_date?: string;
+    end_date?: string;
+  };
+  kpi: {
+    total_invoiced: number;
+    total_paid: number;
+    invoices_count: number;
+    total_units_bought: number;
+  };
+  date_groups: CustomerStatementDateGroup[];
+  reconciliation: {
+    period_purchases: number;
+    period_payments: number;
+    current_outstanding_balance: number;
+    advance_balance: number;
+  };
+}
+
