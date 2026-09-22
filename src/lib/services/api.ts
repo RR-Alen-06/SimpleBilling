@@ -19,18 +19,24 @@ import {
   LoyaltyRedemptionRule,
   LoyaltySettings,
   BillFinancialSummary,
-  PaymentMethod
+  PaymentMethod,
+  ProductSalesAnalytics,
+  ProductSalesHistoryItem,
+  CustomerStatementData,
+  CustomerStatementBill,
+  CustomerStatementBillItem,
+  CustomerStatementDateGroup
 } from '../types';
 
 export const DEFAULT_SETTINGS: AllSettings = {
   shop: {
-    shop_name: 'ABC PRINTING CENTER',
-    address: 'Main Road, Shop No. 12, City',
-    phone: '+91 98765 43210',
-    email: 'contact@abcprinting.com',
+    shop_name: 'PrintPro Store',
+    address: '',
+    phone: '',
+    email: '',
     gst_number: '',
     logo_url: '',
-    footer_message: 'Thank you for visiting. Powered by PrintPro ERP'
+    footer_message: 'Thank you for your business!'
   },
   billing: {
     bill_prefix: 'BILL',
@@ -421,6 +427,18 @@ export class ApiService {
     
     if (error) return [];
     return data || [];
+  }
+
+  static async getProductById(id: string): Promise<Product | null> {
+    if (!isSupabaseConfigured) return null;
+    const { data, error } = await supabase
+      .from('products')
+      .select('*')
+      .eq('id', id)
+      .single();
+    
+    if (error || !data) return null;
+    return data;
   }
 
   static async addProduct(product: Omit<Product, 'id' | 'created_at'>, userName = 'Admin'): Promise<Product> {
@@ -984,8 +1002,16 @@ export class ApiService {
 
     if (custErr || !customer) throw new Error('Customer not found');
 
-    const { data: bills } = await supabase.from('bills').select('*').eq('customer_id', customerId).order('created_at', { ascending: true });
-    const { data: payments } = await supabase.from('payments').select('*').eq('customer_id', customerId).order('created_at', { ascending: true });
+    const { data: bills } = await supabase
+      .from('bills')
+      .select('*, bill_items(*)')
+      .eq('customer_id', customerId)
+      .order('created_at', { ascending: true });
+    const { data: payments } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('customer_id', customerId)
+      .order('created_at', { ascending: true });
 
     let pendingPoints = 0;
     for (const b of (bills || [])) {
@@ -1005,6 +1031,7 @@ export class ApiService {
       paid_amount: number;
       advance_used: number;
       loyalty_points: number;
+      items?: { product_name: string; quantity: number; price: number; total: number }[];
     }[] = [];
 
     const paymentBillIds = new Set((payments || []).map(p => p.bill_id).filter(Boolean));
@@ -1014,6 +1041,13 @@ export class ApiService {
       const directPaidForBill = hasPaymentRecord ? 0 : Math.max(0, Number(b.paid_total || 0) - Number(b.advance_used || 0));
       const effectivePaidOnBill = Number(b.advance_used || 0) + directPaidForBill;
 
+      const items = ((b.bill_items as BillItem[]) || []).map(item => ({
+        product_name: item.product_name,
+        quantity: Number(item.quantity || 0),
+        price: Number(item.price || 0),
+        total: Number(item.total || (Number(item.quantity || 0) * Number(item.price || 0)))
+      }));
+
       rawEvents.push({
         date: b.created_at,
         type: 'BILL',
@@ -1022,7 +1056,8 @@ export class ApiService {
         bill_amount: Number(b.grand_total),
         paid_amount: effectivePaidOnBill,
         advance_used: Number(b.advance_used || 0),
-        loyalty_points: Number(b.loyalty_points_earned || 0)
+        loyalty_points: Number(b.loyalty_points_earned || 0),
+        items
       });
     });
 
@@ -1060,7 +1095,8 @@ export class ApiService {
         paid_amount: evt.paid_amount,
         advance_used: evt.advance_used,
         loyalty_points: evt.loyalty_points,
-        running_balance: balance
+        running_balance: balance,
+        items: evt.items
       };
     });
 
@@ -2002,9 +2038,7 @@ Points Redeemed : -${summary.loyalty.points_redeemed} pts
       const existingCusts = await this.getCustomers();
       if (existingCusts.length === 0) {
         const seedCustomers = [
-          { name: 'Rajesh Sharma (College Staff)', mobile: '9876543210', email: 'rajesh.sharma@campus.edu', advance_balance: 200.00, loyalty_points: 45.0, customer_code: 'CUS-000001' },
-          { name: 'Priya Patel (Architecture Student)', mobile: '9876543211', email: 'priya.patel@student.edu', advance_balance: 50.00, loyalty_points: 20.0, customer_code: 'CUS-000002' },
-          { name: 'Apex Coaching Center (Monthly Account)', mobile: '9876543212', email: 'admin@apexcoaching.org', advance_balance: 0.00, loyalty_points: 110.0, customer_code: 'CUS-000003' }
+          { name: 'Sample Walk-in Customer', mobile: '9876543210', email: 'customer@example.com', advance_balance: 0.00, loyalty_points: 0.0, customer_code: 'CUS-000001' }
         ];
 
         const { error: cErr } = await supabase.from('customers').insert(seedCustomers);
@@ -2025,5 +2059,252 @@ Points Redeemed : -${summary.loyalty.points_redeemed} pts
 
     return { productsAdded, customersAdded };
   }
+
+  // --- PRODUCT SALES HISTORY & ANALYTICS ---
+  static async getProductSalesAnalytics(
+    productId: string,
+    filter: DateFilterOption = 'all_time',
+    customRange?: { from: string; to: string }
+  ): Promise<ProductSalesAnalytics> {
+    const product = await this.getProductById(productId);
+    if (!product) throw new Error('Product not found');
+
+    if (!isSupabaseConfigured) {
+      return {
+        product,
+        total_quantity_sold: 0,
+        total_revenue: 0,
+        average_selling_rate: product.price,
+        orders_count: 0,
+        transactions: []
+      };
+    }
+
+    const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
+
+    const { data: items, error } = await supabase
+      .from('bill_items')
+      .select('*, bills(id, bill_number, created_at, customer_id, customers(name))')
+      .or(`product_id.eq.${productId},product_name.eq.${product.name}`)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching product sales history:', error);
+      return {
+        product,
+        total_quantity_sold: 0,
+        total_revenue: 0,
+        average_selling_rate: product.price,
+        orders_count: 0,
+        transactions: []
+      };
+    }
+
+    const transactions: ProductSalesHistoryItem[] = [];
+    const billIds = new Set<string>();
+    let totalQty = 0;
+    let totalRev = 0;
+
+    for (const item of (items || [])) {
+      const bill = item.bills;
+      const createdAt = bill?.created_at || item.created_at || new Date().toISOString();
+      const itemTime = new Date(createdAt).getTime();
+
+      if (startDate && itemTime < startDate.getTime()) continue;
+      if (endDate && itemTime > endDate.getTime()) continue;
+
+      const qty = Number(item.quantity || 0);
+      const price = Number(item.price || 0);
+      const total = Number(item.total || (qty * price));
+      const isCustomRate = Math.abs(price - product.price) > 0.001;
+
+      const billId = bill?.id || item.bill_id || '';
+      if (billId) billIds.add(billId);
+
+      totalQty += qty;
+      totalRev += total;
+
+      const customerName = bill?.customers?.name || bill?.customer_name || 'Walk-in Customer';
+
+      transactions.push({
+        bill_id: billId,
+        bill_number: bill?.bill_number || 'N/A',
+        created_at: createdAt,
+        customer_id: bill?.customer_id || null,
+        customer_name: customerName,
+        quantity: qty,
+        price,
+        total,
+        is_custom_rate: isCustomRate,
+        catalog_price: product.price
+      });
+    }
+
+    transactions.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+    const avgRate = totalQty > 0 ? Number((totalRev / totalQty).toFixed(2)) : product.price;
+
+    return {
+      product,
+      total_quantity_sold: Number(totalQty.toFixed(2)),
+      total_revenue: Number(totalRev.toFixed(2)),
+      average_selling_rate: avgRate,
+      orders_count: billIds.size,
+      transactions
+    };
+  }
+
+  // --- CUSTOMER CONSOLIDATED STATEMENT DATA ---
+  static async getCustomerStatementData(
+    customerId: string,
+    filter: DateFilterOption = 'all_time',
+    customRange?: { from: string; to: string }
+  ): Promise<CustomerStatementData> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+
+    const { data: customer, error: custErr } = await supabase
+      .from('customers')
+      .select('*')
+      .eq('id', customerId)
+      .single();
+
+    if (custErr || !customer) throw new Error('Customer not found');
+
+    const settings = await this.getSettings();
+
+    const { data: bills } = await supabase
+      .from('bills')
+      .select('*, bill_items(*)')
+      .eq('customer_id', customerId)
+      .order('created_at', { ascending: true });
+
+    const { data: payments } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('customer_id', customerId)
+      .order('created_at', { ascending: true });
+
+    let allTimeBilled = 0;
+    let allTimePaid = 0;
+    (bills || []).forEach(b => {
+      allTimeBilled += Number(b.grand_total || 0);
+      allTimePaid += Number(b.paid_total || 0);
+    });
+
+    const paymentBillIds = new Set((payments || []).map(p => p.bill_id).filter(Boolean));
+    (payments || []).forEach(p => {
+      if (!p.bill_id || !paymentBillIds.has(p.bill_id)) {
+        allTimePaid += Number(p.amount || 0);
+      }
+    });
+
+    const currentOutstandingBalance = Math.max(0, allTimeBilled - allTimePaid);
+
+    const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
+
+    const filteredBills: CustomerStatementBill[] = [];
+    let periodInvoiced = 0;
+    let periodPaid = 0;
+    let periodUnits = 0;
+
+    for (const b of (bills || [])) {
+      const bTime = new Date(b.created_at).getTime();
+      if (startDate && bTime < startDate.getTime()) continue;
+      if (endDate && bTime > endDate.getTime()) continue;
+
+      const grandTotal = Number(b.grand_total || 0);
+      const paidTotal = Number(b.paid_total || 0);
+      const discount = Number(b.discount || 0);
+      const subtotal = Number(b.total || (grandTotal + discount));
+      const balanceDue = Math.max(0, grandTotal - paidTotal);
+
+      periodInvoiced += grandTotal;
+      periodPaid += paidTotal;
+
+      const items: CustomerStatementBillItem[] = ((b.bill_items as BillItem[]) || []).map((item, idx) => {
+        const qty = Number(item.quantity || 0);
+        const price = Number(item.price || 0);
+        const total = Number(item.total || (qty * price));
+        periodUnits += qty;
+        return {
+          item_index: idx + 1,
+          product_name: item.product_name,
+          quantity: qty,
+          price,
+          total
+        };
+      });
+
+      filteredBills.push({
+        bill_id: b.id,
+        bill_number: b.bill_number,
+        created_at: b.created_at,
+        items,
+        subtotal,
+        discount,
+        grand_total: grandTotal,
+        paid_amount: paidTotal,
+        balance_due: balanceDue
+      });
+    }
+
+    const dateMap = new Map<string, CustomerStatementBill[]>();
+    for (const bill of filteredBills) {
+      const d = new Date(bill.created_at);
+      const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      if (!dateMap.has(dateKey)) {
+        dateMap.set(dateKey, []);
+      }
+      dateMap.get(dateKey)!.push(bill);
+    }
+
+    const date_groups: CustomerStatementDateGroup[] = Array.from(dateMap.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([rawDate, billsOnDate]) => {
+        const d = new Date(rawDate);
+        const formatted = d.toLocaleDateString('en-IN', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric'
+        });
+        return {
+          raw_date: rawDate,
+          date_formatted: formatted,
+          bills: billsOnDate
+        };
+      });
+
+    let filterLabel = 'All Invoices';
+    if (filter === 'today') filterLabel = 'Today';
+    else if (filter === 'monthly') filterLabel = 'This Month';
+    else if (filter === 'financial_year') filterLabel = 'Financial Year (FY)';
+    else if (filter === 'custom' && customRange?.from && customRange?.to) {
+      filterLabel = `${customRange.from} to ${customRange.to}`;
+    }
+
+    return {
+      customer,
+      shop_settings: settings.shop,
+      period: {
+        filter_label: filterLabel,
+        start_date: startDate?.toISOString(),
+        end_date: endDate?.toISOString()
+      },
+      kpi: {
+        total_invoiced: Number(periodInvoiced.toFixed(2)),
+        total_paid: Number(periodPaid.toFixed(2)),
+        invoices_count: filteredBills.length,
+        total_units_bought: Number(periodUnits.toFixed(2))
+      },
+      date_groups,
+      reconciliation: {
+        period_purchases: Number(periodInvoiced.toFixed(2)),
+        period_payments: Number(periodPaid.toFixed(2)),
+        current_outstanding_balance: Number(currentOutstandingBalance.toFixed(2)),
+        advance_balance: Number(customer.advance_balance || 0)
+      }
+    };
+  }
 }
+
 

@@ -19,11 +19,14 @@ import {
 function LoginFormContent() {
   const searchParams = useSearchParams();
 
-  const [activeTab, setActiveTab] = useState<'password' | 'otp'>('password');
+  const initialTab = searchParams.get('tab') === 'otp' ? 'otp' : 'password';
+  const initialType = (searchParams.get('type') as 'signup' | 'magiclink' | 'recovery' | 'email') || 'signup';
+
+  const [activeTab, setActiveTab] = useState<'password' | 'otp'>(initialTab);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [otpToken, setOtpToken] = useState('');
-  const [otpType, setOtpType] = useState<'signup' | 'magiclink' | 'recovery' | 'email'>('signup');
+  const [otpType, setOtpType] = useState<'signup' | 'magiclink' | 'recovery' | 'email'>(initialType);
   const [loading, setLoading] = useState(false);
 
   // Initialize errors/messages from URL query params without cascading effect renders
@@ -273,7 +276,7 @@ function LoginFormContent() {
                   <input
                     type="email"
                     required
-                    placeholder="alensak6@gmail.com"
+                    placeholder="admin@example.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
@@ -342,7 +345,7 @@ function LoginFormContent() {
                   <input
                     type="email"
                     required
-                    placeholder="alensak6@gmail.com"
+                    placeholder="admin@example.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
@@ -451,7 +454,7 @@ function LoginFormContent() {
                 <input
                   type="email"
                   required
-                  placeholder="alensak6@gmail.com"
+                  placeholder="admin@example.com"
                   value={forgotEmail}
                   onChange={(e) => setForgotEmail(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
