@@ -27,13 +27,14 @@ function LoginFormContent() {
   const urlToken = searchParams.get('token') || '';
   const initialTab = (searchParams.get('tab') === 'otp' || urlCode || urlTokenHash || urlToken) ? 'otp' : 'password';
   const initialType = (searchParams.get('type') as 'signup' | 'magiclink' | 'recovery' | 'email') || 'email';
+  const initialEmail = searchParams.get('email') || '';
 
   const [activeTab, setActiveTab] = useState<'password' | 'otp'>(initialTab);
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState('');
 
   // 2-Step OTP State
-  const [otpStep, setOtpStep] = useState<'request' | 'verify'>(urlToken ? 'verify' : 'request');
+  const [otpStep, setOtpStep] = useState<'request' | 'verify'>(urlToken || urlCode || urlTokenHash ? 'verify' : 'request');
   const [otpType, setOtpType] = useState<'signup' | 'magiclink' | 'recovery' | 'email'>(initialType);
   const [pin, setPin] = useState<string[]>(() => {
     if (urlToken.length === 6) {
@@ -114,12 +115,19 @@ function LoginFormContent() {
           }
         }
       } catch (err: unknown) {
-        setErrorMsg(
-          err instanceof Error
-            ? err.message
-            : 'Authentication link is invalid or has expired. Please enter your 6-digit OTP code below or request a new one.'
-        );
+        const rawMsg = err instanceof Error ? err.message : '';
+        // If link was opened across different browser / device / incognito without code verifier cookie
+        if (rawMsg.includes('code verifier') || rawMsg.includes('PKCE') || rawMsg.includes('storage')) {
+          setErrorMsg('Link opened in a different browser session. Please enter the 6-digit OTP code sent to your email.');
+        } else {
+          setErrorMsg(
+            rawMsg || 'Authentication link is invalid or expired. Please enter your 6-digit OTP code below.'
+          );
+        }
         setOtpStep('verify');
+        setTimeout(() => {
+          inputRefs.current[0]?.focus();
+        }, 150);
       } finally {
         setExchangingCode(false);
       }
@@ -197,7 +205,7 @@ function LoginFormContent() {
     setSendingOtp(true);
     try {
       const emailRedirectUrl = typeof window !== 'undefined'
-        ? `${window.location.origin}/login`
+        ? `${window.location.origin}/auth/callback`
         : undefined;
 
       const { error } = await supabase.auth.signInWithOtp({
@@ -228,7 +236,7 @@ function LoginFormContent() {
     }
   };
 
-  // 6-Digit OTP Verification Handler
+  // 6-Digit OTP Verification Handler with resilient multi-type fallback
   const handleVerifyOtp = async (tokenToVerify?: string, e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setErrorMsg('');
@@ -254,17 +262,55 @@ function LoginFormContent() {
 
     setLoading(true);
     try {
-      const { data, error } = await supabase.auth.verifyOtp({
+      // Primary verification attempt with selected otpType
+      let { data, error } = await supabase.auth.verifyOtp({
         email: cleanEmail,
         token: token,
         type: otpType,
       });
 
+      // Resilient fallback attempts across potential Supabase token types
+      if (error && (otpType as string) !== 'email') {
+        const fallback1 = await supabase.auth.verifyOtp({
+          email: cleanEmail,
+          token: token,
+          type: 'email',
+        });
+        if (!fallback1.error) {
+          data = fallback1.data;
+          error = null;
+        }
+      }
+
+      if (error && (otpType as string) !== 'signup') {
+        const fallback2 = await supabase.auth.verifyOtp({
+          email: cleanEmail,
+          token: token,
+          type: 'signup',
+        });
+        if (!fallback2.error) {
+          data = fallback2.data;
+          error = null;
+        }
+      }
+
+      if (error && (otpType as string) !== 'magiclink') {
+        const fallback3 = await supabase.auth.verifyOtp({
+          email: cleanEmail,
+          token: token,
+          type: 'magiclink',
+        });
+        if (!fallback3.error) {
+          data = fallback3.data;
+          error = null;
+        }
+      }
+
       if (error) {
         throw error;
       }
 
-      if (data.session || data.user) {
+      if (data?.session || data?.user) {
         if (otpType === 'recovery') {
           grantAccessAndRedirect('Recovery code verified! Redirecting to set new password...', '/reset-password');
         } else {
