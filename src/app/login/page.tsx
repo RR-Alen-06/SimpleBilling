@@ -1,6 +1,6 @@
 'use client';
 
-import React, { Suspense, useState, useRef, useEffect } from 'react';
+import React, { Suspense, useState, useRef, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase/client';
 import {
@@ -22,20 +22,22 @@ import {
 function LoginFormContent() {
   const searchParams = useSearchParams();
 
-  const initialTab = searchParams.get('tab') === 'otp' ? 'otp' : 'password';
+  const urlCode = searchParams.get('code');
+  const urlTokenHash = searchParams.get('token_hash');
+  const urlToken = searchParams.get('token') || '';
+  const initialTab = (searchParams.get('tab') === 'otp' || urlCode || urlTokenHash || urlToken) ? 'otp' : 'password';
   const initialType = (searchParams.get('type') as 'signup' | 'magiclink' | 'recovery' | 'email') || 'email';
-  const initialToken = searchParams.get('token') || '';
 
   const [activeTab, setActiveTab] = useState<'password' | 'otp'>(initialTab);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
   // 2-Step OTP State
-  const [otpStep, setOtpStep] = useState<'request' | 'verify'>(initialToken ? 'verify' : 'request');
+  const [otpStep, setOtpStep] = useState<'request' | 'verify'>(urlToken ? 'verify' : 'request');
   const [otpType, setOtpType] = useState<'signup' | 'magiclink' | 'recovery' | 'email'>(initialType);
   const [pin, setPin] = useState<string[]>(() => {
-    if (initialToken.length === 6) {
-      return initialToken.split('');
+    if (urlToken.length === 6) {
+      return urlToken.split('');
     }
     return ['', '', '', '', '', ''];
   });
@@ -43,9 +45,11 @@ function LoginFormContent() {
 
   const [loading, setLoading] = useState(false);
   const [sendingOtp, setSendingOtp] = useState(false);
+  const [exchangingCode, setExchangingCode] = useState(Boolean(urlCode || urlTokenHash));
 
   // Input refs for 6-box PIN input
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const codeExchangedRef = useRef(false);
 
   // Initialize errors/messages from URL query params
   const [errorMsg, setErrorMsg] = useState(() => {
@@ -64,6 +68,66 @@ function LoginFormContent() {
   const [forgotMessage, setForgotMessage] = useState('');
   const [forgotError, setForgotError] = useState('');
 
+  const grantAccessAndRedirect = useCallback((msg: string, dest: string = '/') => {
+    setSuccessMsg(msg);
+    setTimeout(() => {
+      window.location.href = dest;
+    }, 600);
+  }, []);
+
+  // Exchange PKCE Code or Token Hash if present in URL (e.g. from email link)
+  useEffect(() => {
+    if ((!urlCode && !urlTokenHash) || codeExchangedRef.current) return;
+    codeExchangedRef.current = true;
+
+    async function exchangeAuthParams() {
+      if (!isSupabaseConfigured) {
+        setExchangingCode(false);
+        setErrorMsg('Supabase is not configured.');
+        return;
+      }
+
+      setExchangingCode(true);
+      setErrorMsg('');
+
+      try {
+        if (urlCode) {
+          const { data, error } = await supabase.auth.exchangeCodeForSession(urlCode);
+          if (error) throw error;
+          if (data.session || data.user) {
+            grantAccessAndRedirect('Authenticated via secure link! Redirecting to dashboard...');
+            return;
+          }
+        } else if (urlTokenHash) {
+          const { data, error } = await supabase.auth.verifyOtp({
+            token_hash: urlTokenHash,
+            type: otpType,
+          });
+          if (error) throw error;
+          if (data.session || data.user) {
+            if (otpType === 'recovery') {
+              grantAccessAndRedirect('Verified! Redirecting to reset password...', '/reset-password');
+            } else {
+              grantAccessAndRedirect('Authenticated successfully! Redirecting to dashboard...');
+            }
+            return;
+          }
+        }
+      } catch (err: unknown) {
+        setErrorMsg(
+          err instanceof Error
+            ? err.message
+            : 'Authentication link is invalid or has expired. Please enter your 6-digit OTP code below or request a new one.'
+        );
+        setOtpStep('verify');
+      } finally {
+        setExchangingCode(false);
+      }
+    }
+
+    exchangeAuthParams();
+  }, [urlCode, urlTokenHash, otpType, grantAccessAndRedirect]);
+
   // Cooldown countdown timer
   useEffect(() => {
     if (cooldown <= 0) return;
@@ -72,13 +136,6 @@ function LoginFormContent() {
     }, 1000);
     return () => clearInterval(interval);
   }, [cooldown]);
-
-  const grantAccessAndRedirect = (msg: string, dest: string = '/') => {
-    setSuccessMsg(msg);
-    setTimeout(() => {
-      window.location.href = dest;
-    }, 500);
-  };
 
   // Password Login Handler
   const handlePasswordLogin = async (e: React.FormEvent) => {
@@ -139,10 +196,15 @@ function LoginFormContent() {
 
     setSendingOtp(true);
     try {
+      const emailRedirectUrl = typeof window !== 'undefined'
+        ? `${window.location.origin}/login`
+        : undefined;
+
       const { error } = await supabase.auth.signInWithOtp({
         email: cleanEmail,
         options: {
           shouldCreateUser: true,
+          emailRedirectTo: emailRedirectUrl,
         },
       });
 
@@ -153,9 +215,9 @@ function LoginFormContent() {
       setOtpStep('verify');
       setCooldown(60);
       setPin(['', '', '', '', '', '']);
-      setSuccessMsg(`A 6-digit verification code has been sent to ${cleanEmail}.`);
+      setSuccessMsg(`A 6-digit verification code has been sent to ${cleanEmail}. Check your inbox!`);
       
-      // Auto focus first box after render
+      // Auto focus first box
       setTimeout(() => {
         inputRefs.current[0]?.focus();
       }, 100);
@@ -242,7 +304,7 @@ function LoginFormContent() {
 
     // Auto-submit when all 6 digits are entered
     const completeToken = newPin.join('');
-    if (completeToken.length === 6 && newPin.every(d => d !== '')) {
+    if (completeToken.length === 6 && newPin.every((d) => d !== '')) {
       handleVerifyOtp(completeToken);
     }
   };
@@ -387,6 +449,14 @@ function LoginFormContent() {
               <span>Verify 6-Digit OTP</span>
             </button>
           </div>
+
+          {/* Exchanging code loading banner */}
+          {exchangingCode && (
+            <div className="bg-blue-50 border-l-4 border-blue-500 p-3 rounded-r-lg flex items-center space-x-2 text-blue-800 text-xs font-semibold animate-pulse">
+              <Loader2 size={16} className="animate-spin text-blue-600 flex-shrink-0" />
+              <span>Authenticating via secure link... Please wait.</span>
+            </div>
+          )}
 
           {/* Alerts */}
           {errorMsg && (
