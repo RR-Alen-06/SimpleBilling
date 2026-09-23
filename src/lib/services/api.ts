@@ -150,15 +150,8 @@ export class ApiService {
 
   // --- DYNAMIC LOYALTY REDEMPTION RULES CRUD ---
   static async getLoyaltyRedemptionRules(): Promise<LoyaltyRedemptionRule[]> {
-    const defaultRedemptionRules: Omit<LoyaltyRedemptionRule, 'id' | 'created_at'>[] = [
-      { points_required: 10, discount_amount: 4.00, enabled: true },
-      { points_required: 20, discount_amount: 5.00, enabled: true },
-      { points_required: 30, discount_amount: 8.00, enabled: true },
-      { points_required: 40, discount_amount: 10.00, enabled: true }
-    ];
-
     if (!isSupabaseConfigured) {
-      return defaultRedemptionRules.map((r, idx) => ({ ...r, id: `red-${idx + 1}` }));
+      return [];
     }
 
     const { data, error } = await supabase
@@ -166,27 +159,61 @@ export class ApiService {
       .select('*')
       .order('points_required', { ascending: true });
 
-    if (!error && data && data.length > 0) {
-      return data;
+    if (error) {
+      console.error('Error fetching loyalty redemption rules:', error);
+      return [];
     }
 
-    try {
-      const { data: inserted, error: insertErr } = await supabase
-        .from('loyalty_redemption_rules')
-        .insert(defaultRedemptionRules)
-        .select();
-      if (!insertErr && inserted && inserted.length > 0) {
-        return inserted;
+    if (!data || data.length === 0) return [];
+
+    // Auto-deduplicate by points_required (keep one, collect duplicates to delete)
+    const seen = new Set<number>();
+    const uniqueRules: LoyaltyRedemptionRule[] = [];
+    const duplicateIdsToDelete: string[] = [];
+
+    for (const rule of data) {
+      if (!seen.has(rule.points_required)) {
+        seen.add(rule.points_required);
+        uniqueRules.push(rule);
+      } else {
+        duplicateIdsToDelete.push(rule.id);
       }
-    } catch (seedErr) {
-      console.warn('Auto-seed redemption rules fallback:', seedErr);
     }
 
-    return defaultRedemptionRules.map((r, idx) => ({ ...r, id: `red-${idx + 1}` }));
+    // Auto-purge duplicates from database
+    if (duplicateIdsToDelete.length > 0) {
+      supabase.from('loyalty_redemption_rules').delete().in('id', duplicateIdsToDelete).then();
+    }
+
+    return uniqueRules;
+  }
+
+  static async clearAllLoyaltyRedemptionRules(userName = 'Super Admin'): Promise<void> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const { error } = await supabase.from('loyalty_redemption_rules').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    if (error) throw new Error(error.message);
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'CLEAR_ALL_LOYALTY_REDEMPTION_RULES',
+      entity: 'All Redemption Rules'
+    });
   }
 
   static async addLoyaltyRedemptionRule(rule: Omit<LoyaltyRedemptionRule, 'id' | 'created_at'>, userName = 'Super Admin'): Promise<LoyaltyRedemptionRule> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+
+    // Prevent duplicate points_required rules
+    const { data: existing } = await supabase
+      .from('loyalty_redemption_rules')
+      .select('id, points_required')
+      .eq('points_required', rule.points_required)
+      .maybeSingle();
+
+    if (existing) {
+      throw new Error(`A redemption rule for ${rule.points_required} Points already exists. Please edit the existing rule.`);
+    }
+
     const { data, error } = await supabase.from('loyalty_redemption_rules').insert([rule]).select().single();
     if (error) throw new Error(error.message);
 
@@ -202,16 +229,6 @@ export class ApiService {
 
   static async updateLoyaltyRedemptionRule(id: string, rule: Partial<Omit<LoyaltyRedemptionRule, 'id' | 'created_at'>>, userName = 'Super Admin'): Promise<LoyaltyRedemptionRule> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
-
-    if (id.startsWith('red-')) {
-      const { data, error } = await supabase.from('loyalty_redemption_rules').insert([{
-        points_required: rule.points_required || 10,
-        discount_amount: rule.discount_amount || 5,
-        enabled: rule.enabled !== undefined ? rule.enabled : true
-      }]).select().single();
-      if (error) throw new Error(error.message);
-      return data;
-    }
 
     const { data, error } = await supabase.from('loyalty_redemption_rules').update(rule).eq('id', id).select().single();
     if (error) throw new Error(error.message);
@@ -239,7 +256,7 @@ export class ApiService {
   }
 
   static calculateLoyaltyDiscount(pointsToRedeem: number, loyaltySettings: LoyaltySettings, activeRedemptionRules: LoyaltyRedemptionRule[] = []): number {
-    if (pointsToRedeem <= 0) return 0;
+    if (pointsToRedeem <= 0 || !loyaltySettings?.enabled) return 0;
 
     const enabledRules = activeRedemptionRules.filter(r => r.enabled).sort((a, b) => b.points_required - a.points_required);
 
@@ -262,53 +279,76 @@ export class ApiService {
       return Number((pointsToRedeem * rate).toFixed(2));
     }
 
-    const req = loyaltySettings.points_required > 0 ? loyaltySettings.points_required : 10;
-    const disc = loyaltySettings.discount_value > 0 ? loyaltySettings.discount_value : 5;
-    const ratePerPoint = disc / req;
-    return Number((pointsToRedeem * ratePerPoint).toFixed(2));
+    if (loyaltySettings.points_required > 0 && loyaltySettings.discount_value > 0) {
+      const ratePerPoint = loyaltySettings.discount_value / loyaltySettings.points_required;
+      return Number((pointsToRedeem * ratePerPoint).toFixed(2));
+    }
+
+    return 0;
   }
 
   // --- SIMPLIFIED DYNAMIC LOYALTY EARNING RULES ---
   static async getLoyaltyRules(): Promise<LoyaltyRule[]> {
-    const defaultRules: Omit<LoyaltyRule, 'id' | 'created_at'>[] = [
-      { rule_name: 'Tier 1', min_bill_amount: 1, max_bill_amount: 20, points_earned: 1, enabled: true, sort_order: 1 },
-      { rule_name: 'Tier 2', min_bill_amount: 21, max_bill_amount: 30, points_earned: 2, enabled: true, sort_order: 2 },
-      { rule_name: 'Tier 3', min_bill_amount: 31, max_bill_amount: 40, points_earned: 3, enabled: true, sort_order: 3 },
-      { rule_name: 'Tier 4', min_bill_amount: 41, max_bill_amount: 60, points_earned: 4, enabled: true, sort_order: 4 },
-      { rule_name: 'Tier 5', min_bill_amount: 61, max_bill_amount: 80, points_earned: 5, enabled: true, sort_order: 5 },
-      { rule_name: 'Tier 6', min_bill_amount: 81, max_bill_amount: 99, points_earned: 6, enabled: true, sort_order: 6 },
-      { rule_name: 'Tier 7', min_bill_amount: 100, max_bill_amount: 200, points_earned: 7, enabled: true, sort_order: 7 },
-      { rule_name: 'Tier 8', min_bill_amount: 201, max_bill_amount: 300, points_earned: 8, enabled: true, sort_order: 8 },
-      { rule_name: 'Tier 9', min_bill_amount: 301, max_bill_amount: 375, points_earned: 9, enabled: true, sort_order: 9 },
-      { rule_name: 'Tier 10', min_bill_amount: 376, max_bill_amount: 500, points_earned: 10, enabled: true, sort_order: 10 }
-    ];
-
     if (!isSupabaseConfigured) {
-      return defaultRules.map((r, idx) => ({ ...r, id: `rule-${idx + 1}` }));
+      return [];
     }
 
     const { data, error } = await supabase.from('loyalty_rules').select('*').order('sort_order', { ascending: true });
-    if (!error && data && data.length > 0) {
-      return data;
+    if (error) {
+      console.error('Error fetching loyalty rules:', error);
+      return [];
     }
 
-    try {
-      const { data: inserted, error: insertErr } = await supabase
-        .from('loyalty_rules')
-        .insert(defaultRules)
-        .select();
-      if (!insertErr && inserted && inserted.length > 0) {
-        return inserted;
+    if (!data || data.length === 0) return [];
+
+    // Auto-deduplicate by rule_name
+    const seen = new Set<string>();
+    const uniqueRules: LoyaltyRule[] = [];
+    const duplicateIdsToDelete: string[] = [];
+
+    for (const rule of data) {
+      const normalizedName = rule.rule_name.trim().toLowerCase();
+      if (!seen.has(normalizedName)) {
+        seen.add(normalizedName);
+        uniqueRules.push(rule);
+      } else {
+        duplicateIdsToDelete.push(rule.id);
       }
-    } catch (seedErr) {
-      console.warn('Auto-seed loyalty rules fallback:', seedErr);
     }
 
-    return defaultRules.map((r, idx) => ({ ...r, id: `rule-${idx + 1}` }));
+    // Auto-purge duplicates from database
+    if (duplicateIdsToDelete.length > 0) {
+      supabase.from('loyalty_rules').delete().in('id', duplicateIdsToDelete).then();
+    }
+
+    return uniqueRules;
+  }
+
+  static async clearAllLoyaltyRules(userName = 'Super Admin'): Promise<void> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const { error } = await supabase.from('loyalty_rules').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    if (error) throw new Error(error.message);
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'CLEAR_ALL_LOYALTY_RULES',
+      entity: 'All Earning Rules'
+    });
   }
 
   static async addLoyaltyRule(rule: Omit<LoyaltyRule, 'id' | 'created_at'>, userName = 'Super Admin'): Promise<LoyaltyRule> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+
+    const { data: existing } = await supabase
+      .from('loyalty_rules')
+      .select('id, rule_name')
+      .ilike('rule_name', rule.rule_name)
+      .maybeSingle();
+
+    if (existing) {
+      throw new Error(`A loyalty rule named "${rule.rule_name}" already exists. Please choose a different name.`);
+    }
+
     const { data, error } = await supabase.from('loyalty_rules').insert([rule]).select().single();
     if (error) throw new Error(error.message);
 
@@ -324,19 +364,6 @@ export class ApiService {
 
   static async updateLoyaltyRule(id: string, rule: Partial<Omit<LoyaltyRule, 'id' | 'created_at'>>, userName = 'Super Admin'): Promise<LoyaltyRule> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
-
-    if (id.startsWith('rule-')) {
-      const { data, error } = await supabase.from('loyalty_rules').insert([{
-        rule_name: rule.rule_name || 'Tier Rule',
-        min_bill_amount: rule.min_bill_amount || 0,
-        max_bill_amount: rule.max_bill_amount,
-        points_earned: rule.points_earned || 1,
-        enabled: rule.enabled !== undefined ? rule.enabled : true,
-        sort_order: rule.sort_order || 1
-      }]).select().single();
-      if (error) throw new Error(error.message);
-      return data;
-    }
 
     const { data, error } = await supabase.from('loyalty_rules').update(rule).eq('id', id).select().single();
     if (error) throw new Error(error.message);
@@ -364,6 +391,7 @@ export class ApiService {
   }
 
   static async calculateLoyaltyPointsEarned(billAmount: number): Promise<number> {
+    if (billAmount <= 0) return 0;
     const rules = await this.getLoyaltyRules();
     const activeRules = rules.filter(r => r.enabled).sort((a, b) => a.sort_order - b.sort_order);
 
@@ -376,7 +404,7 @@ export class ApiService {
       }
     }
 
-    return Math.max(1, Math.floor(billAmount / 100));
+    return 0;
   }
 
   // --- ROUNDING HELPER ---
@@ -758,7 +786,7 @@ export class ApiService {
     // 5. ATOMIC DATABASE SEQUENCE GENERATOR
     const bill_number = await this.getNextSequence('BILL');
 
-    const { data: bill, error: billErr } = await supabase
+    let { data: bill, error: billErr } = await supabase
       .from('bills')
       .insert([{
         bill_number,
@@ -781,6 +809,36 @@ export class ApiService {
       }])
       .select()
       .single();
+
+    if (billErr && (billErr.message?.includes('bills_payment_method_check') || billErr.message?.includes('check constraint'))) {
+      const fallbackMethod = (billData.upi_paid > billData.cash_paid) ? 'UPI' : 'Cash';
+      const retryResult = await supabase
+        .from('bills')
+        .insert([{
+          bill_number,
+          customer_id: billData.customer_id || null,
+          total: billData.total,
+          discount: totalDiscountApplied,
+          gst_amount: gstAmount,
+          rounding_method: billData.rounding_method,
+          rounding_adjustment: roundingAdjustment,
+          grand_total: roundedTotal,
+          cash_paid: billData.cash_paid,
+          upi_paid: billData.upi_paid,
+
+          paid_total: paidTotal,
+          advance_used: billData.advance_used,
+          advance_earned: advanceEarned,
+          payment_method: fallbackMethod,
+          loyalty_points_earned: isFullyPaidAtCreation ? pointsEarned : 0,
+          loyalty_points_redeemed: billData.points_to_redeem
+        }])
+        .select()
+        .single();
+
+      bill = retryResult.data;
+      billErr = retryResult.error;
+    }
 
     if (billErr) throw new Error(billErr.message);
 

@@ -578,6 +578,10 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
               {/* 2. Payment Summary */}
               <div className="py-2 border-b border-dashed border-slate-400 text-[11px] space-y-0.5">
                 <div className="text-center font-bold uppercase text-[10px] text-slate-700 tracking-wider pb-0.5">--- PAYMENT SUMMARY ---</div>
+                <div className="flex justify-between font-semibold">
+                  <span>Payment Mode:</span>
+                  <span className="uppercase font-bold">{bill.payment_method || 'Cash'}</span>
+                </div>
                 <div className="flex justify-between">
                   <span>Cash Paid:</span>
                   <span>₹{summary.cash_paid.toFixed(2)}</span>
@@ -701,7 +705,17 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                 </div>
                 <div className="text-right">
                   <span className="text-slate-400 block uppercase font-bold text-[10px] print:text-[7.5px] tracking-wider">Payment Mode:</span>
-                  <p className="text-sm print:text-xs font-bold text-slate-800 uppercase mt-0.5">{bill.payment_method || 'Cash'}</p>
+                  <p className="text-sm print:text-xs font-bold text-slate-800 uppercase mt-0.5">
+                    {bill.payment_method === 'Split Payment' ? (
+                      <span>Split (Cash: ₹{summary.cash_paid.toFixed(2)} + UPI: ₹{summary.upi_paid.toFixed(2)})</span>
+                    ) : bill.payment_method === 'Advance Used' ? (
+                      <span>Advance Used (₹{summary.advance_used.toFixed(2)})</span>
+                    ) : bill.payment_method === 'Pay Later' ? (
+                      <span className="text-amber-700">Credit / Pay Later (Khata)</span>
+                    ) : (
+                      <span>{bill.payment_method || 'Cash'}</span>
+                    )}
+                  </p>
                   <p className="text-slate-600 font-medium">Total Paid Now: ₹{summary.total_paid.toFixed(2)}</p>
                 </div>
               </div>
