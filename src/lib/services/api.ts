@@ -25,7 +25,8 @@ import {
   CustomerStatementData,
   CustomerStatementBill,
   CustomerStatementBillItem,
-  CustomerStatementDateGroup
+  CustomerStatementDateGroup,
+  CustomItemAnalytics
 } from '../types';
 
 export const DEFAULT_SETTINGS: AllSettings = {
@@ -2066,8 +2067,24 @@ Points Redeemed : -${summary.loyalty.points_redeemed} pts
     filter: DateFilterOption = 'all_time',
     customRange?: { from: string; to: string }
   ): Promise<ProductSalesAnalytics> {
-    const product = await this.getProductById(productId);
-    if (!product) throw new Error('Product not found');
+    const isCustom = productId.startsWith('custom:');
+    let product: Product;
+
+    if (isCustom) {
+      const customName = decodeURIComponent(productId.replace(/^custom:/, ''));
+      product = {
+        id: productId,
+        name: customName,
+        price: 0,
+        category: 'Custom Service',
+        product_code: 'CUSTOM',
+        created_at: new Date().toISOString()
+      };
+    } else {
+      const p = await this.getProductById(productId);
+      if (!p) throw new Error('Product not found');
+      product = p;
+    }
 
     if (!isSupabaseConfigured) {
       return {
@@ -2082,11 +2099,17 @@ Points Redeemed : -${summary.loyalty.points_redeemed} pts
 
     const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
 
-    const { data: items, error } = await supabase
+    let query = supabase
       .from('bill_items')
-      .select('*, bills(id, bill_number, created_at, customer_id, customers(name))')
-      .or(`product_id.eq.${productId},product_name.eq.${product.name}`)
-      .order('created_at', { ascending: false });
+      .select('*, bills(id, bill_number, created_at, customer_id, customers(name))');
+
+    if (isCustom) {
+      query = query.is('product_id', null).eq('product_name', product.name);
+    } else {
+      query = query.or(`product_id.eq.${productId},product_name.eq.${product.name}`);
+    }
+
+    const { data: items, error } = await query.order('created_at', { ascending: false });
 
     if (error) {
       console.error('Error fetching product sales history:', error);
@@ -2116,7 +2139,7 @@ Points Redeemed : -${summary.loyalty.points_redeemed} pts
       const qty = Number(item.quantity || 0);
       const price = Number(item.price || 0);
       const total = Number(item.total || (qty * price));
-      const isCustomRate = Math.abs(price - product.price) > 0.001;
+      const isCustomRate = isCustom ? false : Math.abs(price - product.price) > 0.001;
 
       const billId = bill?.id || item.bill_id || '';
       if (billId) billIds.add(billId);
@@ -2145,13 +2168,96 @@ Points Redeemed : -${summary.loyalty.points_redeemed} pts
     const avgRate = totalQty > 0 ? Number((totalRev / totalQty).toFixed(2)) : product.price;
 
     return {
-      product,
+      product: {
+        ...product,
+        price: isCustom ? avgRate : product.price
+      },
       total_quantity_sold: Number(totalQty.toFixed(2)),
       total_revenue: Number(totalRev.toFixed(2)),
       average_selling_rate: avgRate,
       orders_count: billIds.size,
       transactions
     };
+  }
+
+  // --- CUSTOM & AD-HOC SERVICES ANALYTICS ---
+  static async getCustomItemsAnalytics(
+    filter: DateFilterOption = 'all_time',
+    customRange?: { from: string; to: string }
+  ): Promise<CustomItemAnalytics[]> {
+    if (!isSupabaseConfigured) return [];
+
+    const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
+
+    let query = supabase
+      .from('bill_items')
+      .select('product_name, quantity, price, total, created_at, bill_id')
+      .is('product_id', null)
+      .order('created_at', { ascending: false });
+
+    if (startDate) {
+      query = query.gte('created_at', startDate.toISOString());
+    }
+    if (endDate) {
+      query = query.lte('created_at', endDate.toISOString());
+    }
+
+    const { data: items, error } = await query;
+    if (error || !items) {
+      console.error('Error fetching custom items analytics:', error);
+      return [];
+    }
+
+    const groupMap = new Map<string, {
+      name: string;
+      total_quantity: number;
+      total_revenue: number;
+      bill_ids: Set<string>;
+      first_used_at: string;
+      last_used_at: string;
+    }>();
+
+    for (const item of items) {
+      const name = (item.product_name || 'Custom Service').trim();
+      const qty = Number(item.quantity || 0);
+      const price = Number(item.price || 0);
+      const total = Number(item.total || (qty * price));
+      const createdAt = item.created_at || new Date().toISOString();
+
+      const existing = groupMap.get(name);
+      if (!existing) {
+        groupMap.set(name, {
+          name,
+          total_quantity: qty,
+          total_revenue: total,
+          bill_ids: new Set(item.bill_id ? [item.bill_id] : []),
+          first_used_at: createdAt,
+          last_used_at: createdAt,
+        });
+      } else {
+        existing.total_quantity += qty;
+        existing.total_revenue += total;
+        if (item.bill_id) existing.bill_ids.add(item.bill_id);
+        if (new Date(createdAt).getTime() < new Date(existing.first_used_at).getTime()) {
+          existing.first_used_at = createdAt;
+        }
+        if (new Date(createdAt).getTime() > new Date(existing.last_used_at).getTime()) {
+          existing.last_used_at = createdAt;
+        }
+      }
+    }
+
+    const results: CustomItemAnalytics[] = Array.from(groupMap.values()).map(g => ({
+      name: g.name,
+      total_quantity: Number(g.total_quantity.toFixed(2)),
+      total_revenue: Number(g.total_revenue.toFixed(2)),
+      average_selling_rate: g.total_quantity > 0 ? Number((g.total_revenue / g.total_quantity).toFixed(2)) : 0,
+      orders_count: g.bill_ids.size,
+      first_used_at: g.first_used_at,
+      last_used_at: g.last_used_at,
+    }));
+
+    return results.sort((a, b) => b.total_revenue - a.total_revenue);
   }
 
   // --- CUSTOMER CONSOLIDATED STATEMENT DATA ---
@@ -2228,7 +2334,9 @@ Points Redeemed : -${summary.loyalty.points_redeemed} pts
         periodUnits += qty;
         return {
           item_index: idx + 1,
+          product_id: item.product_id || null,
           product_name: item.product_name,
+          is_custom_item: !item.product_id,
           quantity: qty,
           price,
           total

@@ -268,7 +268,8 @@ export class StatementGenerator {
             }
 
             // Description
-            const cleanName = item.product_name.length > 34 ? item.product_name.slice(0, 32) + '..' : item.product_name;
+            const displayName = item.is_custom_item ? `${item.product_name} [Custom]` : item.product_name;
+            const cleanName = displayName.length > 34 ? displayName.slice(0, 32) + '..' : displayName;
             doc.text(cleanName, colDesc, y + 3.2);
 
             // Qty, Rate, Discount, Total

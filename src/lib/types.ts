@@ -46,7 +46,7 @@ export interface Product {
   name: string;
   category: string;
   price: number;
-  created_at: string;
+  created_at?: string;
 }
 
 export interface BillItem {
@@ -346,9 +346,21 @@ export interface ProductSalesAnalytics {
   transactions: ProductSalesHistoryItem[];
 }
 
+export interface CustomItemAnalytics {
+  name: string;
+  total_quantity: number;
+  total_revenue: number;
+  average_selling_rate: number;
+  orders_count: number;
+  first_used_at: string;
+  last_used_at: string;
+}
+
 export interface CustomerStatementBillItem {
   item_index: number;
+  product_id?: string | null;
   product_name: string;
+  is_custom_item?: boolean;
   quantity: number;
   price: number;
   total: number;

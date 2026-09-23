@@ -450,7 +450,14 @@ export function CustomerStatementModal({ customerId, onClose }: CustomerStatemen
                                       <tr key={item.item_index} className="hover:bg-slate-50/70 transition-colors">
                                         <td className="py-2 px-3 text-center text-slate-400 font-mono">{item.item_index}</td>
                                         <td className="py-2 px-3 font-medium text-slate-900">
-                                          {item.product_name}
+                                          <div className="flex items-center gap-1.5 flex-wrap">
+                                            <span>{item.product_name}</span>
+                                            {item.is_custom_item && (
+                                              <span className="text-[10px] font-semibold px-1.5 py-0.2 rounded bg-amber-50 text-amber-700 border border-amber-200 uppercase tracking-tight">
+                                                Custom
+                                              </span>
+                                            )}
+                                          </div>
                                         </td>
                                         <td className="py-2 px-3 text-right font-mono font-semibold text-slate-800">
                                           {item.quantity}
