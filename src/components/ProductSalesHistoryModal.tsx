@@ -113,7 +113,7 @@ export function ProductSalesHistoryModal({ product, onClose, onViewInvoice }: Pr
                 </span>
               </div>
               <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-2">
-                <span>Master Catalog Rate:</span>
+                <span>{product.product_code === 'CUSTOM' ? 'Ad-Hoc / Custom Service Realized Rate:' : 'Master Catalog Rate:'}</span>
                 <span className="text-emerald-600 font-bold font-mono">₹{Number(product.price).toFixed(2)}</span>
               </p>
             </div>
@@ -376,7 +376,7 @@ export function ProductSalesHistoryModal({ product, onClose, onViewInvoice }: Pr
 
         {/* Footer */}
         <div className="px-6 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs text-slate-500 shrink-0">
-          <span>Catalog Master Rate: <strong className="text-slate-800 font-mono">₹{product.price.toFixed(2)}</strong></span>
+          <span>{product.product_code === 'CUSTOM' ? 'Ad-Hoc Realized Avg Rate: ' : 'Catalog Master Rate: '}<strong className="text-slate-800 font-mono">₹{product.price.toFixed(2)}</strong></span>
           <button
             onClick={onClose}
             className="px-4 py-1.5 bg-white hover:bg-slate-100 text-slate-700 font-semibold rounded-lg border border-slate-300 transition-colors shadow-2xs"
