@@ -55,10 +55,18 @@ export default function ReportsPage() {
 
   // Aggregate Metrics for Current Filter
   const totalSales = bills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
-  const totalPaid = bills.reduce((sum, b) => sum + Number(b.paid_total || 0), 0);
+  const totalPaid = bills.reduce((sum, b) => sum + Math.min(Number(b.grand_total || 0), Number(b.paid_total || 0)), 0);
   const cashTotal = bills.reduce((sum, b) => sum + Number(b.cash_paid || 0), 0);
   const upiTotal = bills.reduce((sum, b) => sum + Number(b.upi_paid || 0), 0);
-  const pendingTotal = Math.max(0, totalSales - totalPaid);
+  // Customer due list & total ledger dues
+  const dueCustomers = customers.filter(c => c.balance_due > 0);
+  const totalDuesAmount = dueCustomers.reduce((sum, c) => sum + c.balance_due, 0);
+  // Period-scoped pending balance dynamically calculated for the active date filter
+  const pendingTotal = bills.reduce((sum, b) => {
+    const g = Number(b.grand_total || 0);
+    const p = Math.min(g, Number(b.paid_total || 0));
+    return sum + Math.max(0, g - p);
+  }, 0);
   const avgBill = bills.length > 0 ? totalSales / bills.length : 0;
 
   // Aggregate Product / Item sales
@@ -73,9 +81,7 @@ export default function ReportsPage() {
   });
   const itemSales = Array.from(itemMap.values()).sort((a, b) => b.total - a.total);
 
-  // Customer due list
-  const dueCustomers = customers.filter(c => c.balance_due > 0);
-  const totalDuesAmount = dueCustomers.reduce((sum, c) => sum + c.balance_due, 0);
+
 
   const handleExportCSV = () => {
     const filterLabel = dateFilter.replace('_', '-');
@@ -240,7 +246,7 @@ export default function ReportsPage() {
             <span>Pending Balance</span>
           </div>
           <div className="text-base sm:text-lg font-extrabold text-amber-700">₹{pendingTotal.toFixed(2)}</div>
-          <div className="text-[10px] text-slate-400 font-medium">Unpaid balance</div>
+          <div className="text-[10px] text-slate-400 font-medium">Unpaid in period</div>
         </div>
 
         <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-1">
@@ -258,7 +264,7 @@ export default function ReportsPage() {
             <span>Total Dues (All)</span>
           </div>
           <div className="text-base sm:text-lg font-extrabold text-rose-700">₹{totalDuesAmount.toFixed(2)}</div>
-          <div className="text-[10px] text-slate-400 font-medium">{dueCustomers.length} customers</div>
+          <div className="text-[10px] text-slate-400 font-medium">{dueCustomers.length} due customer{dueCustomers.length !== 1 ? 's' : ''}</div>
         </div>
       </div>
 
