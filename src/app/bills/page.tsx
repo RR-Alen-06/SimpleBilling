@@ -205,9 +205,27 @@ export default function ManageBillsPage() {
                       </td>
                       <td className="px-6 py-4 font-medium text-slate-800">{b.customer_name}</td>
                       <td className="px-6 py-4">
-                        <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-slate-100 text-slate-700 uppercase border border-slate-200">
-                          {b.payment_method}
-                        </span>
+                        {paid <= 0.01 || b.payment_method === 'Pay Later' ? (
+                          <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-amber-50 text-amber-700 uppercase border border-amber-200">
+                            Pay Later
+                          </span>
+                        ) : b.payment_method === 'UPI' ? (
+                          <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-indigo-50 text-indigo-700 uppercase border border-indigo-200">
+                            UPI
+                          </span>
+                        ) : b.payment_method === 'Cash' ? (
+                          <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-emerald-50 text-emerald-700 uppercase border border-emerald-200">
+                            Cash
+                          </span>
+                        ) : b.payment_method === 'Split Payment' ? (
+                          <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-purple-50 text-purple-700 uppercase border border-purple-200">
+                            Split
+                          </span>
+                        ) : (
+                          <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-blue-50 text-blue-700 uppercase border border-blue-200">
+                            {b.payment_method}
+                          </span>
+                        )}
                       </td>
                       <td className="px-6 py-4 text-right font-data-mono font-medium text-emerald-700">
                         {b.discount > 0 ? `₹${b.discount.toFixed(2)}` : '-'}

@@ -25,13 +25,19 @@ export async function proxy(request: NextRequest) {
     return supabaseResponse;
   }
 
+  // If on a public auth route with auth code/token params (e.g. /login?code=...), let client exchange it
+  const hasCodeOrToken = request.nextUrl.searchParams.has('code') || request.nextUrl.searchParams.has('token_hash');
+  if (isPublicAuthRoute && hasCodeOrToken) {
+    return supabaseResponse;
+  }
+
   // Check if any auth cookies exist in request
   const allCookies = request.cookies.getAll();
   const hasAuthToken = allCookies.some(
     (c) => c.name.includes('-auth-token') || c.name.includes('supabase') || c.name.startsWith('sb-')
   );
 
-  // If on a public auth route (like /login, /auth/callback, /auth/confirm, /reset-password) and no auth token present, serve immediately
+  // If on a public auth route and no auth token present, serve immediately
   if (isPublicAuthRoute && !hasAuthToken) {
     return supabaseResponse;
   }
@@ -73,7 +79,7 @@ export async function proxy(request: NextRequest) {
     }
 
     // Authenticated user accessing /login -> redirect to dashboard
-    if (user && pathname === '/login') {
+    if (user && pathname === '/login' && !hasCodeOrToken) {
       const url = request.nextUrl.clone();
       url.pathname = '/';
       return NextResponse.redirect(url);
