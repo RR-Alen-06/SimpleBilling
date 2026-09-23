@@ -150,22 +150,39 @@ export class ApiService {
 
   // --- DYNAMIC LOYALTY REDEMPTION RULES CRUD ---
   static async getLoyaltyRedemptionRules(): Promise<LoyaltyRedemptionRule[]> {
-    const defaultRedemptionRules: LoyaltyRedemptionRule[] = [
-      { id: 'red-1', points_required: 10, discount_amount: 4.00, enabled: true },
-      { id: 'red-2', points_required: 20, discount_amount: 5.00, enabled: true },
-      { id: 'red-3', points_required: 30, discount_amount: 8.00, enabled: true },
-      { id: 'red-4', points_required: 40, discount_amount: 10.00, enabled: true }
+    const defaultRedemptionRules: Omit<LoyaltyRedemptionRule, 'id' | 'created_at'>[] = [
+      { points_required: 10, discount_amount: 4.00, enabled: true },
+      { points_required: 20, discount_amount: 5.00, enabled: true },
+      { points_required: 30, discount_amount: 8.00, enabled: true },
+      { points_required: 40, discount_amount: 10.00, enabled: true }
     ];
 
-    if (!isSupabaseConfigured) return defaultRedemptionRules;
+    if (!isSupabaseConfigured) {
+      return defaultRedemptionRules.map((r, idx) => ({ ...r, id: `red-${idx + 1}` }));
+    }
 
     const { data, error } = await supabase
       .from('loyalty_redemption_rules')
       .select('*')
       .order('points_required', { ascending: true });
 
-    if (error || !data || data.length === 0) return defaultRedemptionRules;
-    return data;
+    if (!error && data && data.length > 0) {
+      return data;
+    }
+
+    try {
+      const { data: inserted, error: insertErr } = await supabase
+        .from('loyalty_redemption_rules')
+        .insert(defaultRedemptionRules)
+        .select();
+      if (!insertErr && inserted && inserted.length > 0) {
+        return inserted;
+      }
+    } catch (seedErr) {
+      console.warn('Auto-seed redemption rules fallback:', seedErr);
+    }
+
+    return defaultRedemptionRules.map((r, idx) => ({ ...r, id: `red-${idx + 1}` }));
   }
 
   static async addLoyaltyRedemptionRule(rule: Omit<LoyaltyRedemptionRule, 'id' | 'created_at'>, userName = 'Super Admin'): Promise<LoyaltyRedemptionRule> {
@@ -185,6 +202,17 @@ export class ApiService {
 
   static async updateLoyaltyRedemptionRule(id: string, rule: Partial<Omit<LoyaltyRedemptionRule, 'id' | 'created_at'>>, userName = 'Super Admin'): Promise<LoyaltyRedemptionRule> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+
+    if (id.startsWith('red-')) {
+      const { data, error } = await supabase.from('loyalty_redemption_rules').insert([{
+        points_required: rule.points_required || 10,
+        discount_amount: rule.discount_amount || 5,
+        enabled: rule.enabled !== undefined ? rule.enabled : true
+      }]).select().single();
+      if (error) throw new Error(error.message);
+      return data;
+    }
+
     const { data, error } = await supabase.from('loyalty_redemption_rules').update(rule).eq('id', id).select().single();
     if (error) throw new Error(error.message);
 
@@ -242,24 +270,41 @@ export class ApiService {
 
   // --- SIMPLIFIED DYNAMIC LOYALTY EARNING RULES ---
   static async getLoyaltyRules(): Promise<LoyaltyRule[]> {
-    const defaultRules: LoyaltyRule[] = [
-      { id: 'rule-1', rule_name: '1', min_bill_amount: 1, max_bill_amount: 20, points_earned: 1, enabled: true, sort_order: 1 },
-      { id: 'rule-2', rule_name: '2', min_bill_amount: 21, max_bill_amount: 30, points_earned: 2, enabled: true, sort_order: 2 },
-      { id: 'rule-3', rule_name: '3', min_bill_amount: 31, max_bill_amount: 40, points_earned: 3, enabled: true, sort_order: 3 },
-      { id: 'rule-4', rule_name: '4', min_bill_amount: 41, max_bill_amount: 60, points_earned: 4, enabled: true, sort_order: 4 },
-      { id: 'rule-5', rule_name: '5', min_bill_amount: 61, max_bill_amount: 80, points_earned: 5, enabled: true, sort_order: 5 },
-      { id: 'rule-6', rule_name: '6', min_bill_amount: 81, max_bill_amount: 99, points_earned: 6, enabled: true, sort_order: 6 },
-      { id: 'rule-7', rule_name: '7', min_bill_amount: 100, max_bill_amount: 200, points_earned: 7, enabled: true, sort_order: 7 },
-      { id: 'rule-8', rule_name: '8', min_bill_amount: 201, max_bill_amount: 300, points_earned: 8, enabled: true, sort_order: 8 },
-      { id: 'rule-9', rule_name: '9', min_bill_amount: 301, max_bill_amount: 375, points_earned: 9, enabled: true, sort_order: 9 },
-      { id: 'rule-10', rule_name: '10', min_bill_amount: 376, max_bill_amount: 500, points_earned: 10, enabled: true, sort_order: 10 }
+    const defaultRules: Omit<LoyaltyRule, 'id' | 'created_at'>[] = [
+      { rule_name: 'Tier 1', min_bill_amount: 1, max_bill_amount: 20, points_earned: 1, enabled: true, sort_order: 1 },
+      { rule_name: 'Tier 2', min_bill_amount: 21, max_bill_amount: 30, points_earned: 2, enabled: true, sort_order: 2 },
+      { rule_name: 'Tier 3', min_bill_amount: 31, max_bill_amount: 40, points_earned: 3, enabled: true, sort_order: 3 },
+      { rule_name: 'Tier 4', min_bill_amount: 41, max_bill_amount: 60, points_earned: 4, enabled: true, sort_order: 4 },
+      { rule_name: 'Tier 5', min_bill_amount: 61, max_bill_amount: 80, points_earned: 5, enabled: true, sort_order: 5 },
+      { rule_name: 'Tier 6', min_bill_amount: 81, max_bill_amount: 99, points_earned: 6, enabled: true, sort_order: 6 },
+      { rule_name: 'Tier 7', min_bill_amount: 100, max_bill_amount: 200, points_earned: 7, enabled: true, sort_order: 7 },
+      { rule_name: 'Tier 8', min_bill_amount: 201, max_bill_amount: 300, points_earned: 8, enabled: true, sort_order: 8 },
+      { rule_name: 'Tier 9', min_bill_amount: 301, max_bill_amount: 375, points_earned: 9, enabled: true, sort_order: 9 },
+      { rule_name: 'Tier 10', min_bill_amount: 376, max_bill_amount: 500, points_earned: 10, enabled: true, sort_order: 10 }
     ];
 
-    if (!isSupabaseConfigured) return defaultRules;
+    if (!isSupabaseConfigured) {
+      return defaultRules.map((r, idx) => ({ ...r, id: `rule-${idx + 1}` }));
+    }
 
     const { data, error } = await supabase.from('loyalty_rules').select('*').order('sort_order', { ascending: true });
-    if (error || !data || data.length === 0) return defaultRules;
-    return data;
+    if (!error && data && data.length > 0) {
+      return data;
+    }
+
+    try {
+      const { data: inserted, error: insertErr } = await supabase
+        .from('loyalty_rules')
+        .insert(defaultRules)
+        .select();
+      if (!insertErr && inserted && inserted.length > 0) {
+        return inserted;
+      }
+    } catch (seedErr) {
+      console.warn('Auto-seed loyalty rules fallback:', seedErr);
+    }
+
+    return defaultRules.map((r, idx) => ({ ...r, id: `rule-${idx + 1}` }));
   }
 
   static async addLoyaltyRule(rule: Omit<LoyaltyRule, 'id' | 'created_at'>, userName = 'Super Admin'): Promise<LoyaltyRule> {
@@ -279,6 +324,20 @@ export class ApiService {
 
   static async updateLoyaltyRule(id: string, rule: Partial<Omit<LoyaltyRule, 'id' | 'created_at'>>, userName = 'Super Admin'): Promise<LoyaltyRule> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+
+    if (id.startsWith('rule-')) {
+      const { data, error } = await supabase.from('loyalty_rules').insert([{
+        rule_name: rule.rule_name || 'Tier Rule',
+        min_bill_amount: rule.min_bill_amount || 0,
+        max_bill_amount: rule.max_bill_amount,
+        points_earned: rule.points_earned || 1,
+        enabled: rule.enabled !== undefined ? rule.enabled : true,
+        sort_order: rule.sort_order || 1
+      }]).select().single();
+      if (error) throw new Error(error.message);
+      return data;
+    }
+
     const { data, error } = await supabase.from('loyalty_rules').update(rule).eq('id', id).select().single();
     if (error) throw new Error(error.message);
 
@@ -569,15 +628,19 @@ export class ApiService {
     const customers = await this.getCustomers();
     if (customers.length === 0) return [];
 
-    const { data: bills } = await supabase.from('bills').select('customer_id, grand_total');
-    const { data: payments } = await supabase.from('payments').select('customer_id, amount');
+    const { data: bills } = await supabase.from('bills').select('customer_id, grand_total, paid_total');
+    const { data: payments } = await supabase.from('payments').select('customer_id, amount, bill_id');
 
     return customers.map(cust => {
       const custBills = bills?.filter(b => b.customer_id === cust.id) || [];
-      const custPayments = payments?.filter(p => p.customer_id === cust.id) || [];
-
-      const totalBilled = custBills.reduce((sum, b) => sum + Number(b.grand_total), 0);
-      const totalPaid = custPayments.reduce((sum, p) => sum + Number(p.amount), 0);
+      const totalBilled = custBills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
+      const totalPaid = custBills.reduce((sum, b) => sum + Math.min(Number(b.grand_total || 0), Number(b.paid_total || 0)), 0);
+      const rawUnpaidOnBills = custBills.reduce((sum, b) => {
+        const g = Number(b.grand_total || 0);
+        const p = Math.min(g, Number(b.paid_total || 0));
+        return sum + Math.max(0, g - p);
+      }, 0);
+      const balanceDue = Math.max(0, rawUnpaidOnBills - Number(cust.advance_balance || 0));
 
       return {
         id: cust.id,
@@ -588,7 +651,7 @@ export class ApiService {
         email: cust.email,
         total_billed: totalBilled,
         total_paid: totalPaid,
-        balance_due: Math.max(0, totalBilled - totalPaid - Number(cust.advance_balance || 0)),
+        balance_due: balanceDue,
         advance_balance: Number(cust.advance_balance || 0),
         loyalty_points: Number(cust.loyalty_points || 0),
         created_at: cust.created_at
@@ -657,8 +720,7 @@ export class ApiService {
     }
 
     const directPaid = billData.cash_paid + billData.upi_paid;
-    const paidTotal = directPaid + billData.advance_used;
-    const netDueForBill = roundedTotal - billData.advance_used;
+    const netDueForBill = Math.max(0, roundedTotal - billData.advance_used);
 
     // Calculate overpayment beyond current bill
     const overpayment = Math.max(0, directPaid - netDueForBill);
@@ -669,6 +731,9 @@ export class ApiService {
     // Remaining overpayment after clearing prior outstanding is earned as advance (Case 2 & Scenario 3)
     const advanceEarned = overpayment - allocatedToPriorBills;
 
+    // Bill paid_total strictly capped at roundedTotal to prevent overpayment from bleeding into other bills
+    const paidTotal = Math.min(roundedTotal, directPaid + billData.advance_used);
+
     const isFullyPaidAtCreation = paidTotal >= roundedTotal - 0.01;
 
     // 4. Dynamic Loyalty Earning Calculator (Awarded ONLY if bill is fully paid)
@@ -677,7 +742,18 @@ export class ApiService {
       pointsEarned = await this.calculateLoyaltyPointsEarned(roundedTotal);
     }
 
-    const payment_method: PaymentMethod = billData.upi_paid > billData.cash_paid ? 'UPI' : 'Cash';
+    let payment_method: PaymentMethod = 'Pay Later';
+    if (paidTotal <= 0.01) {
+      payment_method = 'Pay Later';
+    } else if (billData.cash_paid > 0 && billData.upi_paid > 0) {
+      payment_method = 'Split Payment';
+    } else if (billData.upi_paid > 0) {
+      payment_method = 'UPI';
+    } else if (billData.cash_paid > 0) {
+      payment_method = 'Cash';
+    } else if (billData.advance_used > 0) {
+      payment_method = 'Advance Used';
+    }
 
     // 5. ATOMIC DATABASE SEQUENCE GENERATOR
     const bill_number = await this.getNextSequence('BILL');
@@ -1420,7 +1496,7 @@ export class ApiService {
         const currentPaid = Number(bill.paid_total || 0);
         const newPaidTotal = currentPaid + payment.amount;
 
-        const updateData: Record<string, number> = {
+        const updateData: Record<string, string | number> = {
           paid_total: newPaidTotal
         };
 
@@ -1428,7 +1504,10 @@ export class ApiService {
           updateData.cash_paid = Number(bill.cash_paid || 0) + payment.amount;
         } else if (payment.payment_method === 'UPI') {
           updateData.upi_paid = Number(bill.upi_paid || 0) + payment.amount;
+        }
 
+        if (bill.payment_method === 'Pay Later' || !bill.payment_method) {
+          updateData.payment_method = payment.payment_method;
         }
 
         await supabase.from('bills').update(updateData).eq('id', payment.bill_id);
@@ -1457,7 +1536,7 @@ export class ApiService {
             const newPaidTotal = paidTotal + allocation;
             unallocatedAmount -= allocation;
 
-            const updateData: Record<string, number> = {
+            const updateData: Record<string, string | number> = {
               paid_total: newPaidTotal
             };
 
@@ -1465,7 +1544,10 @@ export class ApiService {
               updateData.cash_paid = Number(b.cash_paid || 0) + allocation;
             } else if (payment.payment_method === 'UPI') {
               updateData.upi_paid = Number(b.upi_paid || 0) + allocation;
+            }
 
+            if (b.payment_method === 'Pay Later' || !b.payment_method) {
+              updateData.payment_method = payment.payment_method;
             }
 
             await supabase.from('bills').update(updateData).eq('id', b.id);
@@ -1683,8 +1765,8 @@ export class ApiService {
 
     const customers = await this.getCustomerSummaries();
     const total_customers = customers.length;
-    // Calculate outstanding balance for bills generated within the selected date period
-    const pending_balance = allBills.reduce((sum, b) => sum + Math.max(0, Number(b.grand_total || 0) - Number(b.paid_total || 0)), 0);
+    // Calculate total net outstanding balance across all customer accounts
+    const pending_balance = customers.reduce((sum, c) => sum + Number(c.balance_due || 0), 0);
 
     // ── PRIMARY formula (unchanged): sum of denormalized advance_balance stored on each customer row
     const total_advance = customers.reduce((sum, c) => sum + Number(c.advance_balance || 0), 0);
