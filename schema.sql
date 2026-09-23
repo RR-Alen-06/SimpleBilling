@@ -231,23 +231,7 @@ CREATE TABLE IF NOT EXISTS public.loyalty_redemption_rules (
 );
 ALTER TABLE public.loyalty_redemption_rules ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
 
--- Seed Default Simplified Earning Rules
-INSERT INTO public.loyalty_rules (user_id, rule_name, min_bill_amount, max_bill_amount, points_earned, enabled, sort_order)
-VALUES
-    (auth.uid(), 'Standard Earning Rule', 0.00, 100.00, 1.00, true, 1),
-    (auth.uid(), 'Medium Purchase Bonus', 101.00, 500.00, 5.00, true, 2),
-    (auth.uid(), 'Bulk Purchase Bonus', 501.00, NULL, 15.00, true, 3)
-ON CONFLICT DO NOTHING;
-
--- Seed Default Redemption Rules
-INSERT INTO public.loyalty_redemption_rules (user_id, points_required, discount_amount, enabled)
-VALUES
-    (auth.uid(), 10, 5.00, true),
-    (auth.uid(), 20, 10.00, true),
-    (auth.uid(), 50, 25.00, true)
-ON CONFLICT DO NOTHING;
-
--- Note: Products and customers are created dynamically per shop admin.
+-- Note: Loyalty earning rules, redemption rules, products, and customers are configured dynamically per shop admin via Settings.
 
 -- Indexes for fast query performance & data integrity
 CREATE INDEX IF NOT EXISTS idx_customers_user_id ON public.customers(user_id);
@@ -259,6 +243,8 @@ CREATE INDEX IF NOT EXISTS idx_bill_items_bill_id ON public.bill_items(bill_id);
 CREATE INDEX IF NOT EXISTS idx_payments_user_id ON public.payments(user_id);
 CREATE INDEX IF NOT EXISTS idx_expenses_user_id ON public.expenses(user_id);
 CREATE INDEX IF NOT EXISTS idx_loyalty_redemption_user ON public.loyalty_redemption_rules(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_loyalty_redemption_unique ON public.loyalty_redemption_rules(user_id, points_required);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_loyalty_rules_unique ON public.loyalty_rules(user_id, rule_name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sequences_user_key ON public.sequences(user_id, key);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_settings_user_key ON public.settings(user_id, key);
 

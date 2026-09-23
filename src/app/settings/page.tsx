@@ -298,6 +298,28 @@ export default function SettingsPage() {
     }
   };
 
+  const handleClearAllRedemptionRules = async () => {
+    if (!window.confirm('Are you sure you want to delete all loyalty redemption rules?')) return;
+    try {
+      await ApiService.clearAllLoyaltyRedemptionRules();
+      setSuccessMsg('All redemption rules cleared.');
+      await loadSettings();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to clear redemption rules');
+    }
+  };
+
+  const handleClearAllEarningRules = async () => {
+    if (!window.confirm('Are you sure you want to delete all loyalty earning rules?')) return;
+    try {
+      await ApiService.clearAllLoyaltyRules();
+      setSuccessMsg('All earning rules cleared.');
+      await loadSettings();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to clear earning rules');
+    }
+  };
+
   const handleExportBackup = async () => {
     try {
       const bills = await ApiService.getBills();
@@ -702,13 +724,25 @@ export default function SettingsPage() {
                       </h3>
                       <p className="text-[11px] text-slate-500">Super Admin can configure points-to-discount rules stored in database</p>
                     </div>
-                    <button
-                      onClick={handleOpenAddRedemptionRule}
-                      className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-3.5 py-2 rounded-lg shadow transition flex items-center space-x-1"
-                    >
-                      <Plus size={14} />
-                      <span>+ Add Redemption Rule</span>
-                    </button>
+                    <div className="flex items-center space-x-2">
+                      {redemptionRules.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleClearAllRedemptionRules}
+                          className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-xs px-3 py-2 rounded-lg transition flex items-center space-x-1"
+                        >
+                          <Trash2 size={13} />
+                          <span>Clear All</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={handleOpenAddRedemptionRule}
+                        className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-3.5 py-2 rounded-lg shadow transition flex items-center space-x-1"
+                      >
+                        <Plus size={14} />
+                        <span>+ Add Redemption Rule</span>
+                      </button>
+                    </div>
                   </div>
 
                   <div className="overflow-x-auto border border-slate-200 rounded-xl">
@@ -773,13 +807,25 @@ export default function SettingsPage() {
                       <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Active Loyalty Earning Rules</h3>
                       <p className="text-[11px] text-slate-500">Configure how many points customers earn based on bill amount ranges</p>
                     </div>
-                    <button
-                      onClick={handleOpenAddRule}
-                      className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-3 py-1.5 rounded-lg shadow transition flex items-center space-x-1"
-                    >
-                      <Plus size={14} />
-                      <span>+ Add Earning Rule</span>
-                    </button>
+                    <div className="flex items-center space-x-2">
+                      {loyaltyRules.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleClearAllEarningRules}
+                          className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-xs px-3 py-1.5 rounded-lg transition flex items-center space-x-1"
+                        >
+                          <Trash2 size={13} />
+                          <span>Clear All</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={handleOpenAddRule}
+                        className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-3 py-1.5 rounded-lg shadow transition flex items-center space-x-1"
+                      >
+                        <Plus size={14} />
+                        <span>+ Add Earning Rule</span>
+                      </button>
+                    </div>
                   </div>
 
                   <div className="overflow-x-auto border border-slate-200 rounded-xl">

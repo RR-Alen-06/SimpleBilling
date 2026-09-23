@@ -17,8 +17,13 @@ import {
   Gift,
   Sparkles,
   Percent,
-  Clock
+  Clock,
+  Banknote,
+  Smartphone,
+  Split
 } from 'lucide-react';
+
+export type BillingPaymentMode = 'Cash' | 'UPI' | 'Split' | 'Pay Later' | 'Advance';
 
 interface CartItem {
   product_id?: string | null;
@@ -52,6 +57,7 @@ export default function BillingPage() {
   const [roundingMethod, setRoundingMethod] = useState<RoundingMethod>('None');
 
   // Split Payment & Advance Amounts
+  const [paymentMode, setPaymentMode] = useState<BillingPaymentMode>('Cash');
   const [cashPaid, setCashPaid] = useState<number | ''>('');
   const [upiPaid, setUpiPaid] = useState<number | ''>('');
   const [useAdvance, setUseAdvance] = useState<boolean>(false);
@@ -292,16 +298,58 @@ export default function BillingPage() {
     }
   };
 
-  // Quick Pay Handlers
-  const handleQuickPayCash = () => {
-    setCashPaid(roundedTotal);
-    setUpiPaid('');
+  // Quick Pay & Mode Selector Handlers
+  const handleSelectPaymentMode = (mode: BillingPaymentMode) => {
+    setPaymentMode(mode);
+    if (mode === 'Cash') {
+      setCashPaid(roundedTotal);
+      setUpiPaid('');
+      setUseAdvance(false);
+      setAdvanceUsed('');
+    } else if (mode === 'UPI') {
+      setUpiPaid(roundedTotal);
+      setCashPaid('');
+      setUseAdvance(false);
+      setAdvanceUsed('');
+    } else if (mode === 'Pay Later') {
+      setCashPaid('');
+      setUpiPaid('');
+      setUseAdvance(false);
+      setAdvanceUsed('');
+    } else if (mode === 'Advance') {
+      const adv = Math.min(selectedCustomer?.advance_balance || 0, roundedTotal);
+      setUseAdvance(true);
+      setAdvanceUsed(adv > 0 ? adv : '');
+      setCashPaid('');
+      setUpiPaid('');
+    } else if (mode === 'Split') {
+      if (cashVal === roundedTotal || upiVal === roundedTotal) {
+        setCashPaid('');
+        setUpiPaid('');
+      }
+    }
   };
 
-  const handleQuickPayUPI = () => {
-    setUpiPaid(roundedTotal);
-    setCashPaid('');
-  };
+  // Sync Payment Mode Values on Total Changes
+  useEffect(() => {
+    if (paymentMode === 'Cash') {
+      setCashPaid(roundedTotal);
+      setUpiPaid('');
+    } else if (paymentMode === 'UPI') {
+      setUpiPaid(roundedTotal);
+      setCashPaid('');
+    } else if (paymentMode === 'Advance') {
+      const adv = Math.min(selectedCustomer?.advance_balance || 0, roundedTotal);
+      setUseAdvance(true);
+      setAdvanceUsed(adv > 0 ? adv : '');
+    } else if (paymentMode === 'Pay Later') {
+      setCashPaid('');
+      setUpiPaid('');
+    }
+  }, [roundedTotal, paymentMode, selectedCustomer?.advance_balance]);
+
+  const handleQuickPayCash = () => handleSelectPaymentMode('Cash');
+  const handleQuickPayUPI = () => handleSelectPaymentMode('UPI');
 
   // Submit & Create Bill
   const handleCreateBill = async () => {
@@ -314,6 +362,10 @@ export default function BillingPage() {
     }
 
     if (!selectedCustomerId) {
+      if (paymentMode === 'Pay Later') {
+        setErrorMsg('Please select or create a customer to issue a Pay Later / Credit bill.');
+        return;
+      }
       setErrorMsg('Please select a customer or add a new customer before generating the bill.');
       return;
     }
@@ -899,74 +951,247 @@ export default function BillingPage() {
               <span className="text-blue-700 text-xl">₹{roundedTotal.toFixed(2)}</span>
             </div>
 
-            {/* SPLIT PAYMENT INPUTS */}
-            <div className="pt-2 border-t border-slate-200 space-y-2.5">
-              <div className="flex flex-wrap justify-between items-center gap-2">
-                <label className="block text-xs font-bold text-slate-700 uppercase">
-                  Payment Method & Breakdown
+            {/* EXPLICIT PAYMENT MODE SELECTOR TABS */}
+            <div className="pt-2 border-t border-slate-200 space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide">
+                  Payment Mode
                 </label>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={handleQuickPayCash}
-                    className="text-[10px] bg-emerald-100 hover:bg-emerald-200 text-emerald-800 font-bold px-2 py-0.5 rounded transition"
-                  >
-                    ⚡ Cash
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleQuickPayUPI}
-                    className="text-[10px] bg-indigo-100 hover:bg-indigo-200 text-indigo-800 font-bold px-2 py-0.5 rounded transition"
-                  >
-                    ⚡ UPI
-                  </button>
-                </div>
+                {paymentMode === 'Split' && (
+                  <span className="text-[11px] font-semibold text-purple-700 bg-purple-100 px-2 py-0.5 rounded">
+                    Cash + UPI Breakdown
+                  </span>
+                )}
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                <div>
-                  <label className="text-[10px] text-slate-500 font-bold">Cash (₹)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    placeholder="0"
-                    value={cashPaid}
-                    onChange={(e) => {
-                      const val = e.target.value === '' ? '' : Number(e.target.value);
-                      setCashPaid(val);
-                      if (val !== '' && Number(val) > 0 && upiVal === roundedTotal) setUpiPaid('');
-                    }}
-                    className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-bold text-slate-900"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] text-slate-500 font-bold">UPI (₹)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    placeholder="0"
-                    value={upiPaid}
-                    onChange={(e) => {
-                      const val = e.target.value === '' ? '' : Number(e.target.value);
-                      setUpiPaid(val);
-                      if (val !== '' && Number(val) > 0 && cashVal === roundedTotal) setCashPaid('');
-                    }}
-                    className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-bold text-slate-900"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] text-slate-500 font-bold">Advance Applied (₹)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    disabled={!useAdvance || !selectedCustomer || selectedCustomer.advance_balance <= 0}
-                    placeholder="0"
-                    value={useAdvance ? advanceUsed : ''}
-                    onChange={(e) => setAdvanceUsed(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
-                    className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-bold text-slate-900 disabled:bg-slate-100 disabled:text-slate-400"
-                  />
-                </div>
+              {/* Mode Tabs */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 bg-slate-100 rounded-lg">
+                <button
+                  type="button"
+                  onClick={() => handleSelectPaymentMode('Cash')}
+                  className={`py-2 px-2 rounded-md text-xs font-bold transition flex items-center justify-center space-x-1.5 ${
+                    paymentMode === 'Cash'
+                      ? 'bg-emerald-600 text-white shadow'
+                      : 'text-slate-700 hover:bg-white/80'
+                  }`}
+                >
+                  <Banknote size={15} />
+                  <span>Cash</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleSelectPaymentMode('UPI')}
+                  className={`py-2 px-2 rounded-md text-xs font-bold transition flex items-center justify-center space-x-1.5 ${
+                    paymentMode === 'UPI'
+                      ? 'bg-indigo-600 text-white shadow'
+                      : 'text-slate-700 hover:bg-white/80'
+                  }`}
+                >
+                  <Smartphone size={15} />
+                  <span>UPI</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleSelectPaymentMode('Split')}
+                  className={`py-2 px-2 rounded-md text-xs font-bold transition flex items-center justify-center space-x-1.5 ${
+                    paymentMode === 'Split'
+                      ? 'bg-purple-600 text-white shadow'
+                      : 'text-slate-700 hover:bg-white/80'
+                  }`}
+                >
+                  <Split size={15} />
+                  <span>Split</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleSelectPaymentMode('Pay Later')}
+                  className={`py-2 px-2 rounded-md text-xs font-bold transition flex items-center justify-center space-x-1.5 ${
+                    paymentMode === 'Pay Later'
+                      ? 'bg-amber-600 text-white shadow'
+                      : 'text-slate-700 hover:bg-white/80'
+                  }`}
+                >
+                  <Clock size={15} />
+                  <span>Pay Later</span>
+                </button>
               </div>
+
+              {/* ADVANCE OPTION / TAB IF CUSTOMER HAS ADVANCE */}
+              {selectedCustomer && selectedCustomer.advance_balance > 0 && (
+                <button
+                  type="button"
+                  onClick={() => handleSelectPaymentMode('Advance')}
+                  className={`w-full py-1.5 px-3 rounded-lg text-xs font-bold transition flex items-center justify-between border ${
+                    paymentMode === 'Advance'
+                      ? 'bg-teal-600 text-white border-teal-700 shadow'
+                      : 'bg-teal-50 text-teal-800 border-teal-200 hover:bg-teal-100'
+                  }`}
+                >
+                  <span className="flex items-center space-x-1.5">
+                    <Sparkles size={14} />
+                    <span>Pay with Advance Balance</span>
+                  </span>
+                  <span className="font-mono">Available: ₹{selectedCustomer.advance_balance.toFixed(2)}</span>
+                </button>
+              )}
+
+              {/* TAB CONTENT PANELS */}
+              {paymentMode === 'Cash' && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs space-y-2">
+                  <div className="flex justify-between items-center text-emerald-900 font-bold">
+                    <span>Full Cash Payment:</span>
+                    <span className="text-base font-extrabold font-mono">₹{roundedTotal.toFixed(2)}</span>
+                  </div>
+                  <div className="flex items-center justify-between pt-1 border-t border-emerald-200/60 text-slate-600">
+                    <span className="text-[11px]">Tendered Amount (Optional):</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      placeholder={`e.g. ${roundedTotal}`}
+                      value={cashPaid === '' ? '' : cashPaid}
+                      onChange={(e) => setCashPaid(e.target.value === '' ? '' : Number(e.target.value))}
+                      className="w-24 text-right bg-white border border-emerald-300 rounded px-2 py-0.5 text-xs font-bold text-slate-900 focus:ring-1 focus:ring-emerald-500"
+                    />
+                  </div>
+                  {Number(cashPaid || 0) > roundedTotal && (
+                    <div className="flex justify-between items-center text-[11px] font-bold text-emerald-800 bg-white/80 px-2 py-1 rounded">
+                      <span>Change to Return:</span>
+                      <span className="font-mono text-xs">₹{(Number(cashPaid) - roundedTotal).toFixed(2)}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {paymentMode === 'UPI' && (
+                <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-lg text-xs space-y-2">
+                  <div className="flex justify-between items-center text-indigo-900 font-bold">
+                    <span>Full UPI Payment:</span>
+                    <span className="text-base font-extrabold font-mono">₹{roundedTotal.toFixed(2)}</span>
+                  </div>
+                  <div className="flex items-center justify-between pt-1 border-t border-indigo-200/60 text-slate-600">
+                    <span className="text-[11px]">UPI Paid Amount:</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={upiPaid === '' ? '' : upiPaid}
+                      onChange={(e) => setUpiPaid(e.target.value === '' ? '' : Number(e.target.value))}
+                      className="w-24 text-right bg-white border border-indigo-300 rounded px-2 py-0.5 text-xs font-bold text-slate-900 focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {paymentMode === 'Split' && (
+                <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg text-xs space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-700 block mb-1">Cash (₹)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        placeholder="0"
+                        value={cashPaid}
+                        onChange={(e) => setCashPaid(e.target.value === '' ? '' : Number(e.target.value))}
+                        className="w-full bg-white border border-slate-300 rounded px-2 py-1.5 text-xs font-bold text-slate-900 focus:ring-1 focus:ring-purple-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-700 block mb-1">UPI (₹)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        placeholder="0"
+                        value={upiPaid}
+                        onChange={(e) => setUpiPaid(e.target.value === '' ? '' : Number(e.target.value))}
+                        className="w-full bg-white border border-slate-300 rounded px-2 py-1.5 text-xs font-bold text-slate-900 focus:ring-1 focus:ring-purple-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Auto Split Helper Buttons */}
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const half = Math.round((roundedTotal / 2) * 100) / 100;
+                        setCashPaid(half);
+                        setUpiPaid(Math.round((roundedTotal - half) * 100) / 100);
+                      }}
+                      className="text-[10px] bg-white border border-purple-300 text-purple-700 hover:bg-purple-100 font-bold px-2 py-1 rounded transition"
+                    >
+                      50/50 Split (₹{(roundedTotal / 2).toFixed(2)})
+                    </button>
+                    {cashVal > 0 && cashVal < roundedTotal && (
+                      <button
+                        type="button"
+                        onClick={() => setUpiPaid(Math.max(0, roundedTotal - cashVal))}
+                        className="text-[10px] bg-white border border-purple-300 text-purple-700 hover:bg-purple-100 font-bold px-2 py-1 rounded transition"
+                      >
+                        Fill Remaining in UPI (₹{Math.max(0, roundedTotal - cashVal).toFixed(2)})
+                      </button>
+                    )}
+                    {upiVal > 0 && upiVal < roundedTotal && (
+                      <button
+                        type="button"
+                        onClick={() => setCashPaid(Math.max(0, roundedTotal - upiVal))}
+                        className="text-[10px] bg-white border border-purple-300 text-purple-700 hover:bg-purple-100 font-bold px-2 py-1 rounded transition"
+                      >
+                        Fill Remaining in Cash (₹{Math.max(0, roundedTotal - upiVal).toFixed(2)})
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {paymentMode === 'Pay Later' && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs space-y-2">
+                  <div className="flex justify-between items-center text-amber-900 font-bold">
+                    <span>Credit / Pay Later:</span>
+                    <span className="text-base font-extrabold font-mono">₹{roundedTotal.toFixed(2)}</span>
+                  </div>
+                  <p className="text-[11px] text-amber-800">
+                    No payment collected upfront. The full amount of <strong>₹{roundedTotal.toFixed(2)}</strong> will be tracked on the customer&apos;s ledger.
+                  </p>
+                  {!selectedCustomerId && (
+                    <div className="bg-rose-100 text-rose-800 p-2 rounded text-[11px] font-bold border border-rose-200">
+                      ⚠️ Customer is required for Pay Later. Please select or add a customer above.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {paymentMode === 'Advance' && (
+                <div className="p-3 bg-teal-50 border border-teal-200 rounded-lg text-xs space-y-2">
+                  <div className="flex justify-between items-center text-teal-900 font-bold">
+                    <span>Deduct from Advance:</span>
+                    <span className="text-base font-extrabold font-mono">
+                      ₹{Math.min(selectedCustomer?.advance_balance || 0, roundedTotal).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-[11px] text-teal-800 font-medium">
+                    <span>Available Advance:</span>
+                    <span className="font-mono font-bold">₹{(selectedCustomer?.advance_balance || 0).toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between text-[11px] text-teal-800 font-medium">
+                    <span>Remaining Advance after Bill:</span>
+                    <span className="font-mono font-bold">
+                      ₹{Math.max(0, (selectedCustomer?.advance_balance || 0) - roundedTotal).toFixed(2)}
+                    </span>
+                  </div>
+                  {roundedTotal > (selectedCustomer?.advance_balance || 0) && (
+                    <div className="text-[10px] bg-amber-100 text-amber-900 p-2 rounded font-semibold">
+                      Advance covers ₹{(selectedCustomer?.advance_balance || 0).toFixed(2)}. Remaining ₹{(roundedTotal - (selectedCustomer?.advance_balance || 0)).toFixed(2)} will be due on ledger, or switch to <strong>Split</strong> to pay the remainder with Cash/UPI.
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Payment Math Feedback */}
               <div className="flex flex-col space-y-1 text-xs pt-1 font-semibold border-t border-slate-100 mt-1">
