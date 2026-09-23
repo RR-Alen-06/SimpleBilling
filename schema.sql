@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS public.bills (
 );
 ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
 ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS gst_amount NUMERIC(10, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.bills DROP CONSTRAINT IF EXISTS bills_payment_method_check;
 
 -- 4. BILL ITEMS TABLE
 CREATE TABLE IF NOT EXISTS public.bill_items (
@@ -148,6 +149,7 @@ CREATE TABLE IF NOT EXISTS public.payments (
 );
 ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
 ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS payment_number TEXT;
+ALTER TABLE public.payments DROP CONSTRAINT IF EXISTS payments_payment_method_check;
 
 -- 6. EXPENSES TABLE
 CREATE TABLE IF NOT EXISTS public.expenses (
