@@ -66,7 +66,13 @@
     print-color-adjust: exact !important;
   }
 
-  header, nav, .print\:hidden {
+  /* Hide all navigation, header, and hidden print elements */
+  header, nav, aside, footer, .print\:hidden {
+    display: none !important;
+  }
+
+  /* When an invoice or receipt modal is open, completely hide all background page content */
+  main > div > *:not(.invoice-modal-root):not(.payment-receipt-modal-root):not(.statement-modal-root) {
     display: none !important;
   }
 
@@ -74,6 +80,20 @@
     padding: 0 !important;
     margin: 0 !important;
     max-width: none !important;
+  }
+
+  /* Modal print container normalization */
+  .invoice-modal-root,
+  .payment-receipt-modal-root,
+  .statement-modal-root {
+    position: static !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    display: block !important;
+    overflow: visible !important;
   }
 
   /* Single-page A4 Invoice Print Rules */

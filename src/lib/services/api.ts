@@ -26,7 +26,8 @@ import {
   CustomerStatementBill,
   CustomerStatementBillItem,
   CustomerStatementDateGroup,
-  CustomItemAnalytics
+  CustomItemAnalytics,
+  ShopSettings
 } from '../types';
 
 export const DEFAULT_SETTINGS: AllSettings = {
@@ -2195,17 +2196,28 @@ export class ApiService {
   }
 
   // --- WHATSAPP TEXT RECEIPT GENERATOR ---
-  static generateWhatsAppTextReceipt(bill: Bill, financialSummary?: BillFinancialSummary): string {
+  // --- DIGITAL MULTI-CHANNEL RECEIPT GENERATOR (WhatsApp, Telegram, SMS, Social) ---
+  static generateDigitalReceiptText(
+    bill: Bill, 
+    financialSummary?: BillFinancialSummary, 
+    shopSettings?: Partial<ShopSettings>
+  ): string {
     const formattedDate = new Date(bill.created_at || Date.now()).toLocaleString('en-IN', {
       dateStyle: 'medium',
       timeStyle: 'short'
     });
 
+    const shopName = shopSettings?.shop_name || 'SIMPLEBILLING STORE';
+    const shopPhone = shopSettings?.phone ? `📞 Ph: ${shopSettings.phone}` : '';
+    const shopAddress = shopSettings?.address ? `📍 ${shopSettings.address}` : '';
+    const shopGstin = shopSettings?.gst_number ? `🏛️ GSTIN: ${shopSettings.gst_number}` : '';
+    const footerMsg = shopSettings?.footer_message || 'Thank you for your business!';
+
     const itemsText = (bill.items || []).map((item, idx) => 
-      `${idx + 1}. ${item.product_name}\n   Qty : ${item.quantity} × ₹${item.price.toFixed(2)} = ₹${item.total.toFixed(2)}`
+      `${idx + 1}. *${item.product_name}*\n   Qty: ${item.quantity} × ₹${Number(item.price).toFixed(2)} = ₹${Number(item.total).toFixed(2)}`
     ).join('\n\n');
 
-    const isFullyPaidFallback = Math.max(0, Number(bill.grand_total || 0) - Number(bill.paid_total || 0)) === 0;
+    const isFullyPaidFallback = Math.max(0, Number(bill.grand_total || 0) - Number(bill.paid_total || 0)) <= 0.01;
     const ptsEarnedFallback = Number(bill.loyalty_points_earned || 0);
 
     const summary: BillFinancialSummary = financialSummary || bill.financial_summary || {
@@ -2233,73 +2245,214 @@ export class ApiService {
     };
 
     const statusBadge = summary.payment_status === 'Fully Paid'
-      ? 'Status : Fully Paid ✅'
+      ? 'Status: Fully Paid ✅'
       : summary.payment_status === 'Partially Paid'
-      ? `Status : Partially Paid ℹ️ (Remaining: ₹${summary.remaining_balance.toFixed(2)})`
-      : `Status : Payment Pending ⚠️ (Remaining: ₹${summary.remaining_balance.toFixed(2)})`;
+      ? `Status: Partially Paid ℹ️ (Remaining: ₹${summary.remaining_balance.toFixed(2)})`
+      : `Status: Payment Pending ⚠️ (Remaining: ₹${summary.remaining_balance.toFixed(2)})`;
 
     const currentBillDue = Math.max(0, summary.current_bill_amount - summary.total_paid);
+    const advanceEarnedOnBill = Number(bill.advance_earned || 0);
 
-    let text = `🧾 *PRINTPRO ERP*
+    let text = `🧾 *${shopName.toUpperCase()}*`;
+    if (shopAddress) text += `\n${shopAddress}`;
+    if (shopPhone || shopGstin) {
+      text += `\n${[shopPhone, shopGstin].filter(Boolean).join(' | ')}`;
+    }
 
-🏪 *ABC PRINTING CENTER*
+    text += `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📄 *TAX INVOICE / BILL RECEIPT*
+Bill No: *${bill.bill_number}*
+Date: ${formattedDate}
+Customer: *${bill.customer_name || 'Walk-in Customer'}* ${bill.customer_mobile ? `(${bill.customer_mobile})` : ''}
+Payment Mode: *${bill.payment_method || 'Cash'}*
 
-Bill No : ${bill.bill_number}
-Date : ${formattedDate}
-Customer : ${bill.customer_name || 'N/A'}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🛒 *ITEMIZED PURCHASES*
 
-━━━━━━━━━━━━━━━━━━━━━━
-*ITEMS*
+${itemsText || '1. General Purchase\n   Qty: 1 × ₹' + Number(bill.grand_total).toFixed(2) + ' = ₹' + Number(bill.grand_total).toFixed(2)}
 
-${itemsText}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💰 *BILL TOTALS*
+Subtotal: ₹${Number(bill.total || 0).toFixed(2)}
+Discount: -₹${Number(bill.discount || 0).toFixed(2)}`;
 
-━━━━━━━━━━━━━━━━━━━━━━
-Subtotal : ₹${Number(bill.total || 0).toFixed(2)}
-Discount : ₹${Number(bill.discount || 0).toFixed(2)}
-Rounding : ${Number(bill.rounding_adjustment || 0) >= 0 ? '+' : ''}₹${Number(bill.rounding_adjustment || 0).toFixed(2)}
-🧾 *Current Bill Total* : ₹${Number(bill.grand_total || 0).toFixed(2)}
+    if (Number(bill.gst_amount || 0) > 0) {
+      text += `\nGST: +₹${Number(bill.gst_amount).toFixed(2)}`;
+    }
+    if (Number(bill.rounding_adjustment || 0) !== 0) {
+      text += `\nRounding: ${Number(bill.rounding_adjustment) >= 0 ? '+' : ''}₹${Number(bill.rounding_adjustment).toFixed(2)}`;
+    }
 
-━━━━━━━━━━━━━━━━━━━━━━
-*CUSTOMER ACCOUNT SUMMARY*
+    text += `\n🧾 *Grand Total: ₹${Number(bill.grand_total || 0).toFixed(2)}*
 
-Previous Outstanding : ₹${summary.previous_outstanding.toFixed(2)}
-Previous Advance : ₹${summary.previous_advance.toFixed(2)}
-Current Bill Amount : ₹${summary.current_bill_amount.toFixed(2)}
-*Total Amount Due* : ₹${summary.total_amount_due.toFixed(2)}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 *CUSTOMER ACCOUNT SUMMARY*
+Previous Outstanding: ₹${summary.previous_outstanding.toFixed(2)}
+Previous Advance: ₹${summary.previous_advance.toFixed(2)}
+Current Bill Amount: ₹${summary.current_bill_amount.toFixed(2)}
+*Total Amount Due: ₹${summary.total_amount_due.toFixed(2)}*
 
-━━━━━━━━━━━━━━━━━━━━━━
-*PAYMENT SUMMARY*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💵 *PAYMENT SUMMARY*
+Cash Paid: ₹${summary.cash_paid.toFixed(2)}
+UPI Paid: ₹${summary.upi_paid.toFixed(2)}
+Advance Used: ₹${summary.advance_used.toFixed(2)}
+*Total Paid: ₹${summary.total_paid.toFixed(2)}*
 
-Cash Paid : ₹${summary.cash_paid.toFixed(2)}
-UPI Paid : ₹${summary.upi_paid.toFixed(2)}
-Advance Used : ₹${summary.advance_used.toFixed(2)}
-*Total Paid* : ₹${summary.total_paid.toFixed(2)}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚖️ *BALANCE & ADVANCE SUMMARY*
+Current Bill Due: ₹${currentBillDue.toFixed(2)}
+Net Account Balance Due: ₹${summary.remaining_balance.toFixed(2)}`;
 
-━━━━━━━━━━━━━━━━━━━━━━
-*BALANCE SUMMARY*
-
-Current Bill Due : ₹${currentBillDue.toFixed(2)} (${summary.payment_status})
-Net Account Balance Due : ₹${summary.remaining_balance.toFixed(2)}
-Customer Advance Balance : ₹${summary.remaining_advance_balance.toFixed(2)}
-${statusBadge}`;
+    if (advanceEarnedOnBill > 0) {
+      text += `\n🔵 *Advance Credited (This Bill): +₹${advanceEarnedOnBill.toFixed(2)}*`;
+    }
+    text += `\nCustomer Advance Balance: ₹${summary.remaining_advance_balance.toFixed(2)}
+📌 ${statusBadge}`;
 
     if (summary.loyalty && summary.loyalty.enabled) {
-      if (summary.remaining_balance === 0 || summary.loyalty.is_fully_paid) {
-        text += `\n\n━━━━━━━━━━━━━━━━━━━━━━
-🎁 *Loyalty Earned:* +${summary.loyalty.points_earned} Points
-
-Previous Points : ${summary.loyalty.previous_points} pts
-Points Redeemed : -${summary.loyalty.points_redeemed} pts
-*Current Loyalty Balance* : ${summary.loyalty.current_points_balance} pts`;
+      text += `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎁 *LOYALTY REWARDS*`;
+      if (summary.remaining_balance <= 0.01 || summary.loyalty.is_fully_paid) {
+        text += `\nPoints Earned (This Bill): *+${summary.loyalty.points_earned} Pts*
+Previous Points: ${summary.loyalty.previous_points} pts
+Points Redeemed: -${summary.loyalty.points_redeemed} pts
+*Current Active Loyalty Balance: ${summary.loyalty.current_points_balance} pts*`;
       } else {
-        text += `\n\n━━━━━━━━━━━━━━━━━━━━━━
-⏳ *Loyalty Points:* Will be credited after this bill is fully paid.`;
+        const totalPending = summary.loyalty.total_pending_points || summary.loyalty.points_earned;
+        text += `\n⏳ *Points on This Bill (Pending): +${summary.loyalty.points_earned} Pts*
+⏳ *Total Pending on Account: ${totalPending} Pts*
+Available Spendable Balance: ${summary.loyalty.previous_points} pts
+_(Points will be credited upon bill settlement)_`;
       }
     }
 
-    text += `\n\nThank you for visiting.\nPowered by PrintPro ERP`;
+    text += `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n${footerMsg}\n_Powered by SimpleBilling_`;
 
     return text;
+  }
+
+  // Backwards compatibility alias
+  static generateWhatsAppTextReceipt(bill: Bill, financialSummary?: BillFinancialSummary, shopSettings?: Partial<ShopSettings>): string {
+    return this.generateDigitalReceiptText(bill, financialSummary, shopSettings);
+  }
+
+  // --- HTML EMAIL RECEIPT TEMPLATE GENERATOR ---
+  static generateEmailHtmlReceipt(
+    bill: Bill, 
+    financialSummary?: BillFinancialSummary, 
+    shopSettings?: Partial<ShopSettings>
+  ): string {
+    const shopName = shopSettings?.shop_name || 'SimpleBilling Center';
+    const shopPhone = shopSettings?.phone || '';
+    const shopAddress = shopSettings?.address || '';
+    const shopGstin = shopSettings?.gst_number || '';
+    const footerMsg = shopSettings?.footer_message || 'Thank you for your business!';
+
+    const itemsRows = (bill.items || []).map((item, idx) => `
+      <tr style="border-bottom: 1px solid #e2e8f0; font-size: 13px;">
+        <td style="padding: 8px 4px; text-align: left;">${idx + 1}. ${item.product_name}</td>
+        <td style="padding: 8px 4px; text-align: center;">${item.quantity}</td>
+        <td style="padding: 8px 4px; text-align: right;">₹${Number(item.price).toFixed(2)}</td>
+        <td style="padding: 8px 4px; text-align: right; font-weight: bold;">₹${Number(item.total).toFixed(2)}</td>
+      </tr>
+    `).join('');
+
+    const summary: BillFinancialSummary = financialSummary || bill.financial_summary || {
+      previous_outstanding: 0,
+      previous_advance: 0,
+      current_bill_amount: Number(bill.grand_total || 0),
+      total_amount_due: Number(bill.grand_total || 0),
+      cash_paid: Number(bill.cash_paid || 0),
+      upi_paid: Number(bill.upi_paid || 0),
+      advance_used: Number(bill.advance_used || 0),
+      total_paid: Number(bill.paid_total || 0),
+      remaining_balance: Math.max(0, Number(bill.grand_total || 0) - Number(bill.paid_total || 0)),
+      remaining_advance_balance: Number(bill.advance_earned || 0),
+      payment_status: (Number(bill.paid_total || 0) >= Number(bill.grand_total || 0) - 0.01) ? 'Fully Paid' : 'Payment Pending'
+    };
+
+    return `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; color: #1e293b; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden;">
+        <div style="background: #0f172a; color: #ffffff; padding: 24px; text-align: center;">
+          <h1 style="margin: 0; font-size: 20px; font-weight: 800; letter-spacing: 0.5px;">${shopName.toUpperCase()}</h1>
+          ${shopAddress ? `<p style="margin: 4px 0 0 0; font-size: 12px; color: #94a3b8;">${shopAddress}</p>` : ''}
+          <p style="margin: 4px 0 0 0; font-size: 11px; color: #94a3b8;">
+            ${shopPhone ? `Ph: ${shopPhone}` : ''} ${shopGstin ? `| GSTIN: ${shopGstin}` : ''}
+          </p>
+        </div>
+
+        <div style="padding: 20px;">
+          <div style="background: #f8fafc; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; display: flex; justify-content: space-between; font-size: 13px;">
+            <div>
+              <p style="margin: 0; font-weight: bold; color: #0f172a;">Invoice #${bill.bill_number}</p>
+              <p style="margin: 2px 0 0 0; color: #64748b; font-size: 12px;">Customer: ${bill.customer_name || 'Valued Customer'}</p>
+            </div>
+            <div style="text-align: right;">
+              <p style="margin: 0; color: #64748b; font-size: 12px;">Date: ${new Date(bill.created_at || Date.now()).toLocaleDateString('en-IN')}</p>
+              <p style="margin: 2px 0 0 0; font-weight: bold; color: ${summary.remaining_balance <= 0.01 ? '#15803d' : '#b45309'}; font-size: 12px;">Status: ${summary.payment_status}</p>
+            </div>
+          </div>
+
+          <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+            <thead>
+              <tr style="background: #f1f5f9; color: #475569; font-size: 11px; text-transform: uppercase;">
+                <th style="padding: 8px 4px; text-align: left;">Item</th>
+                <th style="padding: 8px 4px; text-align: center;">Qty</th>
+                <th style="padding: 8px 4px; text-align: right;">Price</th>
+                <th style="padding: 8px 4px; text-align: right;">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${itemsRows}
+            </tbody>
+          </table>
+
+          <div style="background: #f8fafc; border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; font-size: 13px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+              <span style="color: #64748b;">Subtotal:</span>
+              <span style="font-weight: 600;">₹${Number(bill.total || 0).toFixed(2)}</span>
+            </div>
+            ${Number(bill.discount || 0) > 0 ? `
+              <div style="display: flex; justify-content: space-between; margin-bottom: 4px; color: #15803d;">
+                <span>Discount:</span>
+                <span>-₹${Number(bill.discount).toFixed(2)}</span>
+              </div>
+            ` : ''}
+            <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: 800; border-top: 2px solid #cbd5e1; padding-top: 8px; margin-top: 8px; color: #0f172a;">
+              <span>Grand Total:</span>
+              <span>₹${Number(bill.grand_total || 0).toFixed(2)}</span>
+            </div>
+          </div>
+
+          <div style="border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 12px;">
+            <p style="margin: 0 0 8px 0; font-weight: 700; text-transform: uppercase; color: #475569; font-size: 11px; letter-spacing: 0.5px;">Account & Payment Summary</p>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 3px; color: #64748b;">
+              <span>Total Paid:</span>
+              <span style="font-weight: 600; color: #15803d;">₹${summary.total_paid.toFixed(2)}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 3px; color: #64748b;">
+              <span>Current Bill Due:</span>
+              <span style="font-weight: 600; color: ${summary.remaining_balance > 0 ? '#b45309' : '#15803d'};">₹${summary.remaining_balance.toFixed(2)}</span>
+            </div>
+            ${Number(bill.advance_earned || 0) > 0 ? `
+              <div style="display: flex; justify-content: space-between; margin-bottom: 3px; color: #4338ca; font-weight: bold;">
+                <span>Advance Credited (This Bill):</span>
+                <span>+₹${Number(bill.advance_earned).toFixed(2)}</span>
+              </div>
+            ` : ''}
+            <div style="display: flex; justify-content: space-between; color: #64748b;">
+              <span>Customer Advance Balance:</span>
+              <span style="font-weight: 600;">₹${summary.remaining_advance_balance.toFixed(2)}</span>
+            </div>
+          </div>
+
+          <div style="text-align: center; padding-top: 12px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8;">
+            <p style="margin: 0;">${footerMsg}</p>
+            <p style="margin: 4px 0 0 0;">Generated by SimpleBilling</p>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   // --- DATABASE SEED UTILITY ---
