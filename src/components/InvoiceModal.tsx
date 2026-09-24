@@ -17,7 +17,7 @@ import {
   ChevronDown, 
   Loader2
 } from 'lucide-react';
-import html2canvas from 'html2canvas';
+import { InvoicePdfGenerator } from '@/lib/services/invoicePdfGenerator';
 import { jsPDF } from 'jspdf';
 import emailjs from '@emailjs/browser';
 
@@ -130,36 +130,12 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
   };
 
   const generatePdfInstance = async (): Promise<{ pdf: jsPDF; filename: string } | null> => {
-    if (!invoiceRef.current) return null;
-    const element = invoiceRef.current;
-
-    const canvas = await html2canvas(element, {
-      scale: 2,
-      useCORS: true,
-      logging: false,
-      backgroundColor: '#ffffff'
-    });
-
-    const imgData = canvas.toDataURL('image/png');
-    let pdf: jsPDF;
-
-    if (printFormat === 'a4') {
-      pdf = new jsPDF('p', 'mm', 'a4');
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, Math.min(pdfHeight, pdf.internal.pageSize.getHeight()));
-    } else if (printFormat === 'thermal-80') {
-      const heightMm = (canvas.height * 80) / canvas.width;
-      pdf = new jsPDF('p', 'mm', [80, heightMm]);
-      pdf.addImage(imgData, 'PNG', 0, 0, 80, heightMm);
-    } else { // thermal-58
-      const heightMm = (canvas.height * 58) / canvas.width;
-      pdf = new jsPDF('p', 'mm', [58, heightMm]);
-      pdf.addImage(imgData, 'PNG', 0, 0, 58, heightMm);
+    try {
+      return InvoicePdfGenerator.generateInvoicePdf(bill, summary, shop, printFormat);
+    } catch (err) {
+      console.error('Vector PDF generation error:', err);
+      return null;
     }
-
-    const filename = `Bill-${bill.bill_number}.pdf`;
-    return { pdf, filename };
   };
 
   const handleDownloadPDF = async () => {
