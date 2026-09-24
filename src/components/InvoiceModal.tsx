@@ -611,6 +611,12 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                   <span>Net Account Balance Due:</span>
                   <span>₹{summary.remaining_balance.toFixed(2)}</span>
                 </div>
+                {Number(bill.advance_earned || 0) > 0 && (
+                  <div className="flex justify-between font-bold text-indigo-700">
+                    <span>Advance Credited (This Bill):</span>
+                    <span>+₹{Number(bill.advance_earned).toFixed(2)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span>Customer Advance Bal:</span>
                   <span>₹{summary.remaining_advance_balance.toFixed(2)}</span>
@@ -866,6 +872,12 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                     <p className="text-[9px] print:text-[7px] text-right font-medium">
                       Status : {summary.payment_status}
                     </p>
+                    {Number(bill.advance_earned || 0) > 0 && (
+                      <div className="flex justify-between text-indigo-700 font-bold">
+                        <span>Advance Credited:</span>
+                        <span>+₹{Number(bill.advance_earned).toFixed(2)}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between text-slate-600 pt-0.5 border-t border-slate-200/60">
                       <span>Customer Advance:</span>
                       <span className="font-semibold text-slate-800">₹{summary.remaining_advance_balance.toFixed(2)}</span>

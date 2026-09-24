@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { ApiService } from '@/lib/services/api';
 import { CustomerSummary, Payment } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
+import { PaymentReceiptModal } from '@/components/PaymentReceiptModal';
 import { 
   CreditCard, 
   Search, 
@@ -16,7 +17,8 @@ import {
   BookOpen, 
   Receipt, 
   Clock, 
-  History 
+  History,
+  Eye
 } from 'lucide-react';
 
 function PaymentsContent() {
@@ -33,6 +35,9 @@ function PaymentsContent() {
   const [upiAmount, setUpiAmount] = useState<number | ''>('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  // Receipt Modal State
+  const [selectedPaymentForReceipt, setSelectedPaymentForReceipt] = useState<Payment | null>(null);
 
   // Feedback State
   const [errorMsg, setErrorMsg] = useState('');
@@ -73,6 +78,13 @@ function PaymentsContent() {
   const upiVal = Number(upiAmount || 0);
   const totalEntered = cashVal + upiVal;
 
+  // Live Allocation Calculations
+  const currentBalanceDue = selectedCustomer ? Math.max(0, selectedCustomer.balance_due) : 0;
+  const duesSettled = Math.min(currentBalanceDue, totalEntered);
+  const advanceCredited = Math.max(0, totalEntered - currentBalanceDue);
+  const remainingDueAfter = Math.max(0, currentBalanceDue - totalEntered);
+  const newAdvanceBalance = selectedCustomer ? Number(selectedCustomer.advance_balance || 0) + advanceCredited : advanceCredited;
+
   const handleQuickFillDue = (mode: 'cash' | 'upi') => {
     if (!selectedCustomer) return;
     const due = Math.max(0, selectedCustomer.balance_due);
@@ -102,31 +114,59 @@ function PaymentsContent() {
 
     setSubmitting(true);
     try {
+      // Construct structured allocation note
+      let allocNote = '';
+      if (duesSettled > 0 && advanceCredited > 0) {
+        allocNote = `[Dues Settled: ₹${duesSettled.toFixed(2)} | Advance Credited: ₹${advanceCredited.toFixed(2)}]`;
+      } else if (advanceCredited > 0) {
+        allocNote = `[Advance Credited: ₹${advanceCredited.toFixed(2)}]`;
+      } else if (duesSettled > 0) {
+        allocNote = `[Dues Settled: ₹${duesSettled.toFixed(2)}]`;
+      }
+
+      const combinedNotes = notes.trim() 
+        ? `${notes.trim()} ${allocNote}` 
+        : allocNote || 'Direct Payment Collection';
+
+      let lastRecordedPayment: Payment | null = null;
+
       // Record Cash payment if entered
       if (cashVal > 0) {
-        await ApiService.recordCustomerPayment({
+        lastRecordedPayment = await ApiService.recordCustomerPayment({
           customer_id: selectedCustomer.id,
           amount: cashVal,
           payment_method: 'Cash',
-          notes: notes.trim() || 'Standalone Cash Payment Collection'
+          notes: combinedNotes
         });
       }
 
       // Record UPI payment if entered
       if (upiVal > 0) {
-        await ApiService.recordCustomerPayment({
+        lastRecordedPayment = await ApiService.recordCustomerPayment({
           customer_id: selectedCustomer.id,
           amount: upiVal,
           payment_method: 'UPI',
-          notes: notes.trim() || 'Standalone UPI Payment Collection'
+          notes: combinedNotes
         });
       }
 
-      setSuccessMsg(`Successfully collected ₹${totalEntered.toFixed(2)} from ${selectedCustomer.name}!`);
+      let msg = `Successfully collected ₹${totalEntered.toFixed(2)} from ${selectedCustomer.name}!`;
+      if (duesSettled > 0 && advanceCredited > 0) {
+        msg += ` (₹${duesSettled.toFixed(2)} Dues Cleared + ₹${advanceCredited.toFixed(2)} Advance Added)`;
+      } else if (advanceCredited > 0) {
+        msg += ` (+₹${advanceCredited.toFixed(2)} Added to Advance Balance)`;
+      }
+      setSuccessMsg(msg);
+      
       setCashAmount('');
       setUpiAmount('');
       setNotes('');
       await loadData();
+
+      // Automatically offer payment voucher
+      if (lastRecordedPayment) {
+        setSelectedPaymentForReceipt(lastRecordedPayment);
+      }
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to collect payment');
     } finally {
@@ -143,7 +183,8 @@ function PaymentsContent() {
     return (
       (p.payment_number && p.payment_number.toLowerCase().includes(term)) ||
       (p.customer_name && p.customer_name.toLowerCase().includes(term)) ||
-      (p.payment_method && p.payment_method.toLowerCase().includes(term))
+      (p.payment_method && p.payment_method.toLowerCase().includes(term)) ||
+      (p.notes && p.notes.toLowerCase().includes(term))
     );
   });
 
@@ -159,7 +200,7 @@ function PaymentsContent() {
             <span>Payment Collection</span>
           </h1>
           <p className="text-sm text-slate-500 mt-0.5">
-            Collect dues, settle pending balances, or receive advance payments from customers
+            Collect dues, settle pending balances, or receive advance payments with automatic allocation
           </p>
         </div>
 
@@ -279,14 +320,14 @@ function PaymentsContent() {
                       <button
                         type="button"
                         onClick={() => handleQuickFillDue('cash')}
-                        className="bg-emerald-100 hover:bg-emerald-200 text-emerald-800 font-bold px-2 py-0.5 rounded text-[10px] transition"
+                        className="bg-emerald-100 hover:bg-emerald-200 text-emerald-800 font-bold px-2 py-0.5 rounded text-[10px] transition cursor-pointer"
                       >
                         ⚡ Settle Cash (₹{selectedCustomer.balance_due.toFixed(2)})
                       </button>
                       <button
                         type="button"
                         onClick={() => handleQuickFillDue('upi')}
-                        className="bg-indigo-100 hover:bg-indigo-200 text-indigo-800 font-bold px-2 py-0.5 rounded text-[10px] transition"
+                        className="bg-indigo-100 hover:bg-indigo-200 text-indigo-800 font-bold px-2 py-0.5 rounded text-[10px] transition cursor-pointer"
                       >
                         ⚡ Settle UPI (₹{selectedCustomer.balance_due.toFixed(2)})
                       </button>
@@ -330,10 +371,67 @@ function PaymentsContent() {
                 </div>
 
                 {/* Total Payment Feedback */}
-                <div className="flex justify-between items-center p-3 bg-emerald-50/80 border border-emerald-200 rounded-lg text-xs">
-                  <span className="font-semibold text-emerald-900">Total Payment Amount:</span>
-                  <span className="font-extrabold text-emerald-800 text-base">₹{totalEntered.toFixed(2)}</span>
+                <div className="flex justify-between items-center p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs">
+                  <span className="font-semibold text-slate-700">Total Payment Entered:</span>
+                  <span className="font-extrabold text-slate-900 text-base font-mono">₹{totalEntered.toFixed(2)}</span>
                 </div>
+
+                {/* LIVE PAYMENT ALLOCATION PREVIEW CARD */}
+                {selectedCustomer && totalEntered > 0 && (
+                  <div className="bg-gradient-to-br from-purple-50/70 via-indigo-50/50 to-blue-50/70 border border-indigo-200 rounded-xl p-3.5 space-y-2.5 text-xs animate-in fade-in duration-150">
+                    <div className="flex items-center justify-between border-b border-indigo-100 pb-1.5">
+                      <span className="font-bold text-indigo-950 uppercase tracking-wider text-[10px] flex items-center space-x-1.5">
+                        <span className="w-2 h-2 rounded-full bg-indigo-600 inline-block animate-pulse"></span>
+                        <span>Live Allocation Breakdown</span>
+                      </span>
+                      <span className="font-extrabold text-indigo-900 font-mono text-xs">
+                        ₹{totalEntered.toFixed(2)} Received
+                      </span>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      {/* Case 1: Dues Settled */}
+                      <div className="flex justify-between items-center bg-white/90 px-2.5 py-1.5 rounded-lg border border-slate-200/70">
+                        <span className="text-slate-700 font-medium flex items-center space-x-1.5">
+                          <span className={`w-2 h-2 rounded-full ${duesSettled > 0 ? 'bg-emerald-500' : 'bg-slate-300'}`}></span>
+                          <span>Applied to Clear Bill Dues:</span>
+                        </span>
+                        <span className="font-bold text-emerald-700 font-mono">
+                          ₹{duesSettled.toFixed(2)}
+                        </span>
+                      </div>
+
+                      {/* Case 2: Advance Credited (Excess Payment) */}
+                      {advanceCredited > 0 && (
+                        <div className="flex justify-between items-center bg-indigo-50 px-2.5 py-1.5 rounded-lg border border-indigo-200">
+                          <span className="text-indigo-900 font-bold flex items-center space-x-1.5">
+                            <span className="w-2 h-2 rounded-full bg-indigo-600"></span>
+                            <span>Added to Customer Advance:</span>
+                          </span>
+                          <span className="font-extrabold text-indigo-700 font-mono">
+                            +₹{advanceCredited.toFixed(2)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Resulting Ledger Projection */}
+                    <div className="grid grid-cols-2 gap-2 pt-1 border-t border-indigo-100/80 text-[11px] text-center">
+                      <div className="bg-white/90 p-1.5 rounded-lg border border-slate-200/70">
+                        <span className="text-slate-400 block text-[10px] uppercase font-bold">New Due Balance</span>
+                        <span className={`font-extrabold ${remainingDueAfter > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>
+                          ₹{remainingDueAfter.toFixed(2)}
+                        </span>
+                      </div>
+                      <div className="bg-white/90 p-1.5 rounded-lg border border-slate-200/70">
+                        <span className="text-slate-400 block text-[10px] uppercase font-bold">New Advance Balance</span>
+                        <span className="font-extrabold text-indigo-700">
+                          ₹{newAdvanceBalance.toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* Notes */}
                 <div>
@@ -342,7 +440,7 @@ function PaymentsContent() {
                   </label>
                   <input
                     type="text"
-                    placeholder="e.g. GPay ref #123456 or Partial Xerox settlement"
+                    placeholder="e.g. GPay ref #123456 or Advance payment"
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
                     className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs"
@@ -355,7 +453,7 @@ function PaymentsContent() {
                 <button
                   type="submit"
                   disabled={submitting || totalEntered <= 0 || !selectedCustomerId}
-                  className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-sm py-3 rounded-lg shadow-md transition flex items-center justify-center space-x-2"
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-sm py-3 rounded-lg shadow-md transition flex items-center justify-center space-x-2 cursor-pointer"
                 >
                   <CheckCircle2 size={18} />
                   <span>{submitting ? 'Recording Payment...' : `Record Payment (₹${totalEntered.toFixed(2)})`}</span>
@@ -403,34 +501,62 @@ function PaymentsContent() {
                       <th className="py-2.5 px-3">Customer</th>
                       <th className="py-2.5 px-3">Mode</th>
                       <th className="py-2.5 px-3 text-right">Amount (₹)</th>
+                      <th className="py-2.5 px-3 text-center w-16">View</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {filteredPayments.slice(0, 15).map((pay) => (
-                      <tr key={pay.id} className="hover:bg-slate-50/80 transition">
-                        <td className="py-2.5 px-3 font-mono font-bold text-slate-900">
-                          {pay.payment_number || 'PAY-N/A'}
-                        </td>
-                        <td className="py-2.5 px-3 text-slate-500">
-                          {new Date(pay.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
-                        </td>
-                        <td className="py-2.5 px-3 font-medium text-slate-800">
-                          {pay.customer_name || 'Customer'}
-                        </td>
-                        <td className="py-2.5 px-3">
-                          <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                            pay.payment_method === 'Cash'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-indigo-100 text-indigo-800'
-                          }`}>
-                            {pay.payment_method}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-extrabold text-slate-900 font-mono">
-                          ₹{Number(pay.amount).toFixed(2)}
-                        </td>
-                      </tr>
-                    ))}
+                    {filteredPayments.slice(0, 15).map((pay) => {
+                      const hasAdv = pay.notes?.includes('Advance Credited') || pay.notes?.includes('Advance Payment');
+                      const hasDues = pay.notes?.includes('Dues Settled');
+
+                      return (
+                        <tr key={pay.id} className="hover:bg-slate-50/80 transition">
+                          <td className="py-2.5 px-3 font-mono font-bold text-slate-900">
+                            {pay.payment_number || 'PAY-N/A'}
+                          </td>
+                          <td className="py-2.5 px-3 text-slate-500">
+                            {new Date(pay.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+                          </td>
+                          <td className="py-2.5 px-3 font-medium text-slate-800">
+                            {pay.customer_name || 'Customer'}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                              pay.payment_method === 'Cash'
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-indigo-100 text-indigo-800'
+                            }`}>
+                              {pay.payment_method}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right">
+                            <span className="font-extrabold text-slate-900 font-mono block">
+                              ₹{Number(pay.amount).toFixed(2)}
+                            </span>
+                            {hasAdv && (
+                              <span className="inline-block bg-indigo-50 text-indigo-700 text-[9px] font-bold px-1.5 py-0.2 rounded border border-indigo-100">
+                                Advance Credited
+                              </span>
+                            )}
+                            {hasDues && !hasAdv && (
+                              <span className="inline-block bg-emerald-50 text-emerald-700 text-[9px] font-bold px-1.5 py-0.2 rounded border border-emerald-100">
+                                Dues Cleared
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-center">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedPaymentForReceipt(pay)}
+                              className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition cursor-pointer"
+                              title="View Payment Voucher Receipt"
+                            >
+                              <Eye size={15} />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -438,6 +564,14 @@ function PaymentsContent() {
           </div>
         </div>
       </div>
+
+      {/* Payment Receipt Modal */}
+      {selectedPaymentForReceipt && (
+        <PaymentReceiptModal
+          payment={selectedPaymentForReceipt}
+          onClose={() => setSelectedPaymentForReceipt(null)}
+        />
+      )}
     </div>
   );
 }
@@ -449,3 +583,4 @@ export default function PaymentsPage() {
     </Suspense>
   );
 }
+
