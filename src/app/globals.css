@@ -71,7 +71,26 @@
     display: none !important;
   }
 
-  /* When an invoice or receipt modal is open, completely hide all background page content */
+  /* BULLETPROOF MODAL PRINT ISOLATION */
+  body:has(.invoice-modal-root, .payment-receipt-modal-root, .statement-modal-root) * {
+    visibility: hidden !important;
+  }
+
+  body:has(.invoice-modal-root) .invoice-modal-root,
+  body:has(.invoice-modal-root) .invoice-modal-root *:not(.print\:hidden):not(.print\:hidden *),
+  body:has(.payment-receipt-modal-root) .payment-receipt-modal-root,
+  body:has(.payment-receipt-modal-root) .payment-receipt-modal-root *:not(.print\:hidden):not(.print\:hidden *),
+  body:has(.statement-modal-root) .statement-modal-root,
+  body:has(.statement-modal-root) .statement-modal-root *:not(.print\:hidden):not(.print\:hidden *) {
+    visibility: visible !important;
+  }
+
+  body:has(.invoice-modal-root, .payment-receipt-modal-root, .statement-modal-root) .print\:hidden,
+  body:has(.invoice-modal-root, .payment-receipt-modal-root, .statement-modal-root) .print\:hidden * {
+    display: none !important;
+    visibility: hidden !important;
+  }
+
   body:has(.invoice-modal-root, .payment-receipt-modal-root, .statement-modal-root) main > div > *:not(.invoice-modal-root):not(.payment-receipt-modal-root):not(.statement-modal-root) {
     display: none !important;
   }
@@ -80,13 +99,16 @@
     padding: 0 !important;
     margin: 0 !important;
     max-width: none !important;
+    width: 100% !important;
   }
 
   /* Modal print container normalization */
   .invoice-modal-root,
   .payment-receipt-modal-root,
   .statement-modal-root {
-    position: static !important;
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
     background: transparent !important;
     padding: 0 !important;
     margin: 0 !important;
