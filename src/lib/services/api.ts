@@ -1513,6 +1513,21 @@ export class ApiService {
         const points_added = (is_fully_paid || points_awarded) ? points_earned : 0;
         const current_points_balance = Math.max(0, previous_points + points_added - points_redeemed);
 
+        // Calculate total pending points across all unpaid customer bills
+        let total_pending_points = 0;
+        const processedBillIds = new Set<string>();
+        for (const b of (allCustBills || [])) {
+          processedBillIds.add(b.id);
+          const bDue = Math.max(0, Number(b.grand_total || 0) - (b.id === bill.id ? total_paid : Number(b.paid_total || 0)));
+          if (bDue > 0.01) {
+            const pts = (b.id === bill.id) ? points_earned : await this.calculateLoyaltyPointsEarned(Number(b.grand_total || 0));
+            total_pending_points += pts;
+          }
+        }
+        if (!processedBillIds.has(bill.id) && !is_fully_paid) {
+          total_pending_points += points_earned;
+        }
+
         const message = is_fully_paid
           ? `🎁 Loyalty Earned: +${points_earned} Points`
           : `⏳ Loyalty Points will be credited after this bill is fully paid.`;
@@ -1525,6 +1540,7 @@ export class ApiService {
           points_redeemed,
           previous_points,
           current_points_balance,
+          total_pending_points,
           message
         };
       }

@@ -109,7 +109,7 @@ export interface BillFinancialSummary {
   remaining_advance_balance: number;
   payment_status: 'Fully Paid' | 'Partially Paid' | 'Payment Pending';
   
-  loyalty?: {
+    loyalty?: {
     enabled: boolean;
     is_fully_paid: boolean;
     points_awarded: boolean;
@@ -117,6 +117,7 @@ export interface BillFinancialSummary {
     points_redeemed: number;
     previous_points: number;
     current_points_balance: number;
+    total_pending_points?: number;
     message: string;
   };
 }

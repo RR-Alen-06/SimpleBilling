@@ -645,15 +645,21 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                   ) : (
                     <>
                       <div className="flex justify-between font-bold text-amber-700">
-                        <span>Loyalty Points (Pending):</span>
-                        <span>+{summary.loyalty.points_earned} Points</span>
+                        <span>Loyalty Points (This Bill):</span>
+                        <span>+{summary.loyalty.points_earned} Points (Pending)</span>
                       </div>
+                      {summary.loyalty.total_pending_points !== undefined && summary.loyalty.total_pending_points > summary.loyalty.points_earned && (
+                        <div className="flex justify-between text-[10px] font-bold text-amber-900 bg-amber-100/70 px-1.5 py-0.5 rounded border border-amber-300/60">
+                          <span>Total Pending on Account:</span>
+                          <span>⏳ {summary.loyalty.total_pending_points} Points</span>
+                        </div>
+                      )}
                       <div className="flex justify-between text-[10px] text-slate-600">
-                        <span>Available Points:</span>
+                        <span>Available Spendable Balance:</span>
                         <span>{summary.loyalty.current_points_balance} pts</span>
                       </div>
-                      <div className="text-amber-800 text-[9.5px] font-semibold pt-0.5">
-                        ⏳ +{summary.loyalty.points_earned} pts will be credited once this bill is fully paid.
+                      <div className="text-amber-800 text-[9px] font-semibold pt-0.5">
+                        ⏳ Points will be credited once this bill is fully paid.
                       </div>
                     </>
                   )}
@@ -899,9 +905,15 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                     ) : (
                       <div className="flex flex-wrap items-center gap-3">
                         <div className="bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
-                          <span className="text-amber-800 block text-[7.5px] font-bold">Pending</span>
+                          <span className="text-amber-800 block text-[7.5px] font-bold">Pending (This Bill)</span>
                           <span className="font-extrabold text-amber-700 text-xs print:text-[8.5px]">+{summary.loyalty.points_earned} Pts</span>
                         </div>
+                        {summary.loyalty.total_pending_points !== undefined && summary.loyalty.total_pending_points > summary.loyalty.points_earned && (
+                          <div className="bg-amber-100/80 px-2 py-0.5 rounded border border-amber-300">
+                            <span className="text-amber-900 block text-[7.5px] font-bold">Total Pending (Account)</span>
+                            <span className="font-extrabold text-amber-900 text-xs print:text-[8.5px]">⏳ {summary.loyalty.total_pending_points} Pts</span>
+                          </div>
+                        )}
                         <div>
                           <span className="text-slate-500 block text-[7.5px]">Available Balance</span>
                           <span className="font-bold text-slate-800">{summary.loyalty.current_points_balance} pts</span>
