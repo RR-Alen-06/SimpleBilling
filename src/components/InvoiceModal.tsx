@@ -179,7 +179,7 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
   };
 
   const handleShareWhatsAppText = () => {
-    const text = ApiService.generateWhatsAppTextReceipt(bill, summary);
+    const text = ApiService.generateDigitalReceiptText(bill, summary, shop);
     const encoded = encodeURIComponent(text);
     const phone = bill.customer_mobile ? bill.customer_mobile.replace(/[^0-9]/g, '') : '';
     const url = phone ? `https://api.whatsapp.com/send?phone=${phone}&text=${encoded}` : `https://api.whatsapp.com/send?text=${encoded}`;
@@ -188,14 +188,14 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
   };
 
   const handleShareTelegram = () => {
-    const text = ApiService.generateWhatsAppTextReceipt(bill, summary);
+    const text = ApiService.generateDigitalReceiptText(bill, summary, shop);
     const url = `https://t.me/share/url?url=${encodeURIComponent('')}&text=${encodeURIComponent(text)}`;
     window.open(url, '_blank');
     setShareMenuOpen(false);
   };
 
   const handleShareSMS = () => {
-    const text = ApiService.generateWhatsAppTextReceipt(bill, summary);
+    const text = ApiService.generateDigitalReceiptText(bill, summary, shop);
     const phone = bill.customer_mobile ? bill.customer_mobile.replace(/[^0-9]/g, '') : '';
     const url = `sms:${phone}?body=${encodeURIComponent(text)}`;
     window.open(url);
@@ -204,11 +204,11 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
 
   const handleNativeShare = async () => {
     setShareMenuOpen(false);
-    const text = ApiService.generateWhatsAppTextReceipt(bill, summary);
+    const text = ApiService.generateDigitalReceiptText(bill, summary, shop);
     if (typeof navigator !== 'undefined' && navigator.share) {
       try {
         await navigator.share({
-          title: `Bill ${bill.bill_number} - ${shop.shop_name}`,
+          title: `Bill ${bill.bill_number} - ${shop.shop_name || 'Store'}`,
           text: text
         });
         setToastMsg({ text: 'Shared successfully!', type: 'success' });
@@ -246,6 +246,8 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
       if (!result) throw new Error('Could not generate PDF attachment');
 
       const pdfBase64 = result.pdf.output('datauristring');
+      const emailHtml = ApiService.generateEmailHtmlReceipt(bill, summary, shop);
+      const emailText = ApiService.generateDigitalReceiptText(bill, summary, shop);
 
       await emailjs.send(
         serviceId,
@@ -255,13 +257,15 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
           bill_number: bill.bill_number,
           customer_name: bill.customer_name || 'Valued Customer',
           grand_total: bill.grand_total,
-          shop_name: shop.shop_name,
+          shop_name: shop.shop_name || 'Store',
+          message_html: emailHtml,
+          message_text: emailText,
           pdf_attachment: pdfBase64
         },
         publicKey
       );
 
-      setToastMsg({ text: `Email with PDF sent to ${customerEmail}!`, type: 'success' });
+      setToastMsg({ text: `Email with PDF & full invoice sent to ${customerEmail}!`, type: 'success' });
     } catch (err: unknown) {
       console.error('EmailJS send error:', err);
       setToastMsg({ 
@@ -274,7 +278,7 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto print:p-0 print:static print:bg-white print:backdrop-none">
+    <div className="invoice-modal-root fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto print:p-0 print:static print:bg-white print:backdrop-none">
       <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full overflow-hidden my-8 print:shadow-none print:m-0 print:max-w-none print:w-full">
         
         {/* Modal Toolbar (Hidden during print) */}
