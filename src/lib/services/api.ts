@@ -401,29 +401,36 @@ export class ApiService {
       return 0;
     }
 
-    const mode = settings.loyalty?.calculation_mode || 'rate';
+    // 1. PRIMARY: Check and evaluate active database rules in loyalty_rules table
+    const rules = await this.getLoyaltyRules();
+    const activeRules = rules.filter(r => r.enabled);
 
-    // 1. Rate-Based Calculation (e.g. 1 point for every ₹10 spent)
-    if (mode === 'rate') {
-      const earnPoints = Number(settings.loyalty?.earn_points ?? 1);
-      const spendUnit = Number(settings.loyalty?.earn_spend_unit ?? 10);
-      if (spendUnit <= 0) return 0;
+    if (activeRules.length > 0) {
+      // Sort rules by min_bill_amount descending to match the highest qualified tier first
+      const sortedRules = [...activeRules].sort((a, b) => {
+        const minA = Number(a.min_bill_amount || 0);
+        const minB = Number(b.min_bill_amount || 0);
+        if (minB !== minA) return minB - minA;
+        return (a.sort_order || 0) - (b.sort_order || 0);
+      });
 
-      const earned = Math.floor(billAmount / spendUnit) * earnPoints;
-      return Math.max(0, earned);
+      for (const rule of sortedRules) {
+        const min = Number(rule.min_bill_amount || 0);
+        const hasMax = rule.max_bill_amount !== null && rule.max_bill_amount !== undefined && Number(rule.max_bill_amount) > 0;
+        const max = hasMax ? Number(rule.max_bill_amount) : Infinity;
+
+        if (billAmount >= min && billAmount <= max) {
+          return Number(rule.points_earned);
+        }
+      }
     }
 
-    // 2. Tiered Slab Calculation (Range-based slabs in loyalty_rules table)
-    const rules = await this.getLoyaltyRules();
-    const activeRules = rules.filter(r => r.enabled).sort((a, b) => a.sort_order - b.sort_order);
-
-    for (const rule of activeRules) {
-      const min = Number(rule.min_bill_amount || 0);
-      const max = rule.max_bill_amount !== null && rule.max_bill_amount !== undefined ? Number(rule.max_bill_amount) : Infinity;
-
-      if (billAmount >= min && billAmount <= max) {
-        return Number(rule.points_earned);
-      }
+    // 2. FALLBACK: Rate-based calculation if no database rules matched or table is empty
+    const earnPoints = Number(settings.loyalty?.earn_points ?? 1);
+    const spendUnit = Number(settings.loyalty?.earn_spend_unit ?? 10);
+    if (spendUnit > 0) {
+      const earned = Math.floor(billAmount / spendUnit) * earnPoints;
+      return Math.max(0, earned);
     }
 
     return 0;
