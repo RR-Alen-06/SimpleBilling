@@ -53,6 +53,9 @@ export const DEFAULT_SETTINGS: AllSettings = {
   },
   loyalty: {
     enabled: true,
+    calculation_mode: 'rate',
+    earn_points: 1,
+    earn_spend_unit: 10,
     points_required: 10,
     discount_value: 5
   },
@@ -392,6 +395,25 @@ export class ApiService {
 
   static async calculateLoyaltyPointsEarned(billAmount: number): Promise<number> {
     if (billAmount <= 0) return 0;
+    
+    const settings = await this.getSettings();
+    if (settings.loyalty && settings.loyalty.enabled === false) {
+      return 0;
+    }
+
+    const mode = settings.loyalty?.calculation_mode || 'rate';
+
+    // 1. Rate-Based Calculation (e.g. 1 point for every ₹10 spent)
+    if (mode === 'rate') {
+      const earnPoints = Number(settings.loyalty?.earn_points ?? 1);
+      const spendUnit = Number(settings.loyalty?.earn_spend_unit ?? 10);
+      if (spendUnit <= 0) return 0;
+
+      const earned = Math.floor(billAmount / spendUnit) * earnPoints;
+      return Math.max(0, earned);
+    }
+
+    // 2. Tiered Slab Calculation (Range-based slabs in loyalty_rules table)
     const rules = await this.getLoyaltyRules();
     const activeRules = rules.filter(r => r.enabled).sort((a, b) => a.sort_order - b.sort_order);
 
