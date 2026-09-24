@@ -624,7 +624,7 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                   {summary.remaining_balance === 0 || summary.loyalty.is_fully_paid ? (
                     <>
                       <div className="flex justify-between font-bold text-emerald-700">
-                        <span>Loyalty Earned:</span>
+                        <span>Loyalty Points Earned:</span>
                         <span>+{summary.loyalty.points_earned} Points</span>
                       </div>
                       <div className="flex justify-between text-[10px] text-slate-600">
@@ -638,14 +638,24 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                         </div>
                       )}
                       <div className="flex justify-between font-bold pt-0.5 border-t border-slate-200">
-                        <span>Loyalty Balance:</span>
+                        <span>New Loyalty Balance:</span>
                         <span>{summary.loyalty.current_points_balance} pts</span>
                       </div>
                     </>
                   ) : (
-                    <div className="text-amber-800 text-[10px] font-semibold py-1">
-                      ⏳ Loyalty Points will be credited after this bill is fully paid.
-                    </div>
+                    <>
+                      <div className="flex justify-between font-bold text-amber-700">
+                        <span>Loyalty Points (Pending):</span>
+                        <span>+{summary.loyalty.points_earned} Points</span>
+                      </div>
+                      <div className="flex justify-between text-[10px] text-slate-600">
+                        <span>Available Points:</span>
+                        <span>{summary.loyalty.current_points_balance} pts</span>
+                      </div>
+                      <div className="text-amber-800 text-[9.5px] font-semibold pt-0.5">
+                        ⏳ +{summary.loyalty.points_earned} pts will be credited once this bill is fully paid.
+                      </div>
+                    </>
                   )}
                 </div>
               )}
@@ -887,8 +897,18 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                         </div>
                       </div>
                     ) : (
-                      <div className="text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 font-semibold text-[8.5px] print:text-[7px]">
-                        ⏳ Loyalty Points will be credited after this bill is fully paid.
+                      <div className="flex flex-wrap items-center gap-3">
+                        <div className="bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                          <span className="text-amber-800 block text-[7.5px] font-bold">Pending</span>
+                          <span className="font-extrabold text-amber-700 text-xs print:text-[8.5px]">+{summary.loyalty.points_earned} Pts</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-500 block text-[7.5px]">Available Balance</span>
+                          <span className="font-bold text-slate-800">{summary.loyalty.current_points_balance} pts</span>
+                        </div>
+                        <div className="text-amber-800 font-semibold text-[8px] print:text-[6.5px]">
+                          (Credited upon full bill settlement)
+                        </div>
                       </div>
                     )}
                   </div>
