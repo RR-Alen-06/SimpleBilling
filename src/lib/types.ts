@@ -234,8 +234,13 @@ export interface LoyaltyRedemptionRule {
   created_at?: string;
 }
 
+export type LoyaltyCalculationMode = 'rate' | 'tier';
+
 export interface LoyaltySettings {
   enabled: boolean;
+  calculation_mode?: LoyaltyCalculationMode;
+  earn_points?: number;
+  earn_spend_unit?: number;
   points_required: number; // Fallback
   discount_value: number;  // Fallback
 }
