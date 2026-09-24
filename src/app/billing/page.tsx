@@ -1058,9 +1058,23 @@ export default function BillingPage() {
                     />
                   </div>
                   {Number(cashPaid || 0) > roundedTotal && (
-                    <div className="flex justify-between items-center text-[11px] font-bold text-emerald-800 bg-white/80 px-2 py-1 rounded">
-                      <span>Change to Return:</span>
-                      <span className="font-mono text-xs">₹{(Number(cashPaid) - roundedTotal).toFixed(2)}</span>
+                    <div className="bg-indigo-50/90 border border-indigo-200 p-2.5 rounded-lg space-y-1 text-xs">
+                      <div className="flex justify-between items-center text-indigo-950 font-bold">
+                        <span>Excess Paid:</span>
+                        <span className="font-mono font-extrabold text-indigo-700">₹{(Number(cashPaid) - roundedTotal).toFixed(2)}</span>
+                      </div>
+                      {allocatedToPriorBalance > 0 && (
+                        <div className="flex justify-between items-center text-[11px] text-amber-800">
+                          <span>• Applied to Clear Past Dues:</span>
+                          <span className="font-mono font-bold">₹{allocatedToPriorBalance.toFixed(2)}</span>
+                        </div>
+                      )}
+                      {customerAdvanceEarned > 0 && (
+                        <div className="flex justify-between items-center text-[11px] text-indigo-800 font-bold">
+                          <span>• Added to Customer Advance:</span>
+                          <span className="font-mono">+₹{customerAdvanceEarned.toFixed(2)}</span>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
