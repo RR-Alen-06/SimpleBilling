@@ -22,7 +22,8 @@ import {
   Edit2,
   X,
   ToggleLeft,
-  ToggleRight
+  ToggleRight,
+  RefreshCw
 } from 'lucide-react';
 
 export default function SettingsPage() {
@@ -55,6 +56,15 @@ export default function SettingsPage() {
 
   // Loyalty Simulator state
   const [simBillAmount, setSimBillAmount] = useState<number>(250);
+
+  // Loyalty Recalculate State
+  const [recalculatingLoyalty, setRecalculatingLoyalty] = useState(false);
+  const [recalculateSummary, setRecalculateSummary] = useState<{
+    customersProcessed: number;
+    customersUpdated: number;
+    billsUpdated: number;
+    totalActivePoints: number;
+  } | null>(null);
 
   // Status feedback
   const [errorMsg, setErrorMsg] = useState('');
@@ -320,6 +330,26 @@ export default function SettingsPage() {
       await loadSettings();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to clear earning rules');
+    }
+  };
+
+  const handleRecalculateAllCustomerLoyalty = async () => {
+    if (!window.confirm('Recalculate loyalty points for all past bills based on current active rules? This will update customer point balances in Supabase.')) {
+      return;
+    }
+    setErrorMsg('');
+    setSuccessMsg('');
+    setRecalculatingLoyalty(true);
+    setRecalculateSummary(null);
+    try {
+      const res = await ApiService.recalculateAllCustomerLoyaltyPoints();
+      setRecalculateSummary(res);
+      setSuccessMsg(`Reconciliation complete! Checked ${res.customersProcessed} customers (${res.customersUpdated} balances updated, ${res.billsUpdated} bills updated).`);
+      await loadSettings();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to recalculate loyalty points');
+    } finally {
+      setRecalculatingLoyalty(false);
     }
   };
 
@@ -1049,6 +1079,51 @@ export default function SettingsPage() {
                       </tbody>
                     </table>
                   </div>
+                </div>
+
+                {/* HISTORICAL RECONCILIATION & SYNC */}
+                <div className="bg-gradient-to-r from-purple-50 via-indigo-50 to-purple-50 p-5 rounded-2xl border border-purple-200/80 shadow-xs space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center space-x-2">
+                        <span className="bg-purple-600 text-white text-[10px] font-extrabold uppercase px-2 py-0.5 rounded tracking-wide">Sync Engine</span>
+                        <h3 className="text-sm font-bold text-slate-900">Recalculate & Sync All Customer Loyalty Points</h3>
+                      </div>
+                      <p className="text-xs text-slate-600 max-w-xl">
+                        Audit and recalculate all past customer bills according to current active loyalty rules. Automatically reconciles customer point balances and bill point allocations in Supabase.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRecalculateAllCustomerLoyalty}
+                      disabled={recalculatingLoyalty || saving}
+                      className="bg-purple-700 hover:bg-purple-800 active:scale-98 disabled:opacity-50 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow transition flex items-center justify-center space-x-2 shrink-0 cursor-pointer"
+                    >
+                      <RefreshCw size={15} className={recalculatingLoyalty ? 'animate-spin' : ''} />
+                      <span>{recalculatingLoyalty ? 'Recalculating & Syncing...' : 'Recalculate & Sync Points'}</span>
+                    </button>
+                  </div>
+
+                  {recalculateSummary && (
+                    <div className="bg-white/90 border border-purple-200 rounded-xl p-3.5 grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+                      <div className="border-r border-purple-100 last:border-0">
+                        <p className="text-[10px] uppercase font-bold text-slate-400">Customers Checked</p>
+                        <p className="text-base font-extrabold text-slate-900">{recalculateSummary.customersProcessed}</p>
+                      </div>
+                      <div className="border-r border-purple-100 last:border-0">
+                        <p className="text-[10px] uppercase font-bold text-slate-400">Balances Corrected</p>
+                        <p className="text-base font-extrabold text-purple-700">{recalculateSummary.customersUpdated}</p>
+                      </div>
+                      <div className="border-r border-purple-100 last:border-0">
+                        <p className="text-[10px] uppercase font-bold text-slate-400">Bills Corrected</p>
+                        <p className="text-base font-extrabold text-indigo-700">{recalculateSummary.billsUpdated}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] uppercase font-bold text-slate-400">Total Active Points</p>
+                        <p className="text-base font-extrabold text-emerald-600">{recalculateSummary.totalActivePoints} Pts</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="pt-3 border-t flex justify-end">

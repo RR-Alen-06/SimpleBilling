@@ -1387,6 +1387,125 @@ export class ApiService {
     return totalPointsToReverse;
   }
 
+  static async recalculateAllCustomerLoyaltyPoints(userName = 'Super Admin'): Promise<{
+    customersProcessed: number;
+    customersUpdated: number;
+    billsUpdated: number;
+    totalActivePoints: number;
+  }> {
+    if (!isSupabaseConfigured) {
+      throw new Error('Supabase is not configured.');
+    }
+
+    // 1. Fetch all customers
+    const { data: customers, error: custErr } = await supabase.from('customers').select('*');
+    if (custErr) throw new Error(custErr.message);
+
+    // 2. Fetch all bills
+    const { data: bills, error: billsErr } = await supabase.from('bills').select('*');
+    if (billsErr) throw new Error(billsErr.message);
+
+    // 3. Fetch all payments
+    const { data: payments, error: payErr } = await supabase.from('payments').select('*');
+    if (payErr) throw new Error(payErr.message);
+
+    // 4. Fetch all loyalty transactions
+    const { data: transactions, error: txErr } = await supabase.from('loyalty_transactions').select('*');
+    if (txErr) throw new Error(txErr.message);
+
+    let customersUpdated = 0;
+    let billsUpdated = 0;
+    let totalActivePoints = 0;
+
+    for (const cust of (customers || [])) {
+      const custBills = (bills || []).filter(b => b.customer_id === cust.id && b.status !== 'CANCELLED');
+      const custTxs = (transactions || []).filter(t => t.customer_id === cust.id);
+
+      let customerEarnedPoints = 0;
+
+      for (const bill of custBills) {
+        const grandTotal = Number(bill.grand_total || 0);
+        const correctEarned = await this.calculateLoyaltyPointsEarned(grandTotal);
+
+        // Update bill loyalty_points_earned if changed
+        if (Number(bill.loyalty_points_earned || 0) !== correctEarned) {
+          await supabase.from('bills').update({ loyalty_points_earned: correctEarned }).eq('id', bill.id);
+          billsUpdated++;
+        }
+
+        // Determine if bill is fully paid
+        const billPayments = (payments || []).filter(p => p.bill_id === bill.id);
+        const directPaymentsSum = billPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+        const totalPaidForBill = Number(bill.advance_used || 0) + Math.max(Number(bill.paid_total || 0) - Number(bill.advance_used || 0), directPaymentsSum);
+        const isFullyPaid = totalPaidForBill >= grandTotal - 0.01;
+
+        // Existing EARN transaction for this bill
+        const earnTx = custTxs.find(t => t.bill_id === bill.id && t.type === 'EARN');
+
+        if (isFullyPaid) {
+          customerEarnedPoints += correctEarned;
+
+          if (earnTx) {
+            if (Number(earnTx.points || 0) !== correctEarned) {
+              await supabase.from('loyalty_transactions').update({
+                points: correctEarned,
+                notes: `Award Reason: Bill Fully Paid (Reconciled) - ${bill.bill_number}`
+              }).eq('id', earnTx.id);
+            }
+          } else if (correctEarned > 0) {
+            const loySeq = await this.getNextSequence('LOYALTY');
+            await supabase.from('loyalty_transactions').insert([{
+              transaction_number: loySeq,
+              customer_id: cust.id,
+              bill_id: bill.id,
+              points: correctEarned,
+              type: 'EARN',
+              created_at: bill.created_at || new Date().toISOString(),
+              notes: `Award Reason: Bill Fully Paid - ${bill.bill_number}`
+            }]);
+          }
+        } else {
+          // If not fully paid, EARN transaction should not exist or be removed
+          if (earnTx) {
+            await supabase.from('loyalty_transactions').delete().eq('id', earnTx.id);
+          }
+        }
+      }
+
+      // Calculate redeemed points from REDEEM transactions
+      const redeemTxs = custTxs.filter(t => t.type === 'REDEEM');
+      const totalRedeemed = redeemTxs.reduce((sum, t) => sum + Math.abs(Number(t.points || 0)), 0);
+
+      // Calculate manual adjustments (not bill-related)
+      const manualAdjustTxs = custTxs.filter(t => t.type === 'ADJUST' && !t.bill_id);
+      const totalAdjustments = manualAdjustTxs.reduce((sum, t) => sum + Number(t.points || 0), 0);
+
+      const finalLoyaltyPoints = Math.max(0, customerEarnedPoints - totalRedeemed + totalAdjustments);
+      totalActivePoints += finalLoyaltyPoints;
+
+      if (Number(cust.loyalty_points || 0) !== finalLoyaltyPoints) {
+        await supabase.from('customers').update({
+          loyalty_points: finalLoyaltyPoints
+        }).eq('id', cust.id);
+        customersUpdated++;
+      }
+    }
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'RECALCULATE_LOYALTY_POINTS',
+      entity: 'All Customers',
+      new_value: `Recalculated: ${customers?.length || 0} customers checked, ${customersUpdated} customer balances updated, ${billsUpdated} bills updated`
+    });
+
+    return {
+      customersProcessed: customers?.length || 0,
+      customersUpdated,
+      billsUpdated,
+      totalActivePoints
+    };
+  }
+
   static async getBillFinancialSummary(bill: Bill): Promise<BillFinancialSummary> {
     const defaultSummary: BillFinancialSummary = {
       previous_outstanding: 0,
