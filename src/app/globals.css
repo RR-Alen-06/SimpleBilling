@@ -72,7 +72,7 @@
   }
 
   /* When an invoice or receipt modal is open, completely hide all background page content */
-  main > div > *:not(.invoice-modal-root):not(.payment-receipt-modal-root):not(.statement-modal-root) {
+  body:has(.invoice-modal-root, .payment-receipt-modal-root, .statement-modal-root) main > div > *:not(.invoice-modal-root):not(.payment-receipt-modal-root):not(.statement-modal-root) {
     display: none !important;
   }
 

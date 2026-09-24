@@ -2,10 +2,11 @@
 
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '@/lib/services/api';
-import { Bill, CustomerSummary, DateFilterOption } from '@/lib/types';
+import { Bill, CustomerSummary, DateFilterOption, AllSettings } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { downloadCSV } from '@/lib/utils/csv';
 import { REPORTS_DATE_FILTER_BUTTONS } from '@/lib/constants/filters';
+import { BusinessReportGenerator } from '@/lib/services/businessReportGenerator';
 import { 
   BarChart3, 
   Printer, 
@@ -17,14 +18,19 @@ import {
   CreditCard,
   Wallet,
   TrendingUp,
-  Package
+  Package,
+  Download,
+  FileText,
+  Loader2
 } from 'lucide-react';
 
 export default function ReportsPage() {
   const [activeTab, setActiveTab] = useState<'sales' | 'dues' | 'items'>('sales');
   const [bills, setBills] = useState<Bill[]>([]);
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
+  const [settings, setSettings] = useState<AllSettings | null>(null);
   const [loading, setLoading] = useState(true);
+  const [generatingPdf, setGeneratingPdf] = useState(false);
 
   // Date Filter State
   const [dateFilter, setDateFilter] = useState<DateFilterOption>('today');
@@ -34,12 +40,14 @@ export default function ReportsPage() {
   const loadReportData = async () => {
     setLoading(true);
     try {
-      const [filteredBills, custSummaries] = await Promise.all([
+      const [filteredBills, custSummaries, fetchedSettings] = await Promise.all([
         ApiService.getBillsByDateRange(dateFilter, { from: customFrom, to: customTo }),
-        ApiService.getCustomerSummaries()
+        ApiService.getCustomerSummaries(),
+        ApiService.getSettings()
       ]);
       setBills(filteredBills);
       setCustomers(custSummaries);
+      setSettings(fetchedSettings);
     } catch (err) {
       console.error('Error fetching report data:', err);
     } finally {
@@ -81,9 +89,118 @@ export default function ReportsPage() {
   });
   const itemSales = Array.from(itemMap.values()).sort((a, b) => b.total - a.total);
 
+  const getFilterLabel = () => {
+    if (dateFilter === 'today') return 'Today';
+    if (dateFilter === 'yesterday') return 'Yesterday';
+    if (dateFilter === 'weekly') return 'Last 7 Days';
+    if (dateFilter === 'monthly') return 'This Month';
+    if (dateFilter === 'quarterly') return 'This Quarter';
+    if (dateFilter === 'yearly') return 'This Year';
+    if (dateFilter === 'financial_year') return 'Financial Year (FY)';
+    if (dateFilter === 'custom') return `${customFrom || 'Start'} to ${customTo || 'End'}`;
+    return 'All Time';
+  };
 
+  // Full Executive PDF Report Generator
+  const handleExportPdfReport = () => {
+    setGeneratingPdf(true);
+    try {
+      const periodLabel = getFilterLabel();
+      const generatedAt = new Date().toLocaleString('en-IN', {
+        dateStyle: 'medium',
+        timeStyle: 'short'
+      });
 
-  const handleExportCSV = () => {
+      const doc = BusinessReportGenerator.generateReportPdf({
+        shop_settings: settings?.shop || {},
+        period_label: periodLabel,
+        generated_at: generatedAt,
+        kpi: {
+          total_sales: totalSales,
+          total_paid: totalPaid,
+          cash_total: cashTotal,
+          upi_total: upiTotal,
+          pending_total: pendingTotal,
+          total_bills: bills.length,
+          avg_bill_value: avgBill,
+          total_customers_due: dueCustomers.length,
+          total_dues_amount: totalDuesAmount
+        },
+        bills,
+        item_sales: itemSales,
+        due_customers: dueCustomers
+      });
+
+      const filename = `Business_Report_${dateFilter}_${new Date().toISOString().split('T')[0]}.pdf`;
+      doc.save(filename);
+    } catch (err) {
+      console.error('Failed to export PDF report:', err);
+    } finally {
+      setGeneratingPdf(false);
+    }
+  };
+
+  // Full Multi-Section Consolidated CSV Export
+  const handleExportFullCSV = () => {
+    const filterLabel = getFilterLabel();
+    const dateStr = new Date().toISOString().split('T')[0];
+    
+    const lines: string[] = [];
+    
+    // Header
+    lines.push(`"${(settings?.shop?.shop_name || 'SimpleBilling Center').toUpperCase()} - COMPLETE BUSINESS REPORT"`);
+    lines.push(`"Report Period: ${filterLabel} | Generated: ${new Date().toLocaleString('en-IN')}"`);
+    lines.push('');
+    
+    // 1. KPI Summary
+    lines.push('"--- 1. EXECUTIVE FINANCIAL SUMMARY ---"');
+    lines.push('"Metric","Value (INR / Count)"');
+    lines.push(`"Total Revenue (INR)","${totalSales.toFixed(2)}"`);
+    lines.push(`"Total Amount Collected (INR)","${totalPaid.toFixed(2)}"`);
+    lines.push(`"Cash Collections (INR)","${cashTotal.toFixed(2)}"`);
+    lines.push(`"UPI Collections (INR)","${upiTotal.toFixed(2)}"`);
+    lines.push(`"Period Unpaid Dues (INR)","${pendingTotal.toFixed(2)}"`);
+    lines.push(`"Total Invoices Generated","${bills.length}"`);
+    lines.push(`"Average Bill Value (INR)","${avgBill.toFixed(2)}"`);
+    lines.push(`"Customers with Pending Dues","${dueCustomers.length}"`);
+    lines.push(`"Total Ledger Dues Outstanding (INR)","${totalDuesAmount.toFixed(2)}"`);
+    lines.push('');
+
+    // 2. Sales Invoices Register
+    lines.push(`"--- 2. SALES INVOICES REGISTER (${bills.length} Records) ---"`);
+    lines.push('"Bill Number","Date Time","Customer Name","Mobile","Payment Mode","Grand Total (INR)","Paid Total (INR)","Status"');
+    bills.forEach(b => {
+      const isPaid = Number(b.paid_total || 0) >= Number(b.grand_total || 0) - 0.01;
+      lines.push(`"${b.bill_number}","${new Date(b.created_at).toLocaleString('en-IN')}","${(b.customer_name || 'Walk-in').replace(/"/g, '""')}","${b.customer_mobile || ''}","${b.payment_method || 'Cash'}","${Number(b.grand_total || 0).toFixed(2)}","${Number(b.paid_total || 0).toFixed(2)}","${isPaid ? 'Paid' : 'Pending'}"`);
+    });
+    lines.push('');
+
+    // 3. Item Sales Volume
+    lines.push(`"--- 3. ITEM & SERVICE SALES VOLUME (${itemSales.length} Products) ---"`);
+    lines.push('"Product / Service Name","Quantity Sold","Revenue Generated (INR)"');
+    itemSales.forEach(it => {
+      lines.push(`"${it.name.replace(/"/g, '""')}","${it.qty}","${it.total.toFixed(2)}"`);
+    });
+    lines.push('');
+
+    // 4. Customer Outstanding Dues Ledger
+    lines.push(`"--- 4. CUSTOMER OUTSTANDING DUES (${dueCustomers.length} Accounts) ---"`);
+    lines.push('"Customer Name","Mobile","Email","Total Billed (INR)","Total Paid (INR)","Balance Due (INR)","Advance Balance (INR)"');
+    dueCustomers.forEach(c => {
+      lines.push(`"${c.name.replace(/"/g, '""')}","${c.mobile || ''}","${c.email || ''}","${Number(c.total_billed).toFixed(2)}","${Number(c.total_paid).toFixed(2)}","${Number(c.balance_due).toFixed(2)}","${Number(c.advance_balance).toFixed(2)}"`);
+    });
+
+    const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + encodeURIComponent(lines.join('\n'));
+    const link = document.createElement('a');
+    link.setAttribute('href', csvContent);
+    link.setAttribute('download', `Full_Business_Report_${dateFilter}_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Tab-Specific CSV Export
+  const handleExportTabCSV = () => {
     const filterLabel = dateFilter.replace('_', '-');
     if (activeTab === 'sales') {
       const headers = ['Bill Number', 'Date Time', 'Customer', 'Customer Mobile', 'Payment Method', 'Cash (INR)', 'UPI (INR)', 'Grand Total (INR)', 'Paid Total (INR)', 'Status'];
@@ -92,14 +209,14 @@ export default function ReportsPage() {
         new Date(b.created_at).toLocaleString('en-IN'),
         b.customer_name || 'Walk-in',
         b.customer_mobile || '',
-        b.payment_method,
+        b.payment_method || 'Cash',
         b.cash_paid || 0,
         b.upi_paid || 0,
         b.grand_total,
         b.paid_total,
         Number(b.paid_total) >= Number(b.grand_total) ? 'Paid' : 'Pending'
       ]);
-      downloadCSV(`Sales_Report_${filterLabel}`, headers, rows);
+      downloadCSV(`Sales_Register_${filterLabel}`, headers, rows);
     } else if (activeTab === 'items') {
       const headers = ['Product / Service Name', 'Quantity Sold', 'Revenue Generated (INR)'];
       const rows = itemSales.map(it => [
@@ -107,7 +224,7 @@ export default function ReportsPage() {
         it.qty,
         it.total.toFixed(2)
       ]);
-      downloadCSV(`Item_Sales_Report_${filterLabel}`, headers, rows);
+      downloadCSV(`Item_Sales_Volume_${filterLabel}`, headers, rows);
     } else {
       const headers = ['Customer Name', 'Mobile Number', 'Email', 'Total Billed (INR)', 'Total Paid (INR)', 'Balance Due (INR)'];
       const rows = dueCustomers.map(c => [
@@ -118,7 +235,7 @@ export default function ReportsPage() {
         c.total_paid,
         c.balance_due
       ]);
-      downloadCSV(`Customer_Due_List_${new Date().toISOString().split('T')[0]}`, headers, rows);
+      downloadCSV(`Customer_Dues_Ledger_${new Date().toISOString().split('T')[0]}`, headers, rows);
     }
   };
 
@@ -129,7 +246,7 @@ export default function ReportsPage() {
   const dateFilterButtons = REPORTS_DATE_FILTER_BUTTONS;
 
   return (
-    <div className="space-y-6">
+    <div className="reports-page-root space-y-6">
       <SupabaseBanner />
 
       {/* Header Toolbar */}
@@ -139,23 +256,59 @@ export default function ReportsPage() {
             <BarChart3 className="text-blue-600" size={26} />
             <span>Business Reports & Analytics</span>
           </h1>
-          <p className="text-sm text-slate-500 mt-0.5">Filter sales by date range, analyze item volume, and track customer dues</p>
+          <p className="text-sm text-slate-500 mt-0.5">Comprehensive sales registers, volume analytics, and customer dues tracking</p>
         </div>
 
-        <div className="flex items-center space-x-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Export Vector PDF Report Button */}
           <button
-            onClick={handleExportCSV}
-            className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs px-4 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5"
+            onClick={handleExportPdfReport}
+            disabled={loading || generatingPdf}
+            className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-xs px-3.5 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5 cursor-pointer"
+            title="Download Executive Vector PDF Report"
           >
-            <FileSpreadsheet size={16} />
-            <span>Export CSV</span>
+            {generatingPdf ? (
+              <>
+                <Loader2 size={15} className="animate-spin" />
+                <span>Generating PDF...</span>
+              </>
+            ) : (
+              <>
+                <FileText size={15} />
+                <span>Download PDF Report</span>
+              </>
+            )}
           </button>
+
+          {/* Full Report CSV Button */}
+          <button
+            onClick={handleExportFullCSV}
+            disabled={loading}
+            className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs px-3.5 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5 cursor-pointer"
+            title="Export Full Multi-Section Business Report (CSV)"
+          >
+            <FileSpreadsheet size={15} />
+            <span>Export Full CSV</span>
+          </button>
+
+          {/* Tab Specific CSV */}
+          <button
+            onClick={handleExportTabCSV}
+            disabled={loading}
+            className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs px-3 py-2.5 rounded-lg border border-slate-300 transition flex items-center space-x-1 cursor-pointer"
+            title="Export Active Tab Only (CSV)"
+          >
+            <Download size={14} />
+            <span>Active Tab CSV</span>
+          </button>
+
+          {/* Print Report */}
           <button
             onClick={handlePrintReport}
-            className="bg-slate-800 hover:bg-slate-700 text-white font-semibold text-xs px-4 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5"
+            className="bg-slate-800 hover:bg-slate-700 text-white font-semibold text-xs px-3.5 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5 cursor-pointer"
           >
-            <Printer size={16} />
-            <span>Print Report</span>
+            <Printer size={15} />
+            <span>Print</span>
           </button>
         </div>
       </div>
