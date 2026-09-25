@@ -9,7 +9,6 @@ import {
   Mail,
   AlertTriangle,
   CheckCircle2,
-  KeyRound,
   ShieldCheck,
   ArrowRight,
   Loader2,

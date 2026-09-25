@@ -687,7 +687,6 @@ export class ApiService {
     if (customers.length === 0) return [];
 
     const { data: bills } = await supabase.from('bills').select('customer_id, grand_total, paid_total');
-    const { data: payments } = await supabase.from('payments').select('customer_id, amount, bill_id');
 
     return customers.map(cust => {
       const custBills = bills?.filter(b => b.customer_id === cust.id) || [];

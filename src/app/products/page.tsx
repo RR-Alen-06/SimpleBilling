@@ -15,16 +15,13 @@ import {
   AlertTriangle, 
   CheckCircle2, 
   X,
-  TrendingUp,
   BarChart2,
   Layers,
   Sparkles,
   Calendar,
   IndianRupee,
   ShoppingCart,
-  Tag,
   FolderPlus,
-  ArrowRight,
   Filter
 } from 'lucide-react';
 

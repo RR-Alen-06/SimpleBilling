@@ -22,7 +22,6 @@ import {
   Download,
   FileText,
   Loader2,
-  PieChart,
   DollarSign,
   Sparkles
 } from 'lucide-react';

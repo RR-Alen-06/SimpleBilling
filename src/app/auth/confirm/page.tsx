@@ -6,11 +6,8 @@ import { supabase, isSupabaseConfigured } from '@/lib/supabase/client';
 import {
   CheckCircle2,
   AlertTriangle,
-  ShieldCheck,
-  ArrowRight,
   Loader2,
   RefreshCw,
-  KeyRound,
   LogIn
 } from 'lucide-react';
 import Link from 'next/link';
