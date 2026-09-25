@@ -17,7 +17,7 @@ import {
   ChevronDown, 
   Loader2
 } from 'lucide-react';
-import html2canvas from 'html2canvas';
+import { InvoicePdfGenerator } from '@/lib/services/invoicePdfGenerator';
 import { jsPDF } from 'jspdf';
 import emailjs from '@emailjs/browser';
 
@@ -130,36 +130,12 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
   };
 
   const generatePdfInstance = async (): Promise<{ pdf: jsPDF; filename: string } | null> => {
-    if (!invoiceRef.current) return null;
-    const element = invoiceRef.current;
-
-    const canvas = await html2canvas(element, {
-      scale: 2,
-      useCORS: true,
-      logging: false,
-      backgroundColor: '#ffffff'
-    });
-
-    const imgData = canvas.toDataURL('image/png');
-    let pdf: jsPDF;
-
-    if (printFormat === 'a4') {
-      pdf = new jsPDF('p', 'mm', 'a4');
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, Math.min(pdfHeight, pdf.internal.pageSize.getHeight()));
-    } else if (printFormat === 'thermal-80') {
-      const heightMm = (canvas.height * 80) / canvas.width;
-      pdf = new jsPDF('p', 'mm', [80, heightMm]);
-      pdf.addImage(imgData, 'PNG', 0, 0, 80, heightMm);
-    } else { // thermal-58
-      const heightMm = (canvas.height * 58) / canvas.width;
-      pdf = new jsPDF('p', 'mm', [58, heightMm]);
-      pdf.addImage(imgData, 'PNG', 0, 0, 58, heightMm);
+    try {
+      return InvoicePdfGenerator.generateInvoicePdf(bill, summary, shop, printFormat);
+    } catch (err) {
+      console.error('Vector PDF generation error:', err);
+      return null;
     }
-
-    const filename = `Bill-${bill.bill_number}.pdf`;
-    return { pdf, filename };
   };
 
   const handleDownloadPDF = async () => {
@@ -179,7 +155,7 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
   };
 
   const handleShareWhatsAppText = () => {
-    const text = ApiService.generateWhatsAppTextReceipt(bill, summary);
+    const text = ApiService.generateDigitalReceiptText(bill, summary, shop);
     const encoded = encodeURIComponent(text);
     const phone = bill.customer_mobile ? bill.customer_mobile.replace(/[^0-9]/g, '') : '';
     const url = phone ? `https://api.whatsapp.com/send?phone=${phone}&text=${encoded}` : `https://api.whatsapp.com/send?text=${encoded}`;
@@ -188,14 +164,14 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
   };
 
   const handleShareTelegram = () => {
-    const text = ApiService.generateWhatsAppTextReceipt(bill, summary);
+    const text = ApiService.generateDigitalReceiptText(bill, summary, shop);
     const url = `https://t.me/share/url?url=${encodeURIComponent('')}&text=${encodeURIComponent(text)}`;
     window.open(url, '_blank');
     setShareMenuOpen(false);
   };
 
   const handleShareSMS = () => {
-    const text = ApiService.generateWhatsAppTextReceipt(bill, summary);
+    const text = ApiService.generateDigitalReceiptText(bill, summary, shop);
     const phone = bill.customer_mobile ? bill.customer_mobile.replace(/[^0-9]/g, '') : '';
     const url = `sms:${phone}?body=${encodeURIComponent(text)}`;
     window.open(url);
@@ -204,11 +180,11 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
 
   const handleNativeShare = async () => {
     setShareMenuOpen(false);
-    const text = ApiService.generateWhatsAppTextReceipt(bill, summary);
+    const text = ApiService.generateDigitalReceiptText(bill, summary, shop);
     if (typeof navigator !== 'undefined' && navigator.share) {
       try {
         await navigator.share({
-          title: `Bill ${bill.bill_number} - ${shop.shop_name}`,
+          title: `Bill ${bill.bill_number} - ${shop.shop_name || 'Store'}`,
           text: text
         });
         setToastMsg({ text: 'Shared successfully!', type: 'success' });
@@ -246,6 +222,8 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
       if (!result) throw new Error('Could not generate PDF attachment');
 
       const pdfBase64 = result.pdf.output('datauristring');
+      const emailHtml = ApiService.generateEmailHtmlReceipt(bill, summary, shop);
+      const emailText = ApiService.generateDigitalReceiptText(bill, summary, shop);
 
       await emailjs.send(
         serviceId,
@@ -255,13 +233,15 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
           bill_number: bill.bill_number,
           customer_name: bill.customer_name || 'Valued Customer',
           grand_total: bill.grand_total,
-          shop_name: shop.shop_name,
+          shop_name: shop.shop_name || 'Store',
+          message_html: emailHtml,
+          message_text: emailText,
           pdf_attachment: pdfBase64
         },
         publicKey
       );
 
-      setToastMsg({ text: `Email with PDF sent to ${customerEmail}!`, type: 'success' });
+      setToastMsg({ text: `Email with PDF & full invoice sent to ${customerEmail}!`, type: 'success' });
     } catch (err: unknown) {
       console.error('EmailJS send error:', err);
       setToastMsg({ 
@@ -274,7 +254,7 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto print:p-0 print:static print:bg-white print:backdrop-none">
+    <div className="invoice-modal-root fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto print:p-0 print:static print:bg-white print:backdrop-none">
       <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full overflow-hidden my-8 print:shadow-none print:m-0 print:max-w-none print:w-full">
         
         {/* Modal Toolbar (Hidden during print) */}
@@ -578,6 +558,10 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
               {/* 2. Payment Summary */}
               <div className="py-2 border-b border-dashed border-slate-400 text-[11px] space-y-0.5">
                 <div className="text-center font-bold uppercase text-[10px] text-slate-700 tracking-wider pb-0.5">--- PAYMENT SUMMARY ---</div>
+                <div className="flex justify-between font-semibold">
+                  <span>Payment Mode:</span>
+                  <span className="uppercase font-bold">{bill.payment_method || 'Cash'}</span>
+                </div>
                 <div className="flex justify-between">
                   <span>Cash Paid:</span>
                   <span>₹{summary.cash_paid.toFixed(2)}</span>
@@ -607,6 +591,12 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                   <span>Net Account Balance Due:</span>
                   <span>₹{summary.remaining_balance.toFixed(2)}</span>
                 </div>
+                {Number(bill.advance_earned || 0) > 0 && (
+                  <div className="flex justify-between font-bold text-indigo-700">
+                    <span>Advance Credited (This Bill):</span>
+                    <span>+₹{Number(bill.advance_earned).toFixed(2)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span>Customer Advance Bal:</span>
                   <span>₹{summary.remaining_advance_balance.toFixed(2)}</span>
@@ -620,7 +610,7 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                   {summary.remaining_balance === 0 || summary.loyalty.is_fully_paid ? (
                     <>
                       <div className="flex justify-between font-bold text-emerald-700">
-                        <span>Loyalty Earned:</span>
+                        <span>Loyalty Points Earned:</span>
                         <span>+{summary.loyalty.points_earned} Points</span>
                       </div>
                       <div className="flex justify-between text-[10px] text-slate-600">
@@ -634,14 +624,30 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                         </div>
                       )}
                       <div className="flex justify-between font-bold pt-0.5 border-t border-slate-200">
-                        <span>Loyalty Balance:</span>
+                        <span>New Loyalty Balance:</span>
                         <span>{summary.loyalty.current_points_balance} pts</span>
                       </div>
                     </>
                   ) : (
-                    <div className="text-amber-800 text-[10px] font-semibold py-1">
-                      ⏳ Loyalty Points will be credited after this bill is fully paid.
-                    </div>
+                    <>
+                      <div className="flex justify-between font-bold text-amber-700">
+                        <span>Loyalty Points (This Bill):</span>
+                        <span>+{summary.loyalty.points_earned} Points (Pending)</span>
+                      </div>
+                      {summary.loyalty.total_pending_points !== undefined && summary.loyalty.total_pending_points > summary.loyalty.points_earned && (
+                        <div className="flex justify-between text-[10px] font-bold text-amber-900 bg-amber-100/70 px-1.5 py-0.5 rounded border border-amber-300/60">
+                          <span>Total Pending on Account:</span>
+                          <span>⏳ {summary.loyalty.total_pending_points} Points</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between text-[10px] text-slate-600">
+                        <span>Available Spendable Balance:</span>
+                        <span>{summary.loyalty.current_points_balance} pts</span>
+                      </div>
+                      <div className="text-amber-800 text-[9px] font-semibold pt-0.5">
+                        ⏳ Points will be credited once this bill is fully paid.
+                      </div>
+                    </>
                   )}
                 </div>
               )}
@@ -701,7 +707,17 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                 </div>
                 <div className="text-right">
                   <span className="text-slate-400 block uppercase font-bold text-[10px] print:text-[7.5px] tracking-wider">Payment Mode:</span>
-                  <p className="text-sm print:text-xs font-bold text-slate-800 uppercase mt-0.5">{bill.payment_method || 'Cash'}</p>
+                  <p className="text-sm print:text-xs font-bold text-slate-800 uppercase mt-0.5">
+                    {bill.payment_method === 'Split Payment' ? (
+                      <span>Split (Cash: ₹{summary.cash_paid.toFixed(2)} + UPI: ₹{summary.upi_paid.toFixed(2)})</span>
+                    ) : bill.payment_method === 'Advance Used' ? (
+                      <span>Advance Used (₹{summary.advance_used.toFixed(2)})</span>
+                    ) : bill.payment_method === 'Pay Later' ? (
+                      <span className="text-amber-700">Credit / Pay Later (Khata)</span>
+                    ) : (
+                      <span>{bill.payment_method || 'Cash'}</span>
+                    )}
+                  </p>
                   <p className="text-slate-600 font-medium">Total Paid Now: ₹{summary.total_paid.toFixed(2)}</p>
                 </div>
               </div>
@@ -836,6 +852,12 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                     <p className="text-[9px] print:text-[7px] text-right font-medium">
                       Status : {summary.payment_status}
                     </p>
+                    {Number(bill.advance_earned || 0) > 0 && (
+                      <div className="flex justify-between text-indigo-700 font-bold">
+                        <span>Advance Credited:</span>
+                        <span>+₹{Number(bill.advance_earned).toFixed(2)}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between text-slate-600 pt-0.5 border-t border-slate-200/60">
                       <span>Customer Advance:</span>
                       <span className="font-semibold text-slate-800">₹{summary.remaining_advance_balance.toFixed(2)}</span>
@@ -873,8 +895,24 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                         </div>
                       </div>
                     ) : (
-                      <div className="text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 font-semibold text-[8.5px] print:text-[7px]">
-                        ⏳ Loyalty Points will be credited after this bill is fully paid.
+                      <div className="flex flex-wrap items-center gap-3">
+                        <div className="bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                          <span className="text-amber-800 block text-[7.5px] font-bold">Pending (This Bill)</span>
+                          <span className="font-extrabold text-amber-700 text-xs print:text-[8.5px]">+{summary.loyalty.points_earned} Pts</span>
+                        </div>
+                        {summary.loyalty.total_pending_points !== undefined && summary.loyalty.total_pending_points > summary.loyalty.points_earned && (
+                          <div className="bg-amber-100/80 px-2 py-0.5 rounded border border-amber-300">
+                            <span className="text-amber-900 block text-[7.5px] font-bold">Total Pending (Account)</span>
+                            <span className="font-extrabold text-amber-900 text-xs print:text-[8.5px]">⏳ {summary.loyalty.total_pending_points} Pts</span>
+                          </div>
+                        )}
+                        <div>
+                          <span className="text-slate-500 block text-[7.5px]">Available Balance</span>
+                          <span className="font-bold text-slate-800">{summary.loyalty.current_points_balance} pts</span>
+                        </div>
+                        <div className="text-amber-800 font-semibold text-[8px] print:text-[6.5px]">
+                          (Credited upon full bill settlement)
+                        </div>
                       </div>
                     )}
                   </div>

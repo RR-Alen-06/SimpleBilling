@@ -135,11 +135,28 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
 
     setSubmitting(true);
     try {
+      const curDue = Math.max(0, runningBalance);
+      const dSettled = Math.min(curDue, amt);
+      const aCredited = Math.max(0, amt - curDue);
+
+      let allocNote = '';
+      if (dSettled > 0 && aCredited > 0) {
+        allocNote = `[Dues Settled: ₹${dSettled.toFixed(2)} | Advance Credited: ₹${aCredited.toFixed(2)}]`;
+      } else if (aCredited > 0) {
+        allocNote = `[Advance Credited: ₹${aCredited.toFixed(2)}]`;
+      } else if (dSettled > 0) {
+        allocNote = `[Dues Settled: ₹${dSettled.toFixed(2)}]`;
+      }
+
+      const finalNotes = paymentNotes.trim()
+        ? `${paymentNotes.trim()} ${allocNote}`
+        : allocNote || undefined;
+
       await ApiService.recordCustomerPayment({
         customer_id: customerId,
         amount: amt,
         payment_method: paymentMethod,
-        notes: paymentNotes.trim() || undefined
+        notes: finalNotes
       });
       setSuccessMsg('Payment recorded successfully.');
       setShowPaymentModal(false);
@@ -406,6 +423,30 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
                   className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
+
+              {/* LIVE ALLOCATION PREVIEW */}
+              {Number(paymentAmount || 0) > 0 && (
+                <div className="bg-indigo-50/70 border border-indigo-200 rounded-lg p-2.5 space-y-1 text-xs">
+                  <div className="flex justify-between items-center text-indigo-950 font-bold">
+                    <span>Payment Allocation:</span>
+                    <span className="font-mono">₹{Number(paymentAmount).toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-slate-700 text-[11px]">
+                    <span>• Applied to Dues:</span>
+                    <span className="font-mono font-bold text-emerald-700">
+                      ₹{Math.min(Math.max(0, runningBalance), Number(paymentAmount)).toFixed(2)}
+                    </span>
+                  </div>
+                  {Number(paymentAmount) > Math.max(0, runningBalance) && (
+                    <div className="flex justify-between items-center text-indigo-800 text-[11px] font-bold">
+                      <span>• Added to Advance:</span>
+                      <span className="font-mono text-indigo-700">
+                        +₹{(Number(paymentAmount) - Math.max(0, runningBalance)).toFixed(2)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Payment Method</label>

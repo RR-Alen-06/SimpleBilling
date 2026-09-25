@@ -2,10 +2,11 @@
 
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '@/lib/services/api';
-import { Bill, CustomerSummary, DateFilterOption } from '@/lib/types';
+import { Bill, CustomerSummary, DateFilterOption, AllSettings, Expense } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { downloadCSV } from '@/lib/utils/csv';
 import { REPORTS_DATE_FILTER_BUTTONS } from '@/lib/constants/filters';
+import { BusinessReportGenerator } from '@/lib/services/businessReportGenerator';
 import { 
   BarChart3, 
   Printer, 
@@ -17,14 +18,24 @@ import {
   CreditCard,
   Wallet,
   TrendingUp,
-  Package
+  Package,
+  Download,
+  FileText,
+  Loader2,
+  PieChart,
+  DollarSign,
+  Sparkles
 } from 'lucide-react';
 
 export default function ReportsPage() {
-  const [activeTab, setActiveTab] = useState<'sales' | 'dues' | 'items'>('sales');
+  const [activeTab, setActiveTab] = useState<'sales' | 'dues' | 'items' | 'expenses'>('sales');
   const [bills, setBills] = useState<Bill[]>([]);
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
+  const [allExpenses, setAllExpenses] = useState<Expense[]>([]);
+  const [settings, setSettings] = useState<AllSettings | null>(null);
   const [loading, setLoading] = useState(true);
+  const [generatingPdf, setGeneratingPdf] = useState(false);
+  const [generatingMaster, setGeneratingMaster] = useState(false);
 
   // Date Filter State
   const [dateFilter, setDateFilter] = useState<DateFilterOption>('today');
@@ -34,12 +45,16 @@ export default function ReportsPage() {
   const loadReportData = async () => {
     setLoading(true);
     try {
-      const [filteredBills, custSummaries] = await Promise.all([
+      const [filteredBills, custSummaries, fetchedSettings, expensesData] = await Promise.all([
         ApiService.getBillsByDateRange(dateFilter, { from: customFrom, to: customTo }),
-        ApiService.getCustomerSummaries()
+        ApiService.getCustomerSummaries(),
+        ApiService.getSettings(),
+        ApiService.getExpenses()
       ]);
       setBills(filteredBills);
       setCustomers(custSummaries);
+      setSettings(fetchedSettings);
+      setAllExpenses(expensesData || []);
     } catch (err) {
       console.error('Error fetching report data:', err);
     } finally {
@@ -53,14 +68,68 @@ export default function ReportsPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFilter, customFrom, customTo]);
 
+  // Helper to filter expenses by the active date range
+  const filterExpenses = (items: Expense[], filter: DateFilterOption, range?: { from?: string; to?: string }) => {
+    if (filter === 'all_time') return items;
+    const now = new Date();
+    return items.filter(exp => {
+      const d = new Date(exp.created_at);
+      if (isNaN(d.getTime())) return true;
+      if (filter === 'today') return d.toDateString() === now.toDateString();
+      if (filter === 'yesterday') {
+        const y = new Date(now);
+        y.setDate(now.getDate() - 1);
+        return d.toDateString() === y.toDateString();
+      }
+      if (filter === 'weekly') {
+        const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        return d >= sevenDaysAgo && d <= now;
+      }
+      if (filter === 'monthly') {
+        return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+      }
+      if (filter === 'quarterly') {
+        const curQ = Math.floor(now.getMonth() / 3);
+        const expQ = Math.floor(d.getMonth() / 3);
+        return curQ === expQ && d.getFullYear() === now.getFullYear();
+      }
+      if (filter === 'yearly') {
+        return d.getFullYear() === now.getFullYear();
+      }
+      if (filter === 'financial_year') {
+        const curM = now.getMonth();
+        const curY = now.getFullYear();
+        const fyStartY = curM >= 3 ? curY : curY - 1;
+        const start = new Date(fyStartY, 3, 1);
+        const end = new Date(fyStartY + 1, 2, 31, 23, 59, 59, 999);
+        return d >= start && d <= end;
+      }
+      if (filter === 'custom' && range?.from && range?.to) {
+        const fromD = new Date(range.from);
+        fromD.setHours(0, 0, 0, 0);
+        const toD = new Date(range.to);
+        toD.setHours(23, 59, 59, 999);
+        return d >= fromD && d <= toD;
+      }
+      return true;
+    });
+  };
+
+  const periodExpenses = filterExpenses(allExpenses, dateFilter, { from: customFrom, to: customTo });
+
   // Aggregate Metrics for Current Filter
   const totalSales = bills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
   const totalPaid = bills.reduce((sum, b) => sum + Math.min(Number(b.grand_total || 0), Number(b.paid_total || 0)), 0);
   const cashTotal = bills.reduce((sum, b) => sum + Number(b.cash_paid || 0), 0);
   const upiTotal = bills.reduce((sum, b) => sum + Number(b.upi_paid || 0), 0);
+  const totalTax = bills.reduce((sum, b) => sum + Number(b.gst_amount || 0), 0);
+  const totalExpenses = periodExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+  const netProfit = totalSales - totalExpenses;
+
   // Customer due list & total ledger dues
   const dueCustomers = customers.filter(c => c.balance_due > 0);
   const totalDuesAmount = dueCustomers.reduce((sum, c) => sum + c.balance_due, 0);
+  
   // Period-scoped pending balance dynamically calculated for the active date filter
   const pendingTotal = bills.reduce((sum, b) => {
     const g = Number(b.grand_total || 0);
@@ -81,9 +150,204 @@ export default function ReportsPage() {
   });
   const itemSales = Array.from(itemMap.values()).sort((a, b) => b.total - a.total);
 
+  const getFilterLabel = (filter = dateFilter) => {
+    if (filter === 'today') return 'Today';
+    if (filter === 'yesterday') return 'Yesterday';
+    if (filter === 'weekly') return 'Last 7 Days';
+    if (filter === 'monthly') return 'This Month';
+    if (filter === 'quarterly') return 'This Quarter';
+    if (filter === 'yearly') return 'This Year';
+    if (filter === 'financial_year') return 'Financial Year (FY)';
+    if (filter === 'custom') return `${customFrom || 'Start'} to ${customTo || 'End'}`;
+    return 'All Time';
+  };
 
+  // Full Executive PDF Report Generator (Active Period)
+  const handleExportPdfReport = () => {
+    setGeneratingPdf(true);
+    try {
+      const periodLabel = getFilterLabel();
+      const generatedAt = new Date().toLocaleString('en-IN', {
+        dateStyle: 'medium',
+        timeStyle: 'short'
+      });
 
-  const handleExportCSV = () => {
+      const doc = BusinessReportGenerator.generateReportPdf({
+        shop_settings: settings?.shop || {},
+        period_label: periodLabel,
+        generated_at: generatedAt,
+        kpi: {
+          total_sales: totalSales,
+          total_paid: totalPaid,
+          cash_total: cashTotal,
+          upi_total: upiTotal,
+          pending_total: pendingTotal,
+          total_tax: totalTax,
+          total_expenses: totalExpenses,
+          net_profit: netProfit,
+          total_bills: bills.length,
+          avg_bill_value: avgBill,
+          total_customers_due: dueCustomers.length,
+          total_dues_amount: totalDuesAmount
+        },
+        bills,
+        item_sales: itemSales,
+        due_customers: dueCustomers,
+        expenses: periodExpenses
+      });
+
+      const filename = `Business_Report_${dateFilter}_${new Date().toISOString().split('T')[0]}.pdf`;
+      doc.save(filename);
+    } catch (err) {
+      console.error('Failed to export PDF report:', err);
+    } finally {
+      setGeneratingPdf(false);
+    }
+  };
+
+  // 1-Click All-Time Master PDF Export
+  const handleExportMasterPdf = async () => {
+    setGeneratingMaster(true);
+    try {
+      const allBills = await ApiService.getBillsByDateRange('all_time');
+      const allExp = await ApiService.getExpenses();
+      const custSummaries = await ApiService.getCustomerSummaries();
+      const shopSettings = settings?.shop || {};
+
+      const masterSales = allBills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
+      const masterPaid = allBills.reduce((sum, b) => sum + Math.min(Number(b.grand_total || 0), Number(b.paid_total || 0)), 0);
+      const masterCash = allBills.reduce((sum, b) => sum + Number(b.cash_paid || 0), 0);
+      const masterUpi = allBills.reduce((sum, b) => sum + Number(b.upi_paid || 0), 0);
+      const masterTax = allBills.reduce((sum, b) => sum + Number(b.gst_amount || 0), 0);
+      const masterExpenses = allExp.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+      const masterNetProfit = masterSales - masterExpenses;
+      const masterPending = allBills.reduce((sum, b) => {
+        const g = Number(b.grand_total || 0);
+        const p = Math.min(g, Number(b.paid_total || 0));
+        return sum + Math.max(0, g - p);
+      }, 0);
+
+      // Aggregate Master Item Sales
+      const masterItemMap = new Map<string, { name: string; qty: number; total: number }>();
+      allBills.forEach(b => {
+        b.items?.forEach(it => {
+          const existing = masterItemMap.get(it.product_name) || { name: it.product_name, qty: 0, total: 0 };
+          existing.qty += Number(it.quantity || 0);
+          existing.total += Number(it.total || 0);
+          masterItemMap.set(it.product_name, existing);
+        });
+      });
+      const masterItemSales = Array.from(masterItemMap.values()).sort((a, b) => b.total - a.total);
+      const masterDueCust = custSummaries.filter(c => c.balance_due > 0);
+      const masterTotalDues = masterDueCust.reduce((sum, c) => sum + c.balance_due, 0);
+
+      const doc = BusinessReportGenerator.generateReportPdf({
+        shop_settings: shopSettings,
+        period_label: 'ALL TIME (Complete Inception to Date)',
+        generated_at: new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }),
+        kpi: {
+          total_sales: masterSales,
+          total_paid: masterPaid,
+          cash_total: masterCash,
+          upi_total: masterUpi,
+          pending_total: masterPending,
+          total_tax: masterTax,
+          total_expenses: masterExpenses,
+          net_profit: masterNetProfit,
+          total_bills: allBills.length,
+          avg_bill_value: allBills.length > 0 ? masterSales / allBills.length : 0,
+          total_customers_due: masterDueCust.length,
+          total_dues_amount: masterTotalDues
+        },
+        bills: allBills,
+        item_sales: masterItemSales,
+        due_customers: custSummaries,
+        expenses: allExp
+      });
+
+      doc.save(`MASTER_BUSINESS_REPORT_ALL_TIME_${new Date().toISOString().split('T')[0]}.pdf`);
+    } catch (err) {
+      console.error('Failed to generate master PDF:', err);
+    } finally {
+      setGeneratingMaster(false);
+    }
+  };
+
+  // Full Multi-Section Consolidated CSV Export (Active Period or All-Time)
+  const handleExportFullCSV = (isMasterAllTime = false) => {
+    const filterLabel = isMasterAllTime ? 'ALL TIME (Master Database Export)' : getFilterLabel();
+    const dateStr = new Date().toISOString().split('T')[0];
+    
+    const lines: string[] = [];
+    
+    // Header
+    lines.push(`"${(settings?.shop?.shop_name || 'SimpleBilling Center').toUpperCase()} - ${isMasterAllTime ? 'MASTER ALL-TIME BUSINESS REPORT' : 'PERIOD BUSINESS REPORT'}"`);
+    lines.push(`"Report Scope: ${filterLabel} | Generated: ${new Date().toLocaleString('en-IN')}"`);
+    lines.push('');
+    
+    // 1. Executive Summary & Net Profit
+    lines.push('"--- 1. EXECUTIVE FINANCIAL SUMMARY & NET PROFIT ---"');
+    lines.push('"Metric","Value (INR / Count)"');
+    lines.push(`"Total Revenue / Invoiced (INR)","${totalSales.toFixed(2)}"`);
+    lines.push(`"Total Collected by Shop (INR)","${totalPaid.toFixed(2)}"`);
+    lines.push(`"Total Operating Expenses (INR)","${totalExpenses.toFixed(2)}"`);
+    lines.push(`"Net Operating Profit / Margin (INR)","${netProfit.toFixed(2)}"`);
+    lines.push(`"GST / Tax Collected (INR)","${totalTax.toFixed(2)}"`);
+    lines.push(`"Cash Collections (INR)","${cashTotal.toFixed(2)}"`);
+    lines.push(`"UPI Collections (INR)","${upiTotal.toFixed(2)}"`);
+    lines.push(`"Period Unpaid Dues (INR)","${pendingTotal.toFixed(2)}"`);
+    lines.push(`"Total Invoices Generated","${bills.length}"`);
+    lines.push(`"Average Invoice Value (INR)","${avgBill.toFixed(2)}"`);
+    lines.push(`"Customers with Outstanding Dues","${dueCustomers.length}"`);
+    lines.push(`"Total Ledger Dues Outstanding (INR)","${totalDuesAmount.toFixed(2)}"`);
+    lines.push('');
+
+    // 2. Sales Invoices Register
+    lines.push(`"--- 2. SALES INVOICES REGISTER (${bills.length} Records) ---"`);
+    lines.push('"Bill Number","Date Time","Customer Name","Mobile","Payment Mode","Grand Total (INR)","Paid Total (INR)","Pending Balance (INR)","Status"');
+    bills.forEach(b => {
+      const isPaid = Number(b.paid_total || 0) >= Number(b.grand_total || 0) - 0.01;
+      const pendingAmt = Math.max(0, Number(b.grand_total || 0) - Number(b.paid_total || 0));
+      lines.push(`"${b.bill_number}","${new Date(b.created_at).toLocaleString('en-IN')}","${(b.customer_name || 'Walk-in').replace(/"/g, '""')}","${b.customer_mobile || ''}","${b.payment_method || 'Cash'}","${Number(b.grand_total || 0).toFixed(2)}","${Number(b.paid_total || 0).toFixed(2)}","${pendingAmt.toFixed(2)}","${isPaid ? 'Paid' : 'Pending'}"`);
+    });
+    lines.push('');
+
+    // 3. Item Sales Volume
+    lines.push(`"--- 3. ITEM & SERVICE SALES VOLUME (${itemSales.length} Products) ---"`);
+    lines.push('"Product / Service Name","Quantity Sold","Revenue Generated (INR)"');
+    itemSales.forEach(it => {
+      lines.push(`"${it.name.replace(/"/g, '""')}","${it.qty}","${it.total.toFixed(2)}"`);
+    });
+    lines.push('');
+
+    // 4. Customer Outstanding Dues & Balances Ledger
+    lines.push(`"--- 4. CUSTOMER BALANCES & DUES LEDGER (${customers.length} Accounts) ---"`);
+    lines.push('"Customer Name","Mobile","Email","Total Billed (INR)","Paid Amount by Customer (INR)","Balance Due (INR)","Advance Available (INR)","Loyalty Points"');
+    customers.forEach(c => {
+      lines.push(`"${c.name.replace(/"/g, '""')}","${c.mobile || ''}","${c.email || ''}","${Number(c.total_billed).toFixed(2)}","${Number(c.total_paid).toFixed(2)}","${Number(c.balance_due).toFixed(2)}","${Number(c.advance_balance).toFixed(2)}","${c.loyalty_points || 0}"`);
+    });
+    lines.push('');
+
+    // 5. Operating Expenses Register
+    if (periodExpenses.length > 0) {
+      lines.push(`"--- 5. OPERATING EXPENSES REGISTER (${periodExpenses.length} Records) ---"`);
+      lines.push('"Expense Number","Date","Title / Description","Category","Payment Mode","Amount (INR)","Notes"');
+      periodExpenses.forEach(exp => {
+        lines.push(`"${exp.expense_number || 'EXP'}","${new Date(exp.created_at).toLocaleDateString('en-IN')}","${exp.title.replace(/"/g, '""')}","${exp.category || 'General'}","${exp.payment_mode || 'Cash'}","${Number(exp.amount).toFixed(2)}","${(exp.notes || '').replace(/"/g, '""')}"`);
+      });
+    }
+
+    const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + encodeURIComponent(lines.join('\n'));
+    const link = document.createElement('a');
+    link.setAttribute('href', csvContent);
+    link.setAttribute('download', isMasterAllTime ? `Master_Business_Report_All_Time_${dateStr}.csv` : `Full_Business_Report_${dateFilter}_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Tab-Specific CSV Export
+  const handleExportTabCSV = () => {
     const filterLabel = dateFilter.replace('_', '-');
     if (activeTab === 'sales') {
       const headers = ['Bill Number', 'Date Time', 'Customer', 'Customer Mobile', 'Payment Method', 'Cash (INR)', 'UPI (INR)', 'Grand Total (INR)', 'Paid Total (INR)', 'Status'];
@@ -92,14 +356,14 @@ export default function ReportsPage() {
         new Date(b.created_at).toLocaleString('en-IN'),
         b.customer_name || 'Walk-in',
         b.customer_mobile || '',
-        b.payment_method,
+        b.payment_method || 'Cash',
         b.cash_paid || 0,
         b.upi_paid || 0,
         b.grand_total,
         b.paid_total,
         Number(b.paid_total) >= Number(b.grand_total) ? 'Paid' : 'Pending'
       ]);
-      downloadCSV(`Sales_Report_${filterLabel}`, headers, rows);
+      downloadCSV(`Sales_Register_${filterLabel}`, headers, rows);
     } else if (activeTab === 'items') {
       const headers = ['Product / Service Name', 'Quantity Sold', 'Revenue Generated (INR)'];
       const rows = itemSales.map(it => [
@@ -107,7 +371,7 @@ export default function ReportsPage() {
         it.qty,
         it.total.toFixed(2)
       ]);
-      downloadCSV(`Item_Sales_Report_${filterLabel}`, headers, rows);
+      downloadCSV(`Item_Sales_Volume_${filterLabel}`, headers, rows);
     } else {
       const headers = ['Customer Name', 'Mobile Number', 'Email', 'Total Billed (INR)', 'Total Paid (INR)', 'Balance Due (INR)'];
       const rows = dueCustomers.map(c => [
@@ -118,7 +382,7 @@ export default function ReportsPage() {
         c.total_paid,
         c.balance_due
       ]);
-      downloadCSV(`Customer_Due_List_${new Date().toISOString().split('T')[0]}`, headers, rows);
+      downloadCSV(`Customer_Dues_Ledger_${new Date().toISOString().split('T')[0]}`, headers, rows);
     }
   };
 
@@ -129,33 +393,89 @@ export default function ReportsPage() {
   const dateFilterButtons = REPORTS_DATE_FILTER_BUTTONS;
 
   return (
-    <div className="space-y-6">
+    <div className="reports-page-root space-y-6">
       <SupabaseBanner />
 
       {/* Header Toolbar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 print:hidden">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 print:hidden">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 flex items-center space-x-2">
             <BarChart3 className="text-blue-600" size={26} />
             <span>Business Reports & Analytics</span>
           </h1>
-          <p className="text-sm text-slate-500 mt-0.5">Filter sales by date range, analyze item volume, and track customer dues</p>
+          <p className="text-sm text-slate-500 mt-0.5">Comprehensive sales registers, volume analytics, operating expenses, and customer dues tracking</p>
         </div>
 
-        <div className="flex items-center space-x-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Period PDF Report */}
           <button
-            onClick={handleExportCSV}
-            className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs px-4 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5"
+            onClick={handleExportPdfReport}
+            disabled={loading || generatingPdf}
+            className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-xs px-3.5 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5 cursor-pointer"
+            title="Download Executive Vector PDF Report for the selected date range"
           >
-            <FileSpreadsheet size={16} />
-            <span>Export CSV</span>
+            {generatingPdf ? (
+              <>
+                <Loader2 size={15} className="animate-spin" />
+                <span>Generating PDF...</span>
+              </>
+            ) : (
+              <>
+                <FileText size={15} />
+                <span>Period PDF Report</span>
+              </>
+            )}
           </button>
+
+          {/* Period CSV */}
+          <button
+            onClick={() => handleExportFullCSV(false)}
+            disabled={loading}
+            className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs px-3.5 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5 cursor-pointer"
+            title="Export Full Multi-Section Business Report for Active Period (CSV)"
+          >
+            <FileSpreadsheet size={15} />
+            <span>Period Full CSV</span>
+          </button>
+
+          {/* 1-Click All-Time Master PDF */}
+          <button
+            onClick={handleExportMasterPdf}
+            disabled={loading || generatingMaster}
+            className="bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white font-bold text-xs px-3.5 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5 cursor-pointer"
+            title="Download Complete Master PDF of all business history since inception"
+          >
+            {generatingMaster ? (
+              <>
+                <Loader2 size={15} className="animate-spin" />
+                <span>Generating Master...</span>
+              </>
+            ) : (
+              <>
+                <Sparkles size={15} className="text-amber-400" />
+                <span>All-Time Master PDF</span>
+              </>
+            )}
+          </button>
+
+          {/* 1-Click All-Time Master CSV */}
+          <button
+            onClick={() => handleExportFullCSV(true)}
+            disabled={loading}
+            className="bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white font-bold text-xs px-3.5 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5 cursor-pointer"
+            title="Export All-Time Master CSV of entire database"
+          >
+            <Download size={14} className="text-emerald-400" />
+            <span>All-Time Master CSV</span>
+          </button>
+
+          {/* Print Report */}
           <button
             onClick={handlePrintReport}
-            className="bg-slate-800 hover:bg-slate-700 text-white font-semibold text-xs px-4 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5"
+            className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs px-3 py-2.5 rounded-lg border border-slate-300 transition flex items-center space-x-1.5 cursor-pointer"
           >
-            <Printer size={16} />
-            <span>Print Report</span>
+            <Printer size={15} />
+            <span>Print</span>
           </button>
         </div>
       </div>
@@ -212,25 +532,50 @@ export default function ReportsPage() {
       </div>
 
       {/* METRIC CARDS STRIP */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
+        {/* Total Sales */}
         <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-1">
           <div className="text-slate-500 text-[11px] font-bold uppercase tracking-wider flex items-center space-x-1">
             <IndianRupee size={13} className="text-blue-600" />
-            <span>Total Sales</span>
+            <span>Total Revenue</span>
           </div>
           <div className="text-base sm:text-lg font-extrabold text-slate-900">₹{totalSales.toFixed(2)}</div>
           <div className="text-[10px] text-slate-400 font-medium">{bills.length} bills generated</div>
         </div>
 
+        {/* Operating Expenses */}
+        <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-1">
+          <div className="text-rose-600 text-[11px] font-bold uppercase tracking-wider flex items-center space-x-1">
+            <TrendingUp size={13} className="text-rose-500 rotate-180" />
+            <span>Expenses</span>
+          </div>
+          <div className="text-base sm:text-lg font-extrabold text-rose-700">₹{totalExpenses.toFixed(2)}</div>
+          <div className="text-[10px] text-slate-400 font-medium">{periodExpenses.length} expense records</div>
+        </div>
+
+        {/* Net Profit */}
+        <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-1">
+          <div className="text-emerald-700 text-[11px] font-bold uppercase tracking-wider flex items-center space-x-1">
+            <DollarSign size={13} className="text-emerald-600" />
+            <span>Net Profit</span>
+          </div>
+          <div className={`text-base sm:text-lg font-extrabold ${netProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+            ₹{netProfit.toFixed(2)}
+          </div>
+          <div className="text-[10px] text-slate-400 font-medium">Revenue - Expenses</div>
+        </div>
+
+        {/* Cash Paid */}
         <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-1">
           <div className="text-emerald-700 text-[11px] font-bold uppercase tracking-wider flex items-center space-x-1">
             <Wallet size={13} className="text-emerald-600" />
             <span>Cash Paid</span>
           </div>
           <div className="text-base sm:text-lg font-extrabold text-emerald-700">₹{cashTotal.toFixed(2)}</div>
-          <div className="text-[10px] text-slate-400 font-medium">Direct cash collected</div>
+          <div className="text-[10px] text-slate-400 font-medium">Direct cash in period</div>
         </div>
 
+        {/* UPI Paid */}
         <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-1">
           <div className="text-indigo-700 text-[11px] font-bold uppercase tracking-wider flex items-center space-x-1">
             <CreditCard size={13} className="text-indigo-600" />
@@ -240,31 +585,24 @@ export default function ReportsPage() {
           <div className="text-[10px] text-slate-400 font-medium">Digital collections</div>
         </div>
 
+        {/* Period Pending */}
         <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-1">
           <div className="text-amber-700 text-[11px] font-bold uppercase tracking-wider flex items-center space-x-1">
             <TrendingUp size={13} className="text-amber-600" />
-            <span>Pending Balance</span>
+            <span>Period Dues</span>
           </div>
           <div className="text-base sm:text-lg font-extrabold text-amber-700">₹{pendingTotal.toFixed(2)}</div>
           <div className="text-[10px] text-slate-400 font-medium">Unpaid in period</div>
         </div>
 
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-1">
-          <div className="text-slate-500 text-[11px] font-bold uppercase tracking-wider flex items-center space-x-1">
-            <Receipt size={13} className="text-purple-600" />
-            <span>Avg Bill Value</span>
-          </div>
-          <div className="text-base sm:text-lg font-extrabold text-purple-700">₹{avgBill.toFixed(2)}</div>
-          <div className="text-[10px] text-slate-400 font-medium">Per invoice avg</div>
-        </div>
-
+        {/* All-Time Customer Dues */}
         <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-1">
           <div className="text-rose-700 text-[11px] font-bold uppercase tracking-wider flex items-center space-x-1">
             <Users size={13} className="text-rose-600" />
-            <span>Total Dues (All)</span>
+            <span>Total Ledger Dues</span>
           </div>
           <div className="text-base sm:text-lg font-extrabold text-rose-700">₹{totalDuesAmount.toFixed(2)}</div>
-          <div className="text-[10px] text-slate-400 font-medium">{dueCustomers.length} due customer{dueCustomers.length !== 1 ? 's' : ''}</div>
+          <div className="text-[10px] text-slate-400 font-medium">{dueCustomers.length} customer accounts</div>
         </div>
       </div>
 
@@ -291,7 +629,7 @@ export default function ReportsPage() {
           }`}
         >
           <Package size={16} />
-          <span>Product / Item Sales ({itemSales.length})</span>
+          <span>Item Sales Volume ({itemSales.length})</span>
         </button>
 
         <button
@@ -304,6 +642,18 @@ export default function ReportsPage() {
         >
           <Users size={16} />
           <span>Customer Due List ({dueCustomers.length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('expenses')}
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
+            activeTab === 'expenses'
+              ? 'bg-blue-600 text-white shadow'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <TrendingUp size={16} className="rotate-180 text-rose-500" />
+          <span>Operating Expenses ({periodExpenses.length})</span>
         </button>
       </div>
 
@@ -461,7 +811,8 @@ export default function ReportsPage() {
                       <th className="py-2.5 px-4">Customer Name</th>
                       <th className="py-2.5 px-4">Mobile / Email</th>
                       <th className="py-2.5 px-4 text-right">Total Billed (₹)</th>
-                      <th className="py-2.5 px-4 text-right">Total Paid (₹)</th>
+                      <th className="py-2.5 px-4 text-right">Paid by Cust (₹)</th>
+                      <th className="py-2.5 px-4 text-right">Advance Avail (₹)</th>
                       <th className="py-2.5 px-4 text-right">Pending Balance (₹)</th>
                     </tr>
                   </thead>
@@ -475,7 +826,66 @@ export default function ReportsPage() {
                         </td>
                         <td className="py-3 px-4 text-right font-medium text-slate-800">₹{c.total_billed.toFixed(2)}</td>
                         <td className="py-3 px-4 text-right font-medium text-emerald-700">₹{c.total_paid.toFixed(2)}</td>
+                        <td className="py-3 px-4 text-right font-medium text-blue-700">₹{c.advance_balance.toFixed(2)}</td>
                         <td className="py-3 px-4 text-right font-extrabold text-rose-600">₹{c.balance_due.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 4: OPERATING EXPENSES */}
+        {activeTab === 'expenses' && (
+          <div className="space-y-4">
+            <div className="flex justify-between items-center pb-3 border-b border-slate-200">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">Operating Expenses</h2>
+                <p className="text-xs text-slate-500">Expenses incurred during the selected period</p>
+              </div>
+              <div className="text-right">
+                <span className="text-xs text-slate-500 uppercase font-semibold">Total Expenses</span>
+                <p className="text-xl font-extrabold text-rose-600">₹{totalExpenses.toFixed(2)}</p>
+              </div>
+            </div>
+
+            {loading ? (
+              <div className="p-8 text-center text-slate-500 text-sm">Loading expenses...</div>
+            ) : periodExpenses.length === 0 ? (
+              <div className="p-12 text-center text-slate-500">
+                <TrendingUp className="mx-auto text-slate-300 mb-2 rotate-180" size={40} />
+                <p className="font-medium text-slate-700">No expenses recorded for this period.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-600 uppercase text-xs font-semibold border-b border-slate-200">
+                      <th className="py-2.5 px-4">Expense #</th>
+                      <th className="py-2.5 px-4">Date</th>
+                      <th className="py-2.5 px-4">Title / Description</th>
+                      <th className="py-2.5 px-4">Category</th>
+                      <th className="py-2.5 px-4">Payment Mode</th>
+                      <th className="py-2.5 px-4 text-right">Amount (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {periodExpenses.map((exp) => (
+                      <tr key={exp.id} className="hover:bg-slate-50">
+                        <td className="py-3 px-4 font-mono font-bold text-slate-900">{exp.expense_number || 'EXP'}</td>
+                        <td className="py-3 px-4 text-xs text-slate-500">
+                          {new Date(exp.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+                        </td>
+                        <td className="py-3 px-4 font-medium text-slate-900">{exp.title}</td>
+                        <td className="py-3 px-4">
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-700">
+                            {exp.category || 'General'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-xs font-semibold uppercase text-slate-600">{exp.payment_mode || 'Cash'}</td>
+                        <td className="py-3 px-4 text-right font-extrabold text-rose-600">₹{Number(exp.amount).toFixed(2)}</td>
                       </tr>
                     ))}
                   </tbody>

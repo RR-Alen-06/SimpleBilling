@@ -22,7 +22,8 @@ import {
   Edit2,
   X,
   ToggleLeft,
-  ToggleRight
+  ToggleRight,
+  RefreshCw
 } from 'lucide-react';
 
 export default function SettingsPage() {
@@ -52,6 +53,18 @@ export default function SettingsPage() {
   const [showPurgeModal, setShowPurgeModal] = useState(false);
   const [purgeInput, setPurgeInput] = useState('');
   const [superAdminPin, setSuperAdminPin] = useState('');
+
+  // Loyalty Simulator state
+  const [simBillAmount, setSimBillAmount] = useState<number>(250);
+
+  // Loyalty Recalculate State
+  const [recalculatingLoyalty, setRecalculatingLoyalty] = useState(false);
+  const [recalculateSummary, setRecalculateSummary] = useState<{
+    customersProcessed: number;
+    customersUpdated: number;
+    billsUpdated: number;
+    totalActivePoints: number;
+  } | null>(null);
 
   // Status feedback
   const [errorMsg, setErrorMsg] = useState('');
@@ -295,6 +308,48 @@ export default function SettingsPage() {
       await loadSettings();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to delete redemption rule');
+    }
+  };
+
+  const handleClearAllRedemptionRules = async () => {
+    if (!window.confirm('Are you sure you want to delete all loyalty redemption rules?')) return;
+    try {
+      await ApiService.clearAllLoyaltyRedemptionRules();
+      setSuccessMsg('All redemption rules cleared.');
+      await loadSettings();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to clear redemption rules');
+    }
+  };
+
+  const handleClearAllEarningRules = async () => {
+    if (!window.confirm('Are you sure you want to delete all loyalty earning rules?')) return;
+    try {
+      await ApiService.clearAllLoyaltyRules();
+      setSuccessMsg('All earning rules cleared.');
+      await loadSettings();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to clear earning rules');
+    }
+  };
+
+  const handleRecalculateAllCustomerLoyalty = async () => {
+    if (!window.confirm('Recalculate loyalty points for all past bills based on current active rules? This will update customer point balances in Supabase.')) {
+      return;
+    }
+    setErrorMsg('');
+    setSuccessMsg('');
+    setRecalculatingLoyalty(true);
+    setRecalculateSummary(null);
+    try {
+      const res = await ApiService.recalculateAllCustomerLoyaltyPoints();
+      setRecalculateSummary(res);
+      setSuccessMsg(`Reconciliation complete! Checked ${res.customersProcessed} customers (${res.customersUpdated} balances updated, ${res.billsUpdated} bills updated).`);
+      await loadSettings();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to recalculate loyalty points');
+    } finally {
+      setRecalculatingLoyalty(false);
     }
   };
 
@@ -672,11 +727,12 @@ export default function SettingsPage() {
             )}
 
             {/* 4. DYNAMIC LOYALTY EARNING & REDEMPTION RULES TAB */}
+            {/* 4. LOYALTY ENGINE TAB */}
             {activeTab === 'loyalty' && (
               <div className="space-y-6">
                 <div className="border-b pb-3">
                   <h2 className="text-lg font-bold text-slate-900">Loyalty Program & Point Rules Engine</h2>
-                  <p className="text-xs text-slate-500 mt-0.5">Manage bill range earning rules and redemption rules stored directly in database</p>
+                  <p className="text-xs text-slate-500 mt-0.5">Configure dynamic loyalty point earning rules, redemption values, and calculation modes stored directly in database</p>
                 </div>
 
                 <div className="flex items-center space-x-3 bg-purple-50 p-4 rounded-xl border border-purple-200">
@@ -687,13 +743,260 @@ export default function SettingsPage() {
                     onChange={(e) => setSettings({ ...settings, loyalty: { ...settings.loyalty, enabled: e.target.checked } })}
                     className="w-4 h-4 text-purple-600 rounded"
                   />
-                  <label htmlFor="loyalty_enable" className="text-sm font-bold text-purple-900">
+                  <label htmlFor="loyalty_enable" className="text-sm font-bold text-purple-900 cursor-pointer">
                     Enable Customer Loyalty Program System
                   </label>
                 </div>
 
-                {/* DYNAMIC LOYALTY REDEMPTION RULES TABLE */}
+                {/* EARNING CALCULATION MODE SWITCHER */}
                 <div className="space-y-3 pt-2">
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                      Loyalty Earning Calculation Mode
+                    </h3>
+                    <p className="text-[11px] text-slate-500">Choose how loyalty points are calculated on purchases</p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {/* OPTION 1: RATE-BASED */}
+                    <button
+                      type="button"
+                      onClick={() => setSettings({
+                        ...settings,
+                        loyalty: {
+                          ...settings.loyalty,
+                          calculation_mode: 'rate'
+                        }
+                      })}
+                      className={`p-4 rounded-xl border text-left transition-all cursor-pointer ${
+                        (settings.loyalty.calculation_mode || 'rate') === 'rate'
+                          ? 'bg-purple-50/70 border-purple-400 ring-2 ring-purple-500/20 shadow-xs'
+                          : 'bg-white border-slate-200 hover:border-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-extrabold text-sm text-slate-900">1. Rate-Based (Proportional)</span>
+                        {(settings.loyalty.calculation_mode || 'rate') === 'rate' && (
+                          <span className="bg-purple-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">Active</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Earn points for every ₹ spent (e.g. 1 point for every ₹10 spent). Ideal for flexible, proportional rewards.
+                      </p>
+                    </button>
+
+                    {/* OPTION 2: TIERED SLABS */}
+                    <button
+                      type="button"
+                      onClick={() => setSettings({
+                        ...settings,
+                        loyalty: {
+                          ...settings.loyalty,
+                          calculation_mode: 'tier'
+                        }
+                      })}
+                      className={`p-4 rounded-xl border text-left transition-all cursor-pointer ${
+                        settings.loyalty.calculation_mode === 'tier'
+                          ? 'bg-purple-50/70 border-purple-400 ring-2 ring-purple-500/20 shadow-xs'
+                          : 'bg-white border-slate-200 hover:border-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-extrabold text-sm text-slate-900">2. Tiered Slabs (Range-Based)</span>
+                        {settings.loyalty.calculation_mode === 'tier' && (
+                          <span className="bg-purple-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">Active</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Award fixed points for specific bill amount ranges (e.g. ₹0-₹100 = 1 pt, ₹101-₹500 = 10 pts).
+                      </p>
+                    </button>
+                  </div>
+                </div>
+
+                {/* RATE-BASED SETTINGS PANEL */}
+                {(settings.loyalty.calculation_mode || 'rate') === 'rate' && (
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 space-y-4">
+                    <div className="border-b border-slate-200 pb-2">
+                      <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                        Rate Configuration (Points Per ₹ Spent)
+                      </h4>
+                      <p className="text-[11px] text-slate-500">Define the exact point conversion rate without hardcoding</p>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
+                          Points Earned (X)
+                        </label>
+                        <div className="relative">
+                          <input
+                            type="number"
+                            min="1"
+                            value={settings.loyalty.earn_points ?? 1}
+                            onChange={(e) => setSettings({
+                              ...settings,
+                              loyalty: {
+                                ...settings.loyalty,
+                                earn_points: Math.max(1, Number(e.target.value) || 1)
+                              }
+                            })}
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm font-mono font-bold text-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                          />
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 font-semibold">
+                            Pts
+                          </span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
+                          For Every (₹) Spent (Y)
+                        </label>
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 font-bold">
+                            ₹
+                          </span>
+                          <input
+                            type="number"
+                            min="1"
+                            value={settings.loyalty.earn_spend_unit ?? 10}
+                            onChange={(e) => setSettings({
+                              ...settings,
+                              loyalty: {
+                                ...settings.loyalty,
+                                earn_spend_unit: Math.max(1, Number(e.target.value) || 1)
+                              }
+                            })}
+                            className="w-full pl-7 pr-3 py-2 bg-white border border-slate-200 rounded-lg text-sm font-mono font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* LIVE CALCULATION SIMULATOR */}
+                    <div className="mt-4 bg-white border border-purple-200 rounded-xl p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-purple-900 uppercase tracking-wider flex items-center gap-1.5">
+                          <Gift size={14} className="text-purple-600" />
+                          <span>Live Earning Simulator</span>
+                        </span>
+                        <span className="text-[10px] bg-purple-100 text-purple-800 font-bold px-2 py-0.5 rounded-md">
+                          Rule: {settings.loyalty.earn_points ?? 1} pt per ₹{settings.loyalty.earn_spend_unit ?? 10}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row items-center gap-3">
+                        <div className="w-full sm:w-48">
+                          <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">Test Bill (₹)</label>
+                          <input
+                            type="number"
+                            min="0"
+                            value={simBillAmount}
+                            onChange={(e) => setSimBillAmount(Number(e.target.value) || 0)}
+                            className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono font-bold"
+                          />
+                        </div>
+
+                        <div className="flex-1 w-full bg-purple-50/60 border border-purple-100 rounded-lg p-3 flex items-center justify-between">
+                          <div>
+                            <div className="text-[10px] font-bold uppercase tracking-wider text-purple-700">Points Awarded</div>
+                            <div className="text-xs text-slate-600 font-mono">
+                              ⌊₹{simBillAmount} / ₹{settings.loyalty.earn_spend_unit ?? 10}⌋ × {settings.loyalty.earn_points ?? 1}
+                            </div>
+                          </div>
+                          <div className="text-xl font-black font-mono text-purple-700">
+                            +{Math.floor(simBillAmount / Math.max(1, settings.loyalty.earn_spend_unit ?? 10)) * (settings.loyalty.earn_points ?? 1)} Pts
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* TIERED SLABS EARNING RULES TABLE */}
+                {settings.loyalty.calculation_mode === 'tier' && (
+                  <div className="space-y-3 pt-2">
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Active Loyalty Earning Rules</h3>
+                        <p className="text-[11px] text-slate-500">Configure how many points customers earn based on bill amount ranges</p>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        {loyaltyRules.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={handleClearAllEarningRules}
+                            className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-xs px-3 py-1.5 rounded-lg transition flex items-center space-x-1"
+                          >
+                            <Trash2 size={13} />
+                            <span>Clear All</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={handleOpenAddRule}
+                          className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-3 py-1.5 rounded-lg shadow transition flex items-center space-x-1"
+                        >
+                          <Plus size={14} />
+                          <span>+ Add Earning Rule</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                      <table className="w-full text-left text-sm border-collapse">
+                        <thead>
+                          <tr className="bg-slate-100 text-slate-700 uppercase text-xs font-bold border-b">
+                            <th className="py-2.5 px-4">Order</th>
+                            <th className="py-2.5 px-4">Rule Name</th>
+                            <th className="py-2.5 px-4">Bill Amount Range</th>
+                            <th className="py-2.5 px-4 text-right">Points Earned</th>
+                            <th className="py-2.5 px-4 text-center">Status</th>
+                            <th className="py-2.5 px-4 text-center w-28">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {loyaltyRules.length === 0 ? (
+                            <tr>
+                              <td colSpan={6} className="py-8 text-center text-slate-400 text-xs">No custom earning rules created yet.</td>
+                            </tr>
+                          ) : (
+                            loyaltyRules.map((rule) => (
+                              <tr key={rule.id} className="hover:bg-slate-50">
+                                <td className="py-3 px-4 font-bold text-xs text-slate-500">#{rule.sort_order}</td>
+                                <td className="py-3 px-4 font-bold text-slate-900">{rule.rule_name}</td>
+                                <td className="py-3 px-4 text-xs font-mono text-slate-700">
+                                  ₹{rule.min_bill_amount} - {rule.max_bill_amount !== null && rule.max_bill_amount !== undefined ? `₹${rule.max_bill_amount}` : 'Above'}
+                                </td>
+                                <td className="py-3 px-4 text-right font-extrabold text-purple-700">
+                                  +{rule.points_earned} Pts
+                                </td>
+                                <td className="py-3 px-4 text-center">
+                                  <button onClick={() => handleToggleRule(rule)} className="text-slate-600 hover:text-purple-600">
+                                    {rule.enabled ? <ToggleRight className="text-purple-600" size={24} /> : <ToggleLeft className="text-slate-400" size={24} />}
+                                  </button>
+                                </td>
+                                <td className="py-3 px-4 text-center">
+                                  <div className="flex items-center justify-center space-x-2">
+                                    <button onClick={() => handleOpenEditRule(rule)} className="p-1 text-slate-500 hover:text-blue-600">
+                                      <Edit2 size={16} />
+                                    </button>
+                                    <button onClick={() => handleDeleteRule(rule.id)} className="p-1 text-slate-500 hover:text-rose-600">
+                                      <Trash2 size={16} />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* DYNAMIC LOYALTY REDEMPTION RULES TABLE */}
+                <div className="space-y-3 pt-4 border-t">
                   <div className="flex justify-between items-center">
                     <div>
                       <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
@@ -702,13 +1005,25 @@ export default function SettingsPage() {
                       </h3>
                       <p className="text-[11px] text-slate-500">Super Admin can configure points-to-discount rules stored in database</p>
                     </div>
-                    <button
-                      onClick={handleOpenAddRedemptionRule}
-                      className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-3.5 py-2 rounded-lg shadow transition flex items-center space-x-1"
-                    >
-                      <Plus size={14} />
-                      <span>+ Add Redemption Rule</span>
-                    </button>
+                    <div className="flex items-center space-x-2">
+                      {redemptionRules.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleClearAllRedemptionRules}
+                          className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-xs px-3 py-2 rounded-lg transition flex items-center space-x-1"
+                        >
+                          <Trash2 size={13} />
+                          <span>Clear All</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={handleOpenAddRedemptionRule}
+                        className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-3.5 py-2 rounded-lg shadow transition flex items-center space-x-1"
+                      >
+                        <Plus size={14} />
+                        <span>+ Add Redemption Rule</span>
+                      </button>
+                    </div>
                   </div>
 
                   <div className="overflow-x-auto border border-slate-200 rounded-xl">
@@ -766,71 +1081,49 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
-                {/* EARNING RULES TABLE */}
-                <div className="space-y-3 pt-4 border-t">
-                  <div className="flex justify-between items-center">
-                    <div>
-                      <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Active Loyalty Earning Rules</h3>
-                      <p className="text-[11px] text-slate-500">Configure how many points customers earn based on bill amount ranges</p>
+                {/* HISTORICAL RECONCILIATION & SYNC */}
+                <div className="bg-gradient-to-r from-purple-50 via-indigo-50 to-purple-50 p-5 rounded-2xl border border-purple-200/80 shadow-xs space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center space-x-2">
+                        <span className="bg-purple-600 text-white text-[10px] font-extrabold uppercase px-2 py-0.5 rounded tracking-wide">Sync Engine</span>
+                        <h3 className="text-sm font-bold text-slate-900">Recalculate & Sync All Customer Loyalty Points</h3>
+                      </div>
+                      <p className="text-xs text-slate-600 max-w-xl">
+                        Audit and recalculate all past customer bills according to current active loyalty rules. Automatically reconciles customer point balances and bill point allocations in Supabase.
+                      </p>
                     </div>
                     <button
-                      onClick={handleOpenAddRule}
-                      className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-3 py-1.5 rounded-lg shadow transition flex items-center space-x-1"
+                      type="button"
+                      onClick={handleRecalculateAllCustomerLoyalty}
+                      disabled={recalculatingLoyalty || saving}
+                      className="bg-purple-700 hover:bg-purple-800 active:scale-98 disabled:opacity-50 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow transition flex items-center justify-center space-x-2 shrink-0 cursor-pointer"
                     >
-                      <Plus size={14} />
-                      <span>+ Add Earning Rule</span>
+                      <RefreshCw size={15} className={recalculatingLoyalty ? 'animate-spin' : ''} />
+                      <span>{recalculatingLoyalty ? 'Recalculating & Syncing...' : 'Recalculate & Sync Points'}</span>
                     </button>
                   </div>
 
-                  <div className="overflow-x-auto border border-slate-200 rounded-xl">
-                    <table className="w-full text-left text-sm border-collapse">
-                      <thead>
-                        <tr className="bg-slate-100 text-slate-700 uppercase text-xs font-bold border-b">
-                          <th className="py-2.5 px-4">Order</th>
-                          <th className="py-2.5 px-4">Rule Name</th>
-                          <th className="py-2.5 px-4">Bill Amount Range</th>
-                          <th className="py-2.5 px-4 text-right">Points Earned</th>
-                          <th className="py-2.5 px-4 text-center">Status</th>
-                          <th className="py-2.5 px-4 text-center w-28">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {loyaltyRules.length === 0 ? (
-                          <tr>
-                            <td colSpan={6} className="py-8 text-center text-slate-400 text-xs">No custom earning rules created yet.</td>
-                          </tr>
-                        ) : (
-                          loyaltyRules.map((rule) => (
-                            <tr key={rule.id} className="hover:bg-slate-50">
-                              <td className="py-3 px-4 font-bold text-xs text-slate-500">#{rule.sort_order}</td>
-                              <td className="py-3 px-4 font-bold text-slate-900">{rule.rule_name}</td>
-                              <td className="py-3 px-4 text-xs font-mono text-slate-700">
-                                ₹{rule.min_bill_amount} - {rule.max_bill_amount !== null && rule.max_bill_amount !== undefined ? `₹${rule.max_bill_amount}` : 'Above'}
-                              </td>
-                              <td className="py-3 px-4 text-right font-extrabold text-purple-700">
-                                +{rule.points_earned} Pts
-                              </td>
-                              <td className="py-3 px-4 text-center">
-                                <button onClick={() => handleToggleRule(rule)} className="text-slate-600 hover:text-purple-600">
-                                  {rule.enabled ? <ToggleRight className="text-purple-600" size={24} /> : <ToggleLeft className="text-slate-400" size={24} />}
-                                </button>
-                              </td>
-                              <td className="py-3 px-4 text-center">
-                                <div className="flex items-center justify-center space-x-2">
-                                  <button onClick={() => handleOpenEditRule(rule)} className="p-1 text-slate-500 hover:text-blue-600">
-                                    <Edit2 size={16} />
-                                  </button>
-                                  <button onClick={() => handleDeleteRule(rule.id)} className="p-1 text-slate-500 hover:text-rose-600">
-                                    <Trash2 size={16} />
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
+                  {recalculateSummary && (
+                    <div className="bg-white/90 border border-purple-200 rounded-xl p-3.5 grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+                      <div className="border-r border-purple-100 last:border-0">
+                        <p className="text-[10px] uppercase font-bold text-slate-400">Customers Checked</p>
+                        <p className="text-base font-extrabold text-slate-900">{recalculateSummary.customersProcessed}</p>
+                      </div>
+                      <div className="border-r border-purple-100 last:border-0">
+                        <p className="text-[10px] uppercase font-bold text-slate-400">Balances Corrected</p>
+                        <p className="text-base font-extrabold text-purple-700">{recalculateSummary.customersUpdated}</p>
+                      </div>
+                      <div className="border-r border-purple-100 last:border-0">
+                        <p className="text-[10px] uppercase font-bold text-slate-400">Bills Corrected</p>
+                        <p className="text-base font-extrabold text-indigo-700">{recalculateSummary.billsUpdated}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] uppercase font-bold text-slate-400">Total Active Points</p>
+                        <p className="text-base font-extrabold text-emerald-600">{recalculateSummary.totalActivePoints} Pts</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="pt-3 border-t flex justify-end">

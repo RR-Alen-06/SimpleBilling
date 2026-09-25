@@ -26,7 +26,8 @@ import {
   CustomerStatementBill,
   CustomerStatementBillItem,
   CustomerStatementDateGroup,
-  CustomItemAnalytics
+  CustomItemAnalytics,
+  ShopSettings
 } from '../types';
 
 export const DEFAULT_SETTINGS: AllSettings = {
@@ -53,6 +54,9 @@ export const DEFAULT_SETTINGS: AllSettings = {
   },
   loyalty: {
     enabled: true,
+    calculation_mode: 'rate',
+    earn_points: 1,
+    earn_spend_unit: 10,
     points_required: 10,
     discount_value: 5
   },
@@ -150,15 +154,8 @@ export class ApiService {
 
   // --- DYNAMIC LOYALTY REDEMPTION RULES CRUD ---
   static async getLoyaltyRedemptionRules(): Promise<LoyaltyRedemptionRule[]> {
-    const defaultRedemptionRules: Omit<LoyaltyRedemptionRule, 'id' | 'created_at'>[] = [
-      { points_required: 10, discount_amount: 4.00, enabled: true },
-      { points_required: 20, discount_amount: 5.00, enabled: true },
-      { points_required: 30, discount_amount: 8.00, enabled: true },
-      { points_required: 40, discount_amount: 10.00, enabled: true }
-    ];
-
     if (!isSupabaseConfigured) {
-      return defaultRedemptionRules.map((r, idx) => ({ ...r, id: `red-${idx + 1}` }));
+      return [];
     }
 
     const { data, error } = await supabase
@@ -166,27 +163,61 @@ export class ApiService {
       .select('*')
       .order('points_required', { ascending: true });
 
-    if (!error && data && data.length > 0) {
-      return data;
+    if (error) {
+      console.error('Error fetching loyalty redemption rules:', error);
+      return [];
     }
 
-    try {
-      const { data: inserted, error: insertErr } = await supabase
-        .from('loyalty_redemption_rules')
-        .insert(defaultRedemptionRules)
-        .select();
-      if (!insertErr && inserted && inserted.length > 0) {
-        return inserted;
+    if (!data || data.length === 0) return [];
+
+    // Auto-deduplicate by points_required (keep one, collect duplicates to delete)
+    const seen = new Set<number>();
+    const uniqueRules: LoyaltyRedemptionRule[] = [];
+    const duplicateIdsToDelete: string[] = [];
+
+    for (const rule of data) {
+      if (!seen.has(rule.points_required)) {
+        seen.add(rule.points_required);
+        uniqueRules.push(rule);
+      } else {
+        duplicateIdsToDelete.push(rule.id);
       }
-    } catch (seedErr) {
-      console.warn('Auto-seed redemption rules fallback:', seedErr);
     }
 
-    return defaultRedemptionRules.map((r, idx) => ({ ...r, id: `red-${idx + 1}` }));
+    // Auto-purge duplicates from database
+    if (duplicateIdsToDelete.length > 0) {
+      supabase.from('loyalty_redemption_rules').delete().in('id', duplicateIdsToDelete).then();
+    }
+
+    return uniqueRules;
+  }
+
+  static async clearAllLoyaltyRedemptionRules(userName = 'Super Admin'): Promise<void> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const { error } = await supabase.from('loyalty_redemption_rules').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    if (error) throw new Error(error.message);
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'CLEAR_ALL_LOYALTY_REDEMPTION_RULES',
+      entity: 'All Redemption Rules'
+    });
   }
 
   static async addLoyaltyRedemptionRule(rule: Omit<LoyaltyRedemptionRule, 'id' | 'created_at'>, userName = 'Super Admin'): Promise<LoyaltyRedemptionRule> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+
+    // Prevent duplicate points_required rules
+    const { data: existing } = await supabase
+      .from('loyalty_redemption_rules')
+      .select('id, points_required')
+      .eq('points_required', rule.points_required)
+      .maybeSingle();
+
+    if (existing) {
+      throw new Error(`A redemption rule for ${rule.points_required} Points already exists. Please edit the existing rule.`);
+    }
+
     const { data, error } = await supabase.from('loyalty_redemption_rules').insert([rule]).select().single();
     if (error) throw new Error(error.message);
 
@@ -202,16 +233,6 @@ export class ApiService {
 
   static async updateLoyaltyRedemptionRule(id: string, rule: Partial<Omit<LoyaltyRedemptionRule, 'id' | 'created_at'>>, userName = 'Super Admin'): Promise<LoyaltyRedemptionRule> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
-
-    if (id.startsWith('red-')) {
-      const { data, error } = await supabase.from('loyalty_redemption_rules').insert([{
-        points_required: rule.points_required || 10,
-        discount_amount: rule.discount_amount || 5,
-        enabled: rule.enabled !== undefined ? rule.enabled : true
-      }]).select().single();
-      if (error) throw new Error(error.message);
-      return data;
-    }
 
     const { data, error } = await supabase.from('loyalty_redemption_rules').update(rule).eq('id', id).select().single();
     if (error) throw new Error(error.message);
@@ -239,7 +260,7 @@ export class ApiService {
   }
 
   static calculateLoyaltyDiscount(pointsToRedeem: number, loyaltySettings: LoyaltySettings, activeRedemptionRules: LoyaltyRedemptionRule[] = []): number {
-    if (pointsToRedeem <= 0) return 0;
+    if (pointsToRedeem <= 0 || !loyaltySettings?.enabled) return 0;
 
     const enabledRules = activeRedemptionRules.filter(r => r.enabled).sort((a, b) => b.points_required - a.points_required);
 
@@ -262,53 +283,76 @@ export class ApiService {
       return Number((pointsToRedeem * rate).toFixed(2));
     }
 
-    const req = loyaltySettings.points_required > 0 ? loyaltySettings.points_required : 10;
-    const disc = loyaltySettings.discount_value > 0 ? loyaltySettings.discount_value : 5;
-    const ratePerPoint = disc / req;
-    return Number((pointsToRedeem * ratePerPoint).toFixed(2));
+    if (loyaltySettings.points_required > 0 && loyaltySettings.discount_value > 0) {
+      const ratePerPoint = loyaltySettings.discount_value / loyaltySettings.points_required;
+      return Number((pointsToRedeem * ratePerPoint).toFixed(2));
+    }
+
+    return 0;
   }
 
   // --- SIMPLIFIED DYNAMIC LOYALTY EARNING RULES ---
   static async getLoyaltyRules(): Promise<LoyaltyRule[]> {
-    const defaultRules: Omit<LoyaltyRule, 'id' | 'created_at'>[] = [
-      { rule_name: 'Tier 1', min_bill_amount: 1, max_bill_amount: 20, points_earned: 1, enabled: true, sort_order: 1 },
-      { rule_name: 'Tier 2', min_bill_amount: 21, max_bill_amount: 30, points_earned: 2, enabled: true, sort_order: 2 },
-      { rule_name: 'Tier 3', min_bill_amount: 31, max_bill_amount: 40, points_earned: 3, enabled: true, sort_order: 3 },
-      { rule_name: 'Tier 4', min_bill_amount: 41, max_bill_amount: 60, points_earned: 4, enabled: true, sort_order: 4 },
-      { rule_name: 'Tier 5', min_bill_amount: 61, max_bill_amount: 80, points_earned: 5, enabled: true, sort_order: 5 },
-      { rule_name: 'Tier 6', min_bill_amount: 81, max_bill_amount: 99, points_earned: 6, enabled: true, sort_order: 6 },
-      { rule_name: 'Tier 7', min_bill_amount: 100, max_bill_amount: 200, points_earned: 7, enabled: true, sort_order: 7 },
-      { rule_name: 'Tier 8', min_bill_amount: 201, max_bill_amount: 300, points_earned: 8, enabled: true, sort_order: 8 },
-      { rule_name: 'Tier 9', min_bill_amount: 301, max_bill_amount: 375, points_earned: 9, enabled: true, sort_order: 9 },
-      { rule_name: 'Tier 10', min_bill_amount: 376, max_bill_amount: 500, points_earned: 10, enabled: true, sort_order: 10 }
-    ];
-
     if (!isSupabaseConfigured) {
-      return defaultRules.map((r, idx) => ({ ...r, id: `rule-${idx + 1}` }));
+      return [];
     }
 
     const { data, error } = await supabase.from('loyalty_rules').select('*').order('sort_order', { ascending: true });
-    if (!error && data && data.length > 0) {
-      return data;
+    if (error) {
+      console.error('Error fetching loyalty rules:', error);
+      return [];
     }
 
-    try {
-      const { data: inserted, error: insertErr } = await supabase
-        .from('loyalty_rules')
-        .insert(defaultRules)
-        .select();
-      if (!insertErr && inserted && inserted.length > 0) {
-        return inserted;
+    if (!data || data.length === 0) return [];
+
+    // Auto-deduplicate by rule_name
+    const seen = new Set<string>();
+    const uniqueRules: LoyaltyRule[] = [];
+    const duplicateIdsToDelete: string[] = [];
+
+    for (const rule of data) {
+      const normalizedName = rule.rule_name.trim().toLowerCase();
+      if (!seen.has(normalizedName)) {
+        seen.add(normalizedName);
+        uniqueRules.push(rule);
+      } else {
+        duplicateIdsToDelete.push(rule.id);
       }
-    } catch (seedErr) {
-      console.warn('Auto-seed loyalty rules fallback:', seedErr);
     }
 
-    return defaultRules.map((r, idx) => ({ ...r, id: `rule-${idx + 1}` }));
+    // Auto-purge duplicates from database
+    if (duplicateIdsToDelete.length > 0) {
+      supabase.from('loyalty_rules').delete().in('id', duplicateIdsToDelete).then();
+    }
+
+    return uniqueRules;
+  }
+
+  static async clearAllLoyaltyRules(userName = 'Super Admin'): Promise<void> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const { error } = await supabase.from('loyalty_rules').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    if (error) throw new Error(error.message);
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'CLEAR_ALL_LOYALTY_RULES',
+      entity: 'All Earning Rules'
+    });
   }
 
   static async addLoyaltyRule(rule: Omit<LoyaltyRule, 'id' | 'created_at'>, userName = 'Super Admin'): Promise<LoyaltyRule> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+
+    const { data: existing } = await supabase
+      .from('loyalty_rules')
+      .select('id, rule_name')
+      .ilike('rule_name', rule.rule_name)
+      .maybeSingle();
+
+    if (existing) {
+      throw new Error(`A loyalty rule named "${rule.rule_name}" already exists. Please choose a different name.`);
+    }
+
     const { data, error } = await supabase.from('loyalty_rules').insert([rule]).select().single();
     if (error) throw new Error(error.message);
 
@@ -324,19 +368,6 @@ export class ApiService {
 
   static async updateLoyaltyRule(id: string, rule: Partial<Omit<LoyaltyRule, 'id' | 'created_at'>>, userName = 'Super Admin'): Promise<LoyaltyRule> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
-
-    if (id.startsWith('rule-')) {
-      const { data, error } = await supabase.from('loyalty_rules').insert([{
-        rule_name: rule.rule_name || 'Tier Rule',
-        min_bill_amount: rule.min_bill_amount || 0,
-        max_bill_amount: rule.max_bill_amount,
-        points_earned: rule.points_earned || 1,
-        enabled: rule.enabled !== undefined ? rule.enabled : true,
-        sort_order: rule.sort_order || 1
-      }]).select().single();
-      if (error) throw new Error(error.message);
-      return data;
-    }
 
     const { data, error } = await supabase.from('loyalty_rules').update(rule).eq('id', id).select().single();
     if (error) throw new Error(error.message);
@@ -364,19 +395,46 @@ export class ApiService {
   }
 
   static async calculateLoyaltyPointsEarned(billAmount: number): Promise<number> {
+    if (billAmount <= 0) return 0;
+    
+    const settings = await this.getSettings();
+    if (settings.loyalty && settings.loyalty.enabled === false) {
+      return 0;
+    }
+
+    // 1. PRIMARY: Check and evaluate active database rules in loyalty_rules table
     const rules = await this.getLoyaltyRules();
-    const activeRules = rules.filter(r => r.enabled).sort((a, b) => a.sort_order - b.sort_order);
+    const activeRules = rules.filter(r => r.enabled);
 
-    for (const rule of activeRules) {
-      const min = Number(rule.min_bill_amount || 0);
-      const max = rule.max_bill_amount !== null && rule.max_bill_amount !== undefined ? Number(rule.max_bill_amount) : Infinity;
+    if (activeRules.length > 0) {
+      // Sort rules by min_bill_amount descending to match the highest qualified tier first
+      const sortedRules = [...activeRules].sort((a, b) => {
+        const minA = Number(a.min_bill_amount || 0);
+        const minB = Number(b.min_bill_amount || 0);
+        if (minB !== minA) return minB - minA;
+        return (a.sort_order || 0) - (b.sort_order || 0);
+      });
 
-      if (billAmount >= min && billAmount <= max) {
-        return Number(rule.points_earned);
+      for (const rule of sortedRules) {
+        const min = Number(rule.min_bill_amount || 0);
+        const hasMax = rule.max_bill_amount !== null && rule.max_bill_amount !== undefined && Number(rule.max_bill_amount) > 0;
+        const max = hasMax ? Number(rule.max_bill_amount) : Infinity;
+
+        if (billAmount >= min && billAmount <= max) {
+          return Number(rule.points_earned);
+        }
       }
     }
 
-    return Math.max(1, Math.floor(billAmount / 100));
+    // 2. FALLBACK: Rate-based calculation if no database rules matched or table is empty
+    const earnPoints = Number(settings.loyalty?.earn_points ?? 1);
+    const spendUnit = Number(settings.loyalty?.earn_spend_unit ?? 10);
+    if (spendUnit > 0) {
+      const earned = Math.floor(billAmount / spendUnit) * earnPoints;
+      return Math.max(0, earned);
+    }
+
+    return 0;
   }
 
   // --- ROUNDING HELPER ---
@@ -758,7 +816,7 @@ export class ApiService {
     // 5. ATOMIC DATABASE SEQUENCE GENERATOR
     const bill_number = await this.getNextSequence('BILL');
 
-    const { data: bill, error: billErr } = await supabase
+    let { data: bill, error: billErr } = await supabase
       .from('bills')
       .insert([{
         bill_number,
@@ -781,6 +839,36 @@ export class ApiService {
       }])
       .select()
       .single();
+
+    if (billErr && (billErr.message?.includes('bills_payment_method_check') || billErr.message?.includes('check constraint'))) {
+      const fallbackMethod = (billData.upi_paid > billData.cash_paid) ? 'UPI' : 'Cash';
+      const retryResult = await supabase
+        .from('bills')
+        .insert([{
+          bill_number,
+          customer_id: billData.customer_id || null,
+          total: billData.total,
+          discount: totalDiscountApplied,
+          gst_amount: gstAmount,
+          rounding_method: billData.rounding_method,
+          rounding_adjustment: roundingAdjustment,
+          grand_total: roundedTotal,
+          cash_paid: billData.cash_paid,
+          upi_paid: billData.upi_paid,
+
+          paid_total: paidTotal,
+          advance_used: billData.advance_used,
+          advance_earned: advanceEarned,
+          payment_method: fallbackMethod,
+          loyalty_points_earned: isFullyPaidAtCreation ? pointsEarned : 0,
+          loyalty_points_redeemed: billData.points_to_redeem
+        }])
+        .select()
+        .single();
+
+      bill = retryResult.data;
+      billErr = retryResult.error;
+    }
 
     if (billErr) throw new Error(billErr.message);
 
@@ -1300,6 +1388,125 @@ export class ApiService {
     return totalPointsToReverse;
   }
 
+  static async recalculateAllCustomerLoyaltyPoints(userName = 'Super Admin'): Promise<{
+    customersProcessed: number;
+    customersUpdated: number;
+    billsUpdated: number;
+    totalActivePoints: number;
+  }> {
+    if (!isSupabaseConfigured) {
+      throw new Error('Supabase is not configured.');
+    }
+
+    // 1. Fetch all customers
+    const { data: customers, error: custErr } = await supabase.from('customers').select('*');
+    if (custErr) throw new Error(custErr.message);
+
+    // 2. Fetch all bills
+    const { data: bills, error: billsErr } = await supabase.from('bills').select('*');
+    if (billsErr) throw new Error(billsErr.message);
+
+    // 3. Fetch all payments
+    const { data: payments, error: payErr } = await supabase.from('payments').select('*');
+    if (payErr) throw new Error(payErr.message);
+
+    // 4. Fetch all loyalty transactions
+    const { data: transactions, error: txErr } = await supabase.from('loyalty_transactions').select('*');
+    if (txErr) throw new Error(txErr.message);
+
+    let customersUpdated = 0;
+    let billsUpdated = 0;
+    let totalActivePoints = 0;
+
+    for (const cust of (customers || [])) {
+      const custBills = (bills || []).filter(b => b.customer_id === cust.id && b.status !== 'CANCELLED');
+      const custTxs = (transactions || []).filter(t => t.customer_id === cust.id);
+
+      let customerEarnedPoints = 0;
+
+      for (const bill of custBills) {
+        const grandTotal = Number(bill.grand_total || 0);
+        const correctEarned = await this.calculateLoyaltyPointsEarned(grandTotal);
+
+        // Update bill loyalty_points_earned if changed
+        if (Number(bill.loyalty_points_earned || 0) !== correctEarned) {
+          await supabase.from('bills').update({ loyalty_points_earned: correctEarned }).eq('id', bill.id);
+          billsUpdated++;
+        }
+
+        // Determine if bill is fully paid
+        const billPayments = (payments || []).filter(p => p.bill_id === bill.id);
+        const directPaymentsSum = billPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+        const totalPaidForBill = Number(bill.advance_used || 0) + Math.max(Number(bill.paid_total || 0) - Number(bill.advance_used || 0), directPaymentsSum);
+        const isFullyPaid = totalPaidForBill >= grandTotal - 0.01;
+
+        // Existing EARN transaction for this bill
+        const earnTx = custTxs.find(t => t.bill_id === bill.id && t.type === 'EARN');
+
+        if (isFullyPaid) {
+          customerEarnedPoints += correctEarned;
+
+          if (earnTx) {
+            if (Number(earnTx.points || 0) !== correctEarned) {
+              await supabase.from('loyalty_transactions').update({
+                points: correctEarned,
+                notes: `Award Reason: Bill Fully Paid (Reconciled) - ${bill.bill_number}`
+              }).eq('id', earnTx.id);
+            }
+          } else if (correctEarned > 0) {
+            const loySeq = await this.getNextSequence('LOYALTY');
+            await supabase.from('loyalty_transactions').insert([{
+              transaction_number: loySeq,
+              customer_id: cust.id,
+              bill_id: bill.id,
+              points: correctEarned,
+              type: 'EARN',
+              created_at: bill.created_at || new Date().toISOString(),
+              notes: `Award Reason: Bill Fully Paid - ${bill.bill_number}`
+            }]);
+          }
+        } else {
+          // If not fully paid, EARN transaction should not exist or be removed
+          if (earnTx) {
+            await supabase.from('loyalty_transactions').delete().eq('id', earnTx.id);
+          }
+        }
+      }
+
+      // Calculate redeemed points from REDEEM transactions
+      const redeemTxs = custTxs.filter(t => t.type === 'REDEEM');
+      const totalRedeemed = redeemTxs.reduce((sum, t) => sum + Math.abs(Number(t.points || 0)), 0);
+
+      // Calculate manual adjustments (not bill-related)
+      const manualAdjustTxs = custTxs.filter(t => t.type === 'ADJUST' && !t.bill_id);
+      const totalAdjustments = manualAdjustTxs.reduce((sum, t) => sum + Number(t.points || 0), 0);
+
+      const finalLoyaltyPoints = Math.max(0, customerEarnedPoints - totalRedeemed + totalAdjustments);
+      totalActivePoints += finalLoyaltyPoints;
+
+      if (Number(cust.loyalty_points || 0) !== finalLoyaltyPoints) {
+        await supabase.from('customers').update({
+          loyalty_points: finalLoyaltyPoints
+        }).eq('id', cust.id);
+        customersUpdated++;
+      }
+    }
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'RECALCULATE_LOYALTY_POINTS',
+      entity: 'All Customers',
+      new_value: `Recalculated: ${customers?.length || 0} customers checked, ${customersUpdated} customer balances updated, ${billsUpdated} bills updated`
+    });
+
+    return {
+      customersProcessed: customers?.length || 0,
+      customersUpdated,
+      billsUpdated,
+      totalActivePoints
+    };
+  }
+
   static async getBillFinancialSummary(bill: Bill): Promise<BillFinancialSummary> {
     const defaultSummary: BillFinancialSummary = {
       previous_outstanding: 0,
@@ -1426,6 +1633,21 @@ export class ApiService {
         const points_added = (is_fully_paid || points_awarded) ? points_earned : 0;
         const current_points_balance = Math.max(0, previous_points + points_added - points_redeemed);
 
+        // Calculate total pending points across all unpaid customer bills
+        let total_pending_points = 0;
+        const processedBillIds = new Set<string>();
+        for (const b of (allCustBills || [])) {
+          processedBillIds.add(b.id);
+          const bDue = Math.max(0, Number(b.grand_total || 0) - (b.id === bill.id ? total_paid : Number(b.paid_total || 0)));
+          if (bDue > 0.01) {
+            const pts = (b.id === bill.id) ? points_earned : await this.calculateLoyaltyPointsEarned(Number(b.grand_total || 0));
+            total_pending_points += pts;
+          }
+        }
+        if (!processedBillIds.has(bill.id) && !is_fully_paid) {
+          total_pending_points += points_earned;
+        }
+
         const message = is_fully_paid
           ? `🎁 Loyalty Earned: +${points_earned} Points`
           : `⏳ Loyalty Points will be credited after this bill is fully paid.`;
@@ -1438,6 +1660,7 @@ export class ApiService {
           points_redeemed,
           previous_points,
           current_points_balance,
+          total_pending_points,
           message
         };
       }
@@ -1973,17 +2196,28 @@ export class ApiService {
   }
 
   // --- WHATSAPP TEXT RECEIPT GENERATOR ---
-  static generateWhatsAppTextReceipt(bill: Bill, financialSummary?: BillFinancialSummary): string {
+  // --- DIGITAL MULTI-CHANNEL RECEIPT GENERATOR (WhatsApp, Telegram, SMS, Social) ---
+  static generateDigitalReceiptText(
+    bill: Bill, 
+    financialSummary?: BillFinancialSummary, 
+    shopSettings?: Partial<ShopSettings>
+  ): string {
     const formattedDate = new Date(bill.created_at || Date.now()).toLocaleString('en-IN', {
       dateStyle: 'medium',
       timeStyle: 'short'
     });
 
+    const shopName = shopSettings?.shop_name || 'SIMPLEBILLING STORE';
+    const shopPhone = shopSettings?.phone ? `📞 Ph: ${shopSettings.phone}` : '';
+    const shopAddress = shopSettings?.address ? `📍 ${shopSettings.address}` : '';
+    const shopGstin = shopSettings?.gst_number ? `🏛️ GSTIN: ${shopSettings.gst_number}` : '';
+    const footerMsg = shopSettings?.footer_message || 'Thank you for your business!';
+
     const itemsText = (bill.items || []).map((item, idx) => 
-      `${idx + 1}. ${item.product_name}\n   Qty : ${item.quantity} × ₹${item.price.toFixed(2)} = ₹${item.total.toFixed(2)}`
+      `${idx + 1}. *${item.product_name}*\n   Qty: ${item.quantity} × ₹${Number(item.price).toFixed(2)} = ₹${Number(item.total).toFixed(2)}`
     ).join('\n\n');
 
-    const isFullyPaidFallback = Math.max(0, Number(bill.grand_total || 0) - Number(bill.paid_total || 0)) === 0;
+    const isFullyPaidFallback = Math.max(0, Number(bill.grand_total || 0) - Number(bill.paid_total || 0)) <= 0.01;
     const ptsEarnedFallback = Number(bill.loyalty_points_earned || 0);
 
     const summary: BillFinancialSummary = financialSummary || bill.financial_summary || {
@@ -2011,73 +2245,214 @@ export class ApiService {
     };
 
     const statusBadge = summary.payment_status === 'Fully Paid'
-      ? 'Status : Fully Paid ✅'
+      ? 'Status: Fully Paid ✅'
       : summary.payment_status === 'Partially Paid'
-      ? `Status : Partially Paid ℹ️ (Remaining: ₹${summary.remaining_balance.toFixed(2)})`
-      : `Status : Payment Pending ⚠️ (Remaining: ₹${summary.remaining_balance.toFixed(2)})`;
+      ? `Status: Partially Paid ℹ️ (Remaining: ₹${summary.remaining_balance.toFixed(2)})`
+      : `Status: Payment Pending ⚠️ (Remaining: ₹${summary.remaining_balance.toFixed(2)})`;
 
     const currentBillDue = Math.max(0, summary.current_bill_amount - summary.total_paid);
+    const advanceEarnedOnBill = Number(bill.advance_earned || 0);
 
-    let text = `🧾 *PRINTPRO ERP*
+    let text = `🧾 *${shopName.toUpperCase()}*`;
+    if (shopAddress) text += `\n${shopAddress}`;
+    if (shopPhone || shopGstin) {
+      text += `\n${[shopPhone, shopGstin].filter(Boolean).join(' | ')}`;
+    }
 
-🏪 *ABC PRINTING CENTER*
+    text += `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📄 *TAX INVOICE / BILL RECEIPT*
+Bill No: *${bill.bill_number}*
+Date: ${formattedDate}
+Customer: *${bill.customer_name || 'Walk-in Customer'}* ${bill.customer_mobile ? `(${bill.customer_mobile})` : ''}
+Payment Mode: *${bill.payment_method || 'Cash'}*
 
-Bill No : ${bill.bill_number}
-Date : ${formattedDate}
-Customer : ${bill.customer_name || 'N/A'}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🛒 *ITEMIZED PURCHASES*
 
-━━━━━━━━━━━━━━━━━━━━━━
-*ITEMS*
+${itemsText || '1. General Purchase\n   Qty: 1 × ₹' + Number(bill.grand_total).toFixed(2) + ' = ₹' + Number(bill.grand_total).toFixed(2)}
 
-${itemsText}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💰 *BILL TOTALS*
+Subtotal: ₹${Number(bill.total || 0).toFixed(2)}
+Discount: -₹${Number(bill.discount || 0).toFixed(2)}`;
 
-━━━━━━━━━━━━━━━━━━━━━━
-Subtotal : ₹${Number(bill.total || 0).toFixed(2)}
-Discount : ₹${Number(bill.discount || 0).toFixed(2)}
-Rounding : ${Number(bill.rounding_adjustment || 0) >= 0 ? '+' : ''}₹${Number(bill.rounding_adjustment || 0).toFixed(2)}
-🧾 *Current Bill Total* : ₹${Number(bill.grand_total || 0).toFixed(2)}
+    if (Number(bill.gst_amount || 0) > 0) {
+      text += `\nGST: +₹${Number(bill.gst_amount).toFixed(2)}`;
+    }
+    if (Number(bill.rounding_adjustment || 0) !== 0) {
+      text += `\nRounding: ${Number(bill.rounding_adjustment) >= 0 ? '+' : ''}₹${Number(bill.rounding_adjustment).toFixed(2)}`;
+    }
 
-━━━━━━━━━━━━━━━━━━━━━━
-*CUSTOMER ACCOUNT SUMMARY*
+    text += `\n🧾 *Grand Total: ₹${Number(bill.grand_total || 0).toFixed(2)}*
 
-Previous Outstanding : ₹${summary.previous_outstanding.toFixed(2)}
-Previous Advance : ₹${summary.previous_advance.toFixed(2)}
-Current Bill Amount : ₹${summary.current_bill_amount.toFixed(2)}
-*Total Amount Due* : ₹${summary.total_amount_due.toFixed(2)}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 *CUSTOMER ACCOUNT SUMMARY*
+Previous Outstanding: ₹${summary.previous_outstanding.toFixed(2)}
+Previous Advance: ₹${summary.previous_advance.toFixed(2)}
+Current Bill Amount: ₹${summary.current_bill_amount.toFixed(2)}
+*Total Amount Due: ₹${summary.total_amount_due.toFixed(2)}*
 
-━━━━━━━━━━━━━━━━━━━━━━
-*PAYMENT SUMMARY*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💵 *PAYMENT SUMMARY*
+Cash Paid: ₹${summary.cash_paid.toFixed(2)}
+UPI Paid: ₹${summary.upi_paid.toFixed(2)}
+Advance Used: ₹${summary.advance_used.toFixed(2)}
+*Total Paid: ₹${summary.total_paid.toFixed(2)}*
 
-Cash Paid : ₹${summary.cash_paid.toFixed(2)}
-UPI Paid : ₹${summary.upi_paid.toFixed(2)}
-Advance Used : ₹${summary.advance_used.toFixed(2)}
-*Total Paid* : ₹${summary.total_paid.toFixed(2)}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚖️ *BALANCE & ADVANCE SUMMARY*
+Current Bill Due: ₹${currentBillDue.toFixed(2)}
+Net Account Balance Due: ₹${summary.remaining_balance.toFixed(2)}`;
 
-━━━━━━━━━━━━━━━━━━━━━━
-*BALANCE SUMMARY*
-
-Current Bill Due : ₹${currentBillDue.toFixed(2)} (${summary.payment_status})
-Net Account Balance Due : ₹${summary.remaining_balance.toFixed(2)}
-Customer Advance Balance : ₹${summary.remaining_advance_balance.toFixed(2)}
-${statusBadge}`;
+    if (advanceEarnedOnBill > 0) {
+      text += `\n🔵 *Advance Credited (This Bill): +₹${advanceEarnedOnBill.toFixed(2)}*`;
+    }
+    text += `\nCustomer Advance Balance: ₹${summary.remaining_advance_balance.toFixed(2)}
+📌 ${statusBadge}`;
 
     if (summary.loyalty && summary.loyalty.enabled) {
-      if (summary.remaining_balance === 0 || summary.loyalty.is_fully_paid) {
-        text += `\n\n━━━━━━━━━━━━━━━━━━━━━━
-🎁 *Loyalty Earned:* +${summary.loyalty.points_earned} Points
-
-Previous Points : ${summary.loyalty.previous_points} pts
-Points Redeemed : -${summary.loyalty.points_redeemed} pts
-*Current Loyalty Balance* : ${summary.loyalty.current_points_balance} pts`;
+      text += `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🎁 *LOYALTY REWARDS*`;
+      if (summary.remaining_balance <= 0.01 || summary.loyalty.is_fully_paid) {
+        text += `\nPoints Earned (This Bill): *+${summary.loyalty.points_earned} Pts*
+Previous Points: ${summary.loyalty.previous_points} pts
+Points Redeemed: -${summary.loyalty.points_redeemed} pts
+*Current Active Loyalty Balance: ${summary.loyalty.current_points_balance} pts*`;
       } else {
-        text += `\n\n━━━━━━━━━━━━━━━━━━━━━━
-⏳ *Loyalty Points:* Will be credited after this bill is fully paid.`;
+        const totalPending = summary.loyalty.total_pending_points || summary.loyalty.points_earned;
+        text += `\n⏳ *Points on This Bill (Pending): +${summary.loyalty.points_earned} Pts*
+⏳ *Total Pending on Account: ${totalPending} Pts*
+Available Spendable Balance: ${summary.loyalty.previous_points} pts
+_(Points will be credited upon bill settlement)_`;
       }
     }
 
-    text += `\n\nThank you for visiting.\nPowered by PrintPro ERP`;
+    text += `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n${footerMsg}\n_Powered by SimpleBilling_`;
 
     return text;
+  }
+
+  // Backwards compatibility alias
+  static generateWhatsAppTextReceipt(bill: Bill, financialSummary?: BillFinancialSummary, shopSettings?: Partial<ShopSettings>): string {
+    return this.generateDigitalReceiptText(bill, financialSummary, shopSettings);
+  }
+
+  // --- HTML EMAIL RECEIPT TEMPLATE GENERATOR ---
+  static generateEmailHtmlReceipt(
+    bill: Bill, 
+    financialSummary?: BillFinancialSummary, 
+    shopSettings?: Partial<ShopSettings>
+  ): string {
+    const shopName = shopSettings?.shop_name || 'SimpleBilling Center';
+    const shopPhone = shopSettings?.phone || '';
+    const shopAddress = shopSettings?.address || '';
+    const shopGstin = shopSettings?.gst_number || '';
+    const footerMsg = shopSettings?.footer_message || 'Thank you for your business!';
+
+    const itemsRows = (bill.items || []).map((item, idx) => `
+      <tr style="border-bottom: 1px solid #e2e8f0; font-size: 13px;">
+        <td style="padding: 8px 4px; text-align: left;">${idx + 1}. ${item.product_name}</td>
+        <td style="padding: 8px 4px; text-align: center;">${item.quantity}</td>
+        <td style="padding: 8px 4px; text-align: right;">₹${Number(item.price).toFixed(2)}</td>
+        <td style="padding: 8px 4px; text-align: right; font-weight: bold;">₹${Number(item.total).toFixed(2)}</td>
+      </tr>
+    `).join('');
+
+    const summary: BillFinancialSummary = financialSummary || bill.financial_summary || {
+      previous_outstanding: 0,
+      previous_advance: 0,
+      current_bill_amount: Number(bill.grand_total || 0),
+      total_amount_due: Number(bill.grand_total || 0),
+      cash_paid: Number(bill.cash_paid || 0),
+      upi_paid: Number(bill.upi_paid || 0),
+      advance_used: Number(bill.advance_used || 0),
+      total_paid: Number(bill.paid_total || 0),
+      remaining_balance: Math.max(0, Number(bill.grand_total || 0) - Number(bill.paid_total || 0)),
+      remaining_advance_balance: Number(bill.advance_earned || 0),
+      payment_status: (Number(bill.paid_total || 0) >= Number(bill.grand_total || 0) - 0.01) ? 'Fully Paid' : 'Payment Pending'
+    };
+
+    return `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; color: #1e293b; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden;">
+        <div style="background: #0f172a; color: #ffffff; padding: 24px; text-align: center;">
+          <h1 style="margin: 0; font-size: 20px; font-weight: 800; letter-spacing: 0.5px;">${shopName.toUpperCase()}</h1>
+          ${shopAddress ? `<p style="margin: 4px 0 0 0; font-size: 12px; color: #94a3b8;">${shopAddress}</p>` : ''}
+          <p style="margin: 4px 0 0 0; font-size: 11px; color: #94a3b8;">
+            ${shopPhone ? `Ph: ${shopPhone}` : ''} ${shopGstin ? `| GSTIN: ${shopGstin}` : ''}
+          </p>
+        </div>
+
+        <div style="padding: 20px;">
+          <div style="background: #f8fafc; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; display: flex; justify-content: space-between; font-size: 13px;">
+            <div>
+              <p style="margin: 0; font-weight: bold; color: #0f172a;">Invoice #${bill.bill_number}</p>
+              <p style="margin: 2px 0 0 0; color: #64748b; font-size: 12px;">Customer: ${bill.customer_name || 'Valued Customer'}</p>
+            </div>
+            <div style="text-align: right;">
+              <p style="margin: 0; color: #64748b; font-size: 12px;">Date: ${new Date(bill.created_at || Date.now()).toLocaleDateString('en-IN')}</p>
+              <p style="margin: 2px 0 0 0; font-weight: bold; color: ${summary.remaining_balance <= 0.01 ? '#15803d' : '#b45309'}; font-size: 12px;">Status: ${summary.payment_status}</p>
+            </div>
+          </div>
+
+          <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+            <thead>
+              <tr style="background: #f1f5f9; color: #475569; font-size: 11px; text-transform: uppercase;">
+                <th style="padding: 8px 4px; text-align: left;">Item</th>
+                <th style="padding: 8px 4px; text-align: center;">Qty</th>
+                <th style="padding: 8px 4px; text-align: right;">Price</th>
+                <th style="padding: 8px 4px; text-align: right;">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${itemsRows}
+            </tbody>
+          </table>
+
+          <div style="background: #f8fafc; border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; font-size: 13px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+              <span style="color: #64748b;">Subtotal:</span>
+              <span style="font-weight: 600;">₹${Number(bill.total || 0).toFixed(2)}</span>
+            </div>
+            ${Number(bill.discount || 0) > 0 ? `
+              <div style="display: flex; justify-content: space-between; margin-bottom: 4px; color: #15803d;">
+                <span>Discount:</span>
+                <span>-₹${Number(bill.discount).toFixed(2)}</span>
+              </div>
+            ` : ''}
+            <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: 800; border-top: 2px solid #cbd5e1; padding-top: 8px; margin-top: 8px; color: #0f172a;">
+              <span>Grand Total:</span>
+              <span>₹${Number(bill.grand_total || 0).toFixed(2)}</span>
+            </div>
+          </div>
+
+          <div style="border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 12px;">
+            <p style="margin: 0 0 8px 0; font-weight: 700; text-transform: uppercase; color: #475569; font-size: 11px; letter-spacing: 0.5px;">Account & Payment Summary</p>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 3px; color: #64748b;">
+              <span>Total Paid:</span>
+              <span style="font-weight: 600; color: #15803d;">₹${summary.total_paid.toFixed(2)}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 3px; color: #64748b;">
+              <span>Current Bill Due:</span>
+              <span style="font-weight: 600; color: ${summary.remaining_balance > 0 ? '#b45309' : '#15803d'};">₹${summary.remaining_balance.toFixed(2)}</span>
+            </div>
+            ${Number(bill.advance_earned || 0) > 0 ? `
+              <div style="display: flex; justify-content: space-between; margin-bottom: 3px; color: #4338ca; font-weight: bold;">
+                <span>Advance Credited (This Bill):</span>
+                <span>+₹${Number(bill.advance_earned).toFixed(2)}</span>
+              </div>
+            ` : ''}
+            <div style="display: flex; justify-content: space-between; color: #64748b;">
+              <span>Customer Advance Balance:</span>
+              <span style="font-weight: 600;">₹${summary.remaining_advance_balance.toFixed(2)}</span>
+            </div>
+          </div>
+
+          <div style="text-align: center; padding-top: 12px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8;">
+            <p style="margin: 0;">${footerMsg}</p>
+            <p style="margin: 4px 0 0 0;">Generated by SimpleBilling</p>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   // --- DATABASE SEED UTILITY ---
