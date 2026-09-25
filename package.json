@@ -11,6 +11,9 @@
     "start": "next start",
     "start:host": "next start -H 0.0.0.0",
     "lint": "eslint",
+    "check:secrets": "node scripts/scan-secrets.js --staged",
+    "scan:history": "node scripts/scan-secrets.js --history",
+    "prepare": "node scripts/setup-git-hooks.js",
     "clean": "node -e \"fs.rmSync('.next', {recursive: true, force: true})\"",
     "clean:all": "node -e \"['.next', 'node_modules'].forEach(p => fs.rmSync(p, {recursive: true, force: true}))\""
   },
