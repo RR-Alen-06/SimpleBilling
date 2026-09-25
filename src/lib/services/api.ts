@@ -1821,6 +1821,265 @@ export class ApiService {
     }));
   }
 
+  // --- REVERSE BILL PAYMENT (MARK AS UNPAID / RESET PAYMENT) ---
+  static async reverseBillPayment(
+    billId: string, 
+    reason: string, 
+    adminPin: string, 
+    userName = 'Super Admin'
+  ): Promise<Bill> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+
+    const settings = await this.getSettings();
+    const expectedPin = settings.security?.super_admin_pin || '1234';
+    if (adminPin !== expectedPin) {
+      throw new Error('Invalid Super Admin Security PIN');
+    }
+
+    if (!reason || !reason.trim()) {
+      throw new Error('A reason is required to reverse bill payments.');
+    }
+
+    const { data: bill, error: billErr } = await supabase
+      .from('bills')
+      .select('*')
+      .eq('id', billId)
+      .single();
+
+    if (billErr || !bill) throw new Error('Bill not found');
+
+    const previousPaidTotal = Number(bill.paid_total || 0);
+    const previousCashPaid = Number(bill.cash_paid || 0);
+    const previousUpiPaid = Number(bill.upi_paid || 0);
+    const advanceEarned = Number(bill.advance_earned || 0);
+    const advanceUsed = Number(bill.advance_used || 0);
+
+    // 1. Delete all payments associated with this bill
+    const { error: payDeleteErr } = await supabase
+      .from('payments')
+      .delete()
+      .eq('bill_id', billId);
+
+    if (payDeleteErr) throw new Error(`Failed to delete associated payment records: ${payDeleteErr.message}`);
+
+    // 2. Reverse any loyalty points earned on this bill
+    if (Number(bill.loyalty_points_earned || 0) > 0) {
+      await this.reverseLoyaltyPointsForBill(billId, userName);
+    }
+
+    // 3. Update customer advance balance if advance was earned or used on this bill
+    if (bill.customer_id) {
+      const { data: cust } = await supabase
+        .from('customers')
+        .select('advance_balance')
+        .eq('id', bill.customer_id)
+        .single();
+
+      if (cust) {
+        let currentAdvance = Number(cust.advance_balance || 0);
+        currentAdvance -= advanceEarned;
+        currentAdvance += advanceUsed;
+        currentAdvance = Math.max(0, currentAdvance);
+
+        await supabase
+          .from('customers')
+          .update({ advance_balance: currentAdvance })
+          .eq('id', bill.customer_id);
+      }
+    }
+
+    // 4. Reset bill payment fields to unpaid
+    const { data: updatedBill, error: updateErr } = await supabase
+      .from('bills')
+      .update({
+        paid_total: 0,
+        cash_paid: 0,
+        upi_paid: 0,
+        advance_used: 0,
+        advance_earned: 0,
+        loyalty_points_earned: 0,
+        payment_method: 'Pay Later',
+        edited_at: new Date().toISOString(),
+        edited_by: userName,
+        edit_reason: `Payment Reversal: ${reason.trim()}`
+      })
+      .eq('id', billId)
+      .select()
+      .single();
+
+    if (updateErr) throw new Error(updateErr.message);
+
+    // 5. Audit Log
+    await this.logAudit({
+      user_name: userName,
+      action: 'REVERSE_BILL_PAYMENT',
+      entity: `Bill ${bill.bill_number}`,
+      previous_value: `Paid Total: ₹${previousPaidTotal.toFixed(2)} (Cash: ₹${previousCashPaid.toFixed(2)}, UPI: ₹${previousUpiPaid.toFixed(2)}, Adv Earned: ₹${advanceEarned.toFixed(2)}, Adv Used: ₹${advanceUsed.toFixed(2)})`,
+      new_value: `Reset to Unpaid (₹0.00). Reason: ${reason.trim()}`
+    });
+
+    return updatedBill;
+  }
+
+  // --- DELETE STANDALONE PAYMENT / REVERSE PAYMENT ENTRY ---
+  static async deletePayment(
+    paymentId: string, 
+    reason: string, 
+    adminPin: string, 
+    userName = 'Super Admin'
+  ): Promise<void> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+
+    const settings = await this.getSettings();
+    const expectedPin = settings.security?.super_admin_pin || '1234';
+    if (adminPin !== expectedPin) {
+      throw new Error('Invalid Super Admin Security PIN');
+    }
+
+    if (!reason || !reason.trim()) {
+      throw new Error('A reason is required to delete payment records.');
+    }
+
+    const { data: payment, error: payErr } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('id', paymentId)
+      .single();
+
+    if (payErr || !payment) throw new Error('Payment record not found');
+
+    const payAmount = Number(payment.amount || 0);
+
+    // 1. If attached to a bill, decrement the bill's paid_total and cash/upi
+    if (payment.bill_id) {
+      const { data: bill } = await supabase
+        .from('bills')
+        .select('*')
+        .eq('id', payment.bill_id)
+        .single();
+
+      if (bill) {
+        const currentPaid = Number(bill.paid_total || 0);
+        const newPaidTotal = Math.max(0, currentPaid - payAmount);
+        const updateData: Record<string, string | number> = {
+          paid_total: newPaidTotal
+        };
+
+        if (payment.payment_method === 'Cash') {
+          updateData.cash_paid = Math.max(0, Number(bill.cash_paid || 0) - payAmount);
+        } else if (payment.payment_method === 'UPI') {
+          updateData.upi_paid = Math.max(0, Number(bill.upi_paid || 0) - payAmount);
+        }
+
+        if (newPaidTotal <= 0.01) {
+          updateData.payment_method = 'Pay Later';
+        }
+
+        await supabase.from('bills').update(updateData).eq('id', payment.bill_id);
+      }
+    } else if (payment.customer_id) {
+      // If unallocated advance payment, decrement customer's advance_balance
+      const { data: cust } = await supabase
+        .from('customers')
+        .select('advance_balance')
+        .eq('id', payment.customer_id)
+        .single();
+
+      if (cust) {
+        const newAdvance = Math.max(0, Number(cust.advance_balance || 0) - payAmount);
+        await supabase
+          .from('customers')
+          .update({ advance_balance: newAdvance })
+          .eq('id', payment.customer_id);
+      }
+    }
+
+    // 2. Delete payment
+    const { error: delErr } = await supabase
+      .from('payments')
+      .delete()
+      .eq('id', paymentId);
+
+    if (delErr) throw new Error(delErr.message);
+
+    // 3. Audit Log
+    await this.logAudit({
+      user_name: userName,
+      action: 'DELETE_PAYMENT',
+      entity: `Payment ${payment.payment_number || payment.id} (₹${payAmount})`,
+      previous_value: JSON.stringify(payment),
+      new_value: `Deleted payment record. Reason: ${reason.trim()}`
+    });
+  }
+
+  // --- RECONCILE ALL CUSTOMER ADVANCE BALANCES ---
+  static async reconcileCustomerAdvanceBalances(userName = 'Super Admin'): Promise<{
+    customersReconciled: number;
+    discrepanciesFixed: number;
+    totalAdvanceBefore: number;
+    totalAdvanceAfter: number;
+  }> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+
+    const [{ data: customers }, { data: bills }, { data: payments }] = await Promise.all([
+      supabase.from('customers').select('id, name, advance_balance'),
+      supabase.from('bills').select('customer_id, advance_used, advance_earned'),
+      supabase.from('payments').select('customer_id, bill_id, amount')
+    ]);
+
+    const custList = customers || [];
+    const billList = bills || [];
+    const payList = payments || [];
+
+    let totalAdvanceBefore = 0;
+    let totalAdvanceAfter = 0;
+    let discrepanciesFixed = 0;
+
+    for (const cust of custList) {
+      const storedAdvance = Number(cust.advance_balance || 0);
+      totalAdvanceBefore += storedAdvance;
+
+      // Reconstruct accurate advance from raw transactions
+      const custUnallocatedPayments = payList
+        .filter(p => p.customer_id === cust.id && !p.bill_id)
+        .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+
+      const custAdvanceEarned = billList
+        .filter(b => b.customer_id === cust.id)
+        .reduce((sum, b) => sum + Number(b.advance_earned || 0), 0);
+
+      const custAdvanceUsed = billList
+        .filter(b => b.customer_id === cust.id)
+        .reduce((sum, b) => sum + Number(b.advance_used || 0), 0);
+
+      const calculatedAdvance = Math.max(0, custUnallocatedPayments + custAdvanceEarned - custAdvanceUsed);
+      totalAdvanceAfter += calculatedAdvance;
+
+      if (Math.abs(storedAdvance - calculatedAdvance) > 0.009) {
+        discrepanciesFixed++;
+        await supabase
+          .from('customers')
+          .update({ advance_balance: calculatedAdvance })
+          .eq('id', cust.id);
+      }
+    }
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'RECONCILE_ADVANCE_BALANCES',
+      entity: 'Customer Ledgers & Advance Balances',
+      previous_value: `Total Advance: ₹${totalAdvanceBefore.toFixed(2)}`,
+      new_value: `Reconciled ${discrepanciesFixed} discrepancies. Total Advance: ₹${totalAdvanceAfter.toFixed(2)}`
+    });
+
+    return {
+      customersReconciled: custList.length,
+      discrepanciesFixed,
+      totalAdvanceBefore,
+      totalAdvanceAfter
+    };
+  }
+
   // --- EXPENSES ---
   static async getExpenses(): Promise<Expense[]> {
     if (!isSupabaseConfigured) return [];

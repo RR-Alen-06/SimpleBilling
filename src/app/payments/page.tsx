@@ -18,7 +18,11 @@ import {
   Receipt, 
   Clock, 
   History,
-  Eye
+  Eye,
+  RotateCcw,
+  Trash2,
+  RefreshCw,
+  X
 } from 'lucide-react';
 
 function PaymentsContent() {
@@ -35,6 +39,12 @@ function PaymentsContent() {
   const [upiAmount, setUpiAmount] = useState<number | ''>('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [reconciling, setReconciling] = useState(false);
+
+  // Reversal / Delete Modal State
+  const [deletingPayment, setDeletingPayment] = useState<Payment | null>(null);
+  const [deleteReason, setDeleteReason] = useState('');
+  const [deletePin, setDeletePin] = useState('');
 
   // Receipt Modal State
   const [selectedPaymentForReceipt, setSelectedPaymentForReceipt] = useState<Payment | null>(null);
@@ -57,6 +67,60 @@ function PaymentsContent() {
       console.error('Failed to load payment data:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleOpenDeletePayment = (payment: Payment) => {
+    setDeletingPayment(payment);
+    setDeleteReason('Accidental payment entry / payment not received');
+    setDeletePin('');
+    setErrorMsg('');
+    setSuccessMsg('');
+  };
+
+  const handleDeletePaymentSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    if (!deletingPayment) return;
+
+    if (!deleteReason.trim()) {
+      setErrorMsg('Please state a reason for deleting/reversing this payment.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await ApiService.deletePayment(
+        deletingPayment.id,
+        deleteReason.trim(),
+        deletePin,
+        'Super Admin'
+      );
+      await ApiService.reconcileCustomerAdvanceBalances('Super Admin');
+      setSuccessMsg(`Payment ${deletingPayment.payment_number || ''} (₹${deletingPayment.amount}) was deleted and customer ledger updated.`);
+      setDeletingPayment(null);
+      loadData();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to delete payment');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleReconcileBalances = async () => {
+    setReconciling(true);
+    setErrorMsg('');
+    setSuccessMsg('');
+    try {
+      const res = await ApiService.reconcileCustomerAdvanceBalances('Super Admin');
+      setSuccessMsg(`Reconciliation complete: checked ${res.customersReconciled} customers, fixed ${res.discrepanciesFixed} balance discrepancies.`);
+      loadData();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to reconcile balances');
+    } finally {
+      setReconciling(false);
     }
   };
 
@@ -204,7 +268,16 @@ function PaymentsContent() {
           </p>
         </div>
 
-        <div className="flex items-center space-x-2">
+        <div className="flex items-center space-x-2 flex-wrap gap-2">
+          <button
+            onClick={handleReconcileBalances}
+            disabled={reconciling}
+            className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-bold px-3.5 py-2 rounded-lg transition flex items-center space-x-1.5 cursor-pointer"
+            title="Reconcile and sync customer advance balances with transaction records"
+          >
+            <RefreshCw size={14} className={reconciling ? 'animate-spin' : ''} />
+            <span>{reconciling ? 'Reconciling...' : 'Reconcile Balances'}</span>
+          </button>
           <Link
             href="/customers"
             className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold px-3.5 py-2 rounded-lg transition flex items-center space-x-1.5"
@@ -501,11 +574,11 @@ function PaymentsContent() {
                       <th className="py-2.5 px-3">Customer</th>
                       <th className="py-2.5 px-3">Mode</th>
                       <th className="py-2.5 px-3 text-right">Amount (₹)</th>
-                      <th className="py-2.5 px-3 text-center w-16">View</th>
+                      <th className="py-2.5 px-3 text-center w-20">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {filteredPayments.slice(0, 15).map((pay) => {
+                    {filteredPayments.slice(0, 20).map((pay) => {
                       const hasAdv = pay.notes?.includes('Advance Credited') || pay.notes?.includes('Advance Payment');
                       const hasDues = pay.notes?.includes('Dues Settled');
 
@@ -545,14 +618,24 @@ function PaymentsContent() {
                             )}
                           </td>
                           <td className="py-2.5 px-3 text-center">
-                            <button
-                              type="button"
-                              onClick={() => setSelectedPaymentForReceipt(pay)}
-                              className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition cursor-pointer"
-                              title="View Payment Voucher Receipt"
-                            >
-                              <Eye size={15} />
-                            </button>
+                            <div className="flex items-center justify-center space-x-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setSelectedPaymentForReceipt(pay)}
+                                className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition cursor-pointer"
+                                title="View Payment Voucher Receipt"
+                              >
+                                <Eye size={15} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleOpenDeletePayment(pay)}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                                title="Super Admin: Delete / Reverse Payment Entry"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       );
@@ -564,6 +647,87 @@ function PaymentsContent() {
           </div>
         </div>
       </div>
+
+      {/* DELETE / REVERSE PAYMENT MODAL */}
+      {deletingPayment && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4 border border-slate-200">
+            <div className="flex justify-between items-center border-b border-slate-200 pb-3">
+              <h2 className="text-lg font-bold text-rose-700 flex items-center space-x-2">
+                <Trash2 className="text-rose-600" size={20} />
+                <span>Delete Payment ({deletingPayment.payment_number || 'PAY'})</span>
+              </h2>
+              <button onClick={() => setDeletingPayment(null)} className="text-slate-400 hover:text-slate-600">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="bg-rose-50 border-l-4 border-rose-500 p-3 rounded-r-lg space-y-1 text-xs text-rose-800">
+              <span className="font-bold block">Payment Deletion Notice</span>
+              <p>Deleting this payment entry will restore the customer&apos;s pending balance due (or deduct any advance that was credited) and update all financial reports accordingly.</p>
+            </div>
+
+            <div className="bg-slate-50 rounded-lg p-3 text-xs space-y-1 border border-slate-200">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Customer:</span>
+                <span className="font-semibold text-slate-800">{deletingPayment.customer_name || 'Customer'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Payment Mode:</span>
+                <span className="font-bold text-slate-800">{deletingPayment.payment_method}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Amount to Delete:</span>
+                <span className="font-mono font-extrabold text-rose-700">₹{Number(deletingPayment.amount).toFixed(2)}</span>
+              </div>
+            </div>
+
+            <form onSubmit={handleDeletePaymentSubmit} className="space-y-3.5">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Reason for Deletion *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Accidental entry / money not received"
+                  value={deleteReason}
+                  onChange={(e) => setDeleteReason(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Super Admin Security PIN *</label>
+                <input
+                  type="password"
+                  required
+                  placeholder="PIN (Default: 1234)"
+                  value={deletePin}
+                  onChange={(e) => setDeletePin(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono font-bold"
+                />
+              </div>
+
+              <div className="flex justify-end space-x-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setDeletingPayment(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="px-5 py-2 text-xs font-extrabold bg-rose-600 hover:bg-rose-500 text-white rounded-lg shadow disabled:opacity-50 flex items-center space-x-1.5 cursor-pointer"
+                >
+                  <Trash2 size={14} className={submitting ? 'animate-spin' : ''} />
+                  <span>{submitting ? 'Deleting...' : 'Delete Payment Record'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Payment Receipt Modal */}
       {selectedPaymentForReceipt && (
