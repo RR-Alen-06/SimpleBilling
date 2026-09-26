@@ -1,13 +1,14 @@
--- ==========================================
+-- =========================================================================
 -- PrintPro ERP / Xerox & Stationery Billing System Database Schema
--- Supabase / PostgreSQL Script (Simplified Loyalty Earning & Redemption Rules)
--- ==========================================
+-- Multi-Tenant Architecture with Safe Zero-Data-Loss Backfill & Strict RLS
+-- =========================================================================
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- 0. SEQUENCES TABLE
 CREATE TABLE IF NOT EXISTS public.sequences (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     key TEXT NOT NULL,
     prefix TEXT NOT NULL,
     padding INT NOT NULL DEFAULT 6 CHECK (padding >= 2 AND padding <= 12),
@@ -20,19 +21,6 @@ ALTER TABLE public.sequences ADD COLUMN IF NOT EXISTS key TEXT;
 ALTER TABLE public.sequences ADD COLUMN IF NOT EXISTS prefix TEXT;
 ALTER TABLE public.sequences ADD COLUMN IF NOT EXISTS padding INT DEFAULT 6;
 ALTER TABLE public.sequences ADD COLUMN IF NOT EXISTS current_val BIGINT DEFAULT 0;
-
--- Seed Default Entity Sequences
-INSERT INTO public.sequences (user_id, key, prefix, padding, current_val)
-VALUES 
-    (auth.uid(), 'BILL', 'BILL', 6, 0),
-    (auth.uid(), 'CUSTOMER', 'CUS', 6, 0),
-    (auth.uid(), 'PRODUCT', 'PRD', 6, 0),
-    (auth.uid(), 'PAYMENT', 'PAY', 6, 0),
-    (auth.uid(), 'EXPENSE', 'EXP', 6, 0),
-    (auth.uid(), 'LEDGER', 'LED', 6, 0),
-    (auth.uid(), 'LOYALTY', 'LOY', 6, 0),
-    (auth.uid(), 'AUDIT', 'AUD', 6, 0)
-ON CONFLICT DO NOTHING;
 
 -- Atomic Database Transaction Sequence Generator with User Isolation
 CREATE OR REPLACE FUNCTION get_next_sequence(p_key TEXT)
@@ -71,8 +59,11 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 -- 1. CUSTOMERS TABLE
 CREATE TABLE IF NOT EXISTS public.customers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
+    customer_code TEXT,
     name TEXT NOT NULL,
     mobile TEXT,
+    email TEXT,
     advance_balance NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (advance_balance >= 0),
     loyalty_points NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (loyalty_points >= 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -86,6 +77,8 @@ ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS loyalty_points NUMERIC(10,
 -- 2. PRODUCTS TABLE
 CREATE TABLE IF NOT EXISTS public.products (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
+    product_code TEXT,
     name TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT 'Stationery',
     price NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (price >= 0),
@@ -97,6 +90,7 @@ ALTER TABLE public.products ADD COLUMN IF NOT EXISTS product_code TEXT;
 -- 3. BILLS TABLE
 CREATE TABLE IF NOT EXISTS public.bills (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     bill_number TEXT NOT NULL,
     customer_id UUID REFERENCES public.customers(id) ON DELETE SET NULL,
     total NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (total >= 0),
@@ -126,6 +120,7 @@ ALTER TABLE public.bills DROP CONSTRAINT IF EXISTS bills_payment_method_check;
 -- 4. BILL ITEMS TABLE
 CREATE TABLE IF NOT EXISTS public.bill_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     bill_id UUID NOT NULL REFERENCES public.bills(id) ON DELETE CASCADE,
     product_id UUID REFERENCES public.products(id) ON DELETE SET NULL,
     product_name TEXT NOT NULL,
@@ -139,8 +134,9 @@ ALTER TABLE public.bill_items ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES a
 -- 5. PAYMENTS TABLE
 CREATE TABLE IF NOT EXISTS public.payments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     payment_number TEXT,
-    customer_id UUID NOT NULL REFERENCES public.customers(id) ON DELETE CASCADE,
+    customer_id UUID REFERENCES public.customers(id) ON DELETE CASCADE,
     bill_id UUID REFERENCES public.bills(id) ON DELETE SET NULL,
     amount NUMERIC(10, 2) NOT NULL CHECK (amount > 0),
     payment_method TEXT NOT NULL DEFAULT 'Cash',
@@ -154,9 +150,13 @@ ALTER TABLE public.payments DROP CONSTRAINT IF EXISTS payments_payment_method_ch
 -- 6. EXPENSES TABLE
 CREATE TABLE IF NOT EXISTS public.expenses (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
+    expense_number TEXT,
     title TEXT NOT NULL,
     amount NUMERIC(10, 2) NOT NULL CHECK (amount > 0),
     category TEXT NOT NULL DEFAULT 'Shop Expense',
+    payment_mode TEXT DEFAULT 'Cash',
+    notes TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
@@ -168,6 +168,7 @@ ALTER TABLE public.expenses DROP CONSTRAINT IF EXISTS expenses_category_check;
 -- 7. SETTINGS TABLE
 CREATE TABLE IF NOT EXISTS public.settings (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     key TEXT NOT NULL,
     value JSONB NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -177,6 +178,7 @@ ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES aut
 -- 8. AUDIT LOGS TABLE
 CREATE TABLE IF NOT EXISTS public.audit_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     user_name TEXT NOT NULL DEFAULT 'Admin',
     action TEXT NOT NULL,
     entity TEXT NOT NULL,
@@ -189,6 +191,8 @@ ALTER TABLE public.audit_logs ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES a
 -- 9. LOYALTY TRANSACTIONS TABLE
 CREATE TABLE IF NOT EXISTS public.loyalty_transactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
+    transaction_number TEXT,
     customer_id UUID NOT NULL REFERENCES public.customers(id) ON DELETE CASCADE,
     bill_id UUID REFERENCES public.bills(id) ON DELETE SET NULL,
     points NUMERIC(10, 2) NOT NULL,
@@ -197,10 +201,12 @@ CREATE TABLE IF NOT EXISTS public.loyalty_transactions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE public.loyalty_transactions ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.loyalty_transactions ADD COLUMN IF NOT EXISTS transaction_number TEXT;
 
--- 10. SIMPLIFIED LOYALTY EARNING RULES TABLE
+-- 10. LOYALTY EARNING RULES TABLE
 CREATE TABLE IF NOT EXISTS public.loyalty_rules (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
     rule_name TEXT NOT NULL,
     min_bill_amount NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (min_bill_amount >= 0),
     max_bill_amount NUMERIC(10, 2),
@@ -209,8 +215,6 @@ CREATE TABLE IF NOT EXISTS public.loyalty_rules (
     sort_order INT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
--- In-place Migration: Ensure user_id and points_earned, handle legacy columns safely
 ALTER TABLE public.loyalty_rules ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
 ALTER TABLE public.loyalty_rules ADD COLUMN IF NOT EXISTS points_earned NUMERIC(10, 2) NOT NULL DEFAULT 1.00;
 
@@ -231,24 +235,68 @@ CREATE TABLE IF NOT EXISTS public.loyalty_redemption_rules (
 );
 ALTER TABLE public.loyalty_redemption_rules ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
 
--- Note: Loyalty earning rules, redemption rules, products, and customers are configured dynamically per shop admin via Settings.
+-- =========================================================================
+-- ZERO-DATA-LOSS BACKFILL BLOCK
+-- =========================================================================
+DO $$
+DECLARE
+    v_owner_id UUID;
+    v_updated_count INT;
+BEGIN
+    SELECT id INTO v_owner_id FROM auth.users ORDER BY created_at ASC LIMIT 1;
 
--- Indexes for fast query performance & data integrity
+    IF v_owner_id IS NOT NULL THEN
+        UPDATE public.sequences SET user_id = v_owner_id WHERE user_id IS NULL;
+        UPDATE public.customers SET user_id = v_owner_id WHERE user_id IS NULL;
+        UPDATE public.products SET user_id = v_owner_id WHERE user_id IS NULL;
+        UPDATE public.bills SET user_id = v_owner_id WHERE user_id IS NULL;
+        UPDATE public.bill_items bi SET user_id = COALESCE(b.user_id, v_owner_id)
+        FROM public.bills b WHERE bi.bill_id = b.id AND bi.user_id IS NULL;
+        UPDATE public.bill_items SET user_id = v_owner_id WHERE user_id IS NULL;
+        UPDATE public.payments SET user_id = v_owner_id WHERE user_id IS NULL;
+        UPDATE public.expenses SET user_id = v_owner_id WHERE user_id IS NULL;
+        UPDATE public.settings SET user_id = v_owner_id WHERE user_id IS NULL;
+        UPDATE public.audit_logs SET user_id = v_owner_id WHERE user_id IS NULL;
+        UPDATE public.loyalty_transactions SET user_id = v_owner_id WHERE user_id IS NULL;
+        UPDATE public.loyalty_rules SET user_id = v_owner_id WHERE user_id IS NULL;
+        UPDATE public.loyalty_redemption_rules SET user_id = v_owner_id WHERE user_id IS NULL;
+    END IF;
+END $$;
+
+-- Clean up any legacy duplicate seed rules before creating unique constraints
+DELETE FROM public.loyalty_redemption_rules a
+WHERE a.id NOT IN (
+    SELECT MIN(id::text)::uuid
+    FROM public.loyalty_redemption_rules
+    GROUP BY user_id, points_required
+);
+
+DELETE FROM public.loyalty_rules a
+WHERE a.id NOT IN (
+    SELECT MIN(id::text)::uuid
+    FROM public.loyalty_rules
+    GROUP BY user_id, rule_name
+);
+
+-- Performance & Multi-Tenant Indexes
 CREATE INDEX IF NOT EXISTS idx_customers_user_id ON public.customers(user_id);
 CREATE INDEX IF NOT EXISTS idx_products_user_id ON public.products(user_id);
 CREATE INDEX IF NOT EXISTS idx_bills_user_id ON public.bills(user_id);
 CREATE INDEX IF NOT EXISTS idx_bills_customer_id ON public.bills(customer_id);
 CREATE INDEX IF NOT EXISTS idx_bills_created_at ON public.bills(created_at);
 CREATE INDEX IF NOT EXISTS idx_bill_items_bill_id ON public.bill_items(bill_id);
+CREATE INDEX IF NOT EXISTS idx_bill_items_user_id ON public.bill_items(user_id);
 CREATE INDEX IF NOT EXISTS idx_payments_user_id ON public.payments(user_id);
 CREATE INDEX IF NOT EXISTS idx_expenses_user_id ON public.expenses(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON public.audit_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_loyalty_transactions_user_id ON public.loyalty_transactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_loyalty_redemption_user ON public.loyalty_redemption_rules(user_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_loyalty_redemption_unique ON public.loyalty_redemption_rules(user_id, points_required);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_loyalty_rules_unique ON public.loyalty_rules(user_id, rule_name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sequences_user_key ON public.sequences(user_id, key);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_settings_user_key ON public.settings(user_id, key);
 
--- Enable RLS Policies on ALL tables
+-- Enable RLS on all 12 tables
 ALTER TABLE public.sequences ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.customers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
@@ -276,6 +324,19 @@ DROP POLICY IF EXISTS "Allow full access to loyalty_transactions" ON public.loya
 DROP POLICY IF EXISTS "Allow full access to loyalty_rules" ON public.loyalty_rules;
 DROP POLICY IF EXISTS "Allow full access to loyalty_redemption_rules" ON public.loyalty_redemption_rules;
 
+DROP POLICY IF EXISTS "Allow all access to sequences" ON public.sequences;
+DROP POLICY IF EXISTS "Allow all access to customers" ON public.customers;
+DROP POLICY IF EXISTS "Allow all access to products" ON public.products;
+DROP POLICY IF EXISTS "Allow all access to bills" ON public.bills;
+DROP POLICY IF EXISTS "Allow all access to bill_items" ON public.bill_items;
+DROP POLICY IF EXISTS "Allow all access to payments" ON public.payments;
+DROP POLICY IF EXISTS "Allow all access to expenses" ON public.expenses;
+DROP POLICY IF EXISTS "Allow all access to settings" ON public.settings;
+DROP POLICY IF EXISTS "Allow all access to audit_logs" ON public.audit_logs;
+DROP POLICY IF EXISTS "Allow all access to loyalty_transactions" ON public.loyalty_transactions;
+DROP POLICY IF EXISTS "Allow all access to loyalty_rules" ON public.loyalty_rules;
+DROP POLICY IF EXISTS "Allow all access to loyalty_redemption_rules" ON public.loyalty_redemption_rules;
+
 DROP POLICY IF EXISTS "User data isolation on sequences" ON public.sequences;
 DROP POLICY IF EXISTS "User data isolation on customers" ON public.customers;
 DROP POLICY IF EXISTS "User data isolation on products" ON public.products;
@@ -289,19 +350,19 @@ DROP POLICY IF EXISTS "User data isolation on loyalty_transactions" ON public.lo
 DROP POLICY IF EXISTS "User data isolation on loyalty_rules" ON public.loyalty_rules;
 DROP POLICY IF EXISTS "User data isolation on loyalty_redemption_rules" ON public.loyalty_redemption_rules;
 
--- Drop previous policies if they exist (allows safe re-execution)
-DROP POLICY IF EXISTS "Allow all access to sequences" ON public.sequences;
-DROP POLICY IF EXISTS "Allow all access to customers" ON public.customers;
-DROP POLICY IF EXISTS "Allow all access to products" ON public.products;
-DROP POLICY IF EXISTS "Allow all access to bills" ON public.bills;
-DROP POLICY IF EXISTS "Allow all access to bill_items" ON public.bill_items;
-DROP POLICY IF EXISTS "Allow all access to payments" ON public.payments;
-DROP POLICY IF EXISTS "Allow all access to expenses" ON public.expenses;
-DROP POLICY IF EXISTS "Allow all access to settings" ON public.settings;
-DROP POLICY IF EXISTS "Allow all access to audit_logs" ON public.audit_logs;
-DROP POLICY IF EXISTS "Allow all access to loyalty_transactions" ON public.loyalty_transactions;
-DROP POLICY IF EXISTS "Allow all access to loyalty_rules" ON public.loyalty_rules;
-DROP POLICY IF EXISTS "Allow all access to loyalty_redemption_rules" ON public.loyalty_redemption_rules;
+DROP POLICY IF EXISTS "Tenant isolation on sequences" ON public.sequences;
+DROP POLICY IF EXISTS "Tenant isolation on customers" ON public.customers;
+DROP POLICY IF EXISTS "Tenant isolation on products" ON public.products;
+DROP POLICY IF EXISTS "Tenant isolation on bills" ON public.bills;
+DROP POLICY IF EXISTS "Tenant isolation on bill_items" ON public.bill_items;
+DROP POLICY IF EXISTS "Tenant isolation on payments" ON public.payments;
+DROP POLICY IF EXISTS "Tenant isolation on expenses" ON public.expenses;
+DROP POLICY IF EXISTS "Tenant isolation on settings" ON public.settings;
+DROP POLICY IF EXISTS "Tenant isolation on loyalty_transactions" ON public.loyalty_transactions;
+DROP POLICY IF EXISTS "Tenant isolation on loyalty_rules" ON public.loyalty_rules;
+DROP POLICY IF EXISTS "Tenant isolation on loyalty_redemption_rules" ON public.loyalty_redemption_rules;
+DROP POLICY IF EXISTS "Tenant insert on audit_logs" ON public.audit_logs;
+DROP POLICY IF EXISTS "Tenant select on audit_logs" ON public.audit_logs;
 
 -- Create Strict Multi-Tenant Access Policies (Enforces auth.uid() = user_id for authenticated sessions)
 CREATE POLICY "Tenant isolation on sequences" ON public.sequences FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);

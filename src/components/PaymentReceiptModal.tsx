@@ -6,15 +6,8 @@ import { ApiService, DEFAULT_SETTINGS } from '@/lib/services/api';
 import { 
   Printer, 
   X, 
-  CheckCircle2, 
   MessageSquare, 
-  Receipt,
-  Wallet,
-  Building2,
-  Calendar,
-  User,
-  Phone,
-  ArrowRight
+  Receipt
 } from 'lucide-react';
 
 interface PaymentReceiptModalProps {
