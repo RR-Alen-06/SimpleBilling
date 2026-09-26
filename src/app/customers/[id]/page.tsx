@@ -272,6 +272,19 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
 
         {loading ? (
           <div className="p-12 text-center text-slate-500 text-sm">Calculating running ledger balance...</div>
+        ) : !customer ? (
+          <div className="p-12 text-center text-slate-500">
+            <AlertTriangle className="mx-auto text-amber-500 mb-3" size={40} />
+            <p className="font-bold text-base text-slate-800">Customer Not Found</p>
+            <p className="text-xs text-slate-500 mt-1">This customer record does not exist or you do not have permission to view it.</p>
+            <Link
+              href="/customers"
+              className="mt-4 inline-flex items-center space-x-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg transition shadow-sm"
+            >
+              <ArrowLeft size={14} />
+              <span>Return to Customers</span>
+            </Link>
+          </div>
         ) : entries.length === 0 ? (
           <div className="p-12 text-center text-slate-500">
             <Receipt className="mx-auto text-slate-300 mb-3" size={40} />

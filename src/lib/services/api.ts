@@ -94,7 +94,20 @@ export const DEFAULT_SETTINGS: AllSettings = {
 };
 
 export class ApiService {
-  // --- ATOMIC SEQUENCE MANAGEMENT ---
+  /**
+   * Helper to retrieve currently authenticated tenant user ID
+   */
+  static async getUserId(): Promise<string | null> {
+    if (!isSupabaseConfigured) return null;
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      return user?.id || null;
+    } catch {
+      return null;
+    }
+  }
+
+
   static async getNextSequence(key: string): Promise<string> {
     if (!isSupabaseConfigured) {
       const fallbackNum = Date.now().toString().slice(-6);
@@ -110,8 +123,15 @@ export class ApiService {
     }
   }
 
+
   private static async fallbackSequence(key: string): Promise<string> {
-    const { data: seq } = await supabase.from('sequences').select('*').eq('key', key.toUpperCase()).single();
+    const userId = await this.getUserId();
+    let query = supabase.from('sequences').select('*').eq('key', key.toUpperCase());
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+    const { data: seq } = await query.maybeSingle();
+
     const prefix = seq?.prefix || key.slice(0, 3).toUpperCase();
     const padding = seq?.padding || 6;
     const nextVal = (seq?.current_val || 0) + 1;
@@ -121,25 +141,35 @@ export class ApiService {
       prefix,
       padding,
       current_val: nextVal,
+      ...(userId ? { user_id: userId } : {}),
       updated_at: new Date().toISOString()
     });
 
     return `${prefix}-${String(nextVal).padStart(padding, '0')}`;
   }
 
+
   static async getSequences(): Promise<SequenceConfig[]> {
     if (!isSupabaseConfigured) return [];
-    const { data, error } = await supabase.from('sequences').select('*').order('key', { ascending: true });
+    const userId = await this.getUserId();
+    let query = supabase.from('sequences').select('*');
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+    const { data, error } = await query.order('key', { ascending: true });
     if (error) return [];
     return data || [];
   }
 
+
   static async updateSequenceConfig(key: string, prefix: string, padding: number, userName = 'Super Admin'): Promise<void> {
     if (!isSupabaseConfigured) return;
+    const userId = await this.getUserId();
     const { error } = await supabase.from('sequences').upsert({
       key: key.toUpperCase(),
       prefix: prefix.toUpperCase(),
       padding: Math.min(12, Math.max(2, padding)),
+      ...(userId ? { user_id: userId } : {}),
       updated_at: new Date().toISOString()
     });
     if (error) throw new Error(error.message);
@@ -152,16 +182,22 @@ export class ApiService {
     });
   }
 
-  // --- DYNAMIC LOYALTY REDEMPTION RULES CRUD ---
+
   static async getLoyaltyRedemptionRules(): Promise<LoyaltyRedemptionRule[]> {
     if (!isSupabaseConfigured) {
       return [];
     }
 
-    const { data, error } = await supabase
+    const userId = await this.getUserId();
+    let query = supabase
       .from('loyalty_redemption_rules')
-      .select('*')
-      .order('points_required', { ascending: true });
+      .select('*');
+
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+
+    const { data, error } = await query.order('points_required', { ascending: true });
 
     if (error) {
       console.error('Error fetching loyalty redemption rules:', error);
@@ -186,15 +222,25 @@ export class ApiService {
 
     // Auto-purge duplicates from database
     if (duplicateIdsToDelete.length > 0) {
-      supabase.from('loyalty_redemption_rules').delete().in('id', duplicateIdsToDelete).then();
+      let delQuery = supabase.from('loyalty_redemption_rules').delete().in('id', duplicateIdsToDelete);
+      if (userId) {
+        delQuery = delQuery.eq('user_id', userId);
+      }
+      delQuery.then();
     }
 
     return uniqueRules;
   }
 
+
   static async clearAllLoyaltyRedemptionRules(userName = 'Super Admin'): Promise<void> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
-    const { error } = await supabase.from('loyalty_redemption_rules').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    const userId = await this.getUserId();
+    let query = supabase.from('loyalty_redemption_rules').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+    const { error } = await query;
     if (error) throw new Error(error.message);
 
     await this.logAudit({
@@ -204,22 +250,35 @@ export class ApiService {
     });
   }
 
+
   static async addLoyaltyRedemptionRule(rule: Omit<LoyaltyRedemptionRule, 'id' | 'created_at'>, userName = 'Super Admin'): Promise<LoyaltyRedemptionRule> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const userId = await this.getUserId();
 
     // Prevent duplicate points_required rules
-    const { data: existing } = await supabase
+    let checkQuery = supabase
       .from('loyalty_redemption_rules')
       .select('id, points_required')
-      .eq('points_required', rule.points_required)
-      .maybeSingle();
+      .eq('points_required', rule.points_required);
+
+    if (userId) {
+      checkQuery = checkQuery.eq('user_id', userId);
+    }
+
+    const { data: existing } = await checkQuery.maybeSingle();
 
     if (existing) {
       throw new Error(`A redemption rule for ${rule.points_required} Points already exists. Please edit the existing rule.`);
     }
 
-    const { data, error } = await supabase.from('loyalty_redemption_rules').insert([rule]).select().single();
+    const payload = {
+      ...rule,
+      ...(userId ? { user_id: userId } : {})
+    };
+
+    const { data, error } = await supabase.from('loyalty_redemption_rules').insert([payload]).select().maybeSingle();
     if (error) throw new Error(error.message);
+    if (!data) throw new Error('Failed to create loyalty redemption rule');
 
     await this.logAudit({
       user_name: userName,
@@ -231,11 +290,21 @@ export class ApiService {
     return data;
   }
 
+
   static async updateLoyaltyRedemptionRule(id: string, rule: Partial<Omit<LoyaltyRedemptionRule, 'id' | 'created_at'>>, userName = 'Super Admin'): Promise<LoyaltyRedemptionRule> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const userId = await this.getUserId();
 
-    const { data, error } = await supabase.from('loyalty_redemption_rules').update(rule).eq('id', id).select().single();
+    let query = supabase.from('loyalty_redemption_rules').update(rule).eq('id', id);
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+
+    const { data, error } = await query.select().maybeSingle();
     if (error) throw new Error(error.message);
+    if (!data) {
+      throw new Error('Loyalty redemption rule not found');
+    }
 
     await this.logAudit({
       user_name: userName,
@@ -247,9 +316,26 @@ export class ApiService {
     return data;
   }
 
+
   static async deleteLoyaltyRedemptionRule(id: string, userName = 'Super Admin'): Promise<void> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
-    const { error } = await supabase.from('loyalty_redemption_rules').delete().eq('id', id);
+    const userId = await this.getUserId();
+
+    // Verify existence & ownership
+    let checkQuery = supabase.from('loyalty_redemption_rules').select('id').eq('id', id);
+    if (userId) {
+      checkQuery = checkQuery.eq('user_id', userId);
+    }
+    const { data: existing } = await checkQuery.maybeSingle();
+    if (!existing) {
+      throw new Error('Loyalty redemption rule not found');
+    }
+
+    let delQuery = supabase.from('loyalty_redemption_rules').delete().eq('id', id);
+    if (userId) {
+      delQuery = delQuery.eq('user_id', userId);
+    }
+    const { error } = await delQuery;
     if (error) throw new Error(error.message);
 
     await this.logAudit({
@@ -292,12 +378,21 @@ export class ApiService {
   }
 
   // --- SIMPLIFIED DYNAMIC LOYALTY EARNING RULES ---
+
+
   static async getLoyaltyRules(): Promise<LoyaltyRule[]> {
     if (!isSupabaseConfigured) {
       return [];
     }
 
-    const { data, error } = await supabase.from('loyalty_rules').select('*').order('sort_order', { ascending: true });
+    const userId = await this.getUserId();
+    let query = supabase.from('loyalty_rules').select('*');
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+
+    const { data, error } = await query.order('sort_order', { ascending: true });
+
     if (error) {
       console.error('Error fetching loyalty rules:', error);
       return [];
@@ -305,13 +400,13 @@ export class ApiService {
 
     if (!data || data.length === 0) return [];
 
-    // Auto-deduplicate by rule_name
+    // Deduplicate by rule_name
     const seen = new Set<string>();
     const uniqueRules: LoyaltyRule[] = [];
     const duplicateIdsToDelete: string[] = [];
 
     for (const rule of data) {
-      const normalizedName = rule.rule_name.trim().toLowerCase();
+      const normalizedName = rule.rule_name?.trim().toLowerCase() || '';
       if (!seen.has(normalizedName)) {
         seen.add(normalizedName);
         uniqueRules.push(rule);
@@ -320,71 +415,120 @@ export class ApiService {
       }
     }
 
-    // Auto-purge duplicates from database
     if (duplicateIdsToDelete.length > 0) {
-      supabase.from('loyalty_rules').delete().in('id', duplicateIdsToDelete).then();
+      let delQuery = supabase.from('loyalty_rules').delete().in('id', duplicateIdsToDelete);
+      if (userId) {
+        delQuery = delQuery.eq('user_id', userId);
+      }
+      delQuery.then();
     }
 
     return uniqueRules;
   }
 
+
   static async clearAllLoyaltyRules(userName = 'Super Admin'): Promise<void> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
-    const { error } = await supabase.from('loyalty_rules').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    const userId = await this.getUserId();
+    let query = supabase.from('loyalty_rules').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+    const { error } = await query;
     if (error) throw new Error(error.message);
 
     await this.logAudit({
       user_name: userName,
       action: 'CLEAR_ALL_LOYALTY_RULES',
-      entity: 'All Earning Rules'
+      entity: 'All Loyalty Rules'
     });
   }
 
+
   static async addLoyaltyRule(rule: Omit<LoyaltyRule, 'id' | 'created_at'>, userName = 'Super Admin'): Promise<LoyaltyRule> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const userId = await this.getUserId();
 
-    const { data: existing } = await supabase
+    let checkQuery = supabase
       .from('loyalty_rules')
       .select('id, rule_name')
-      .ilike('rule_name', rule.rule_name)
-      .maybeSingle();
+      .ilike('rule_name', rule.rule_name.trim());
 
-    if (existing) {
-      throw new Error(`A loyalty rule named "${rule.rule_name}" already exists. Please choose a different name.`);
+    if (userId) {
+      checkQuery = checkQuery.eq('user_id', userId);
     }
 
-    const { data, error } = await supabase.from('loyalty_rules').insert([rule]).select().single();
+    const { data: existing } = await checkQuery.maybeSingle();
+
+    if (existing) {
+      throw new Error(`A loyalty rule with the name "${rule.rule_name}" already exists.`);
+    }
+
+    const payload = {
+      ...rule,
+      ...(userId ? { user_id: userId } : {})
+    };
+
+    const { data, error } = await supabase.from('loyalty_rules').insert([payload]).select().maybeSingle();
     if (error) throw new Error(error.message);
+    if (!data) throw new Error('Failed to create loyalty rule');
 
     await this.logAudit({
       user_name: userName,
       action: 'ADD_LOYALTY_RULE',
-      entity: `Rule ${rule.rule_name}`,
+      entity: `Loyalty Rule (${rule.rule_name})`,
       new_value: JSON.stringify(data)
     });
 
     return data;
   }
 
+
   static async updateLoyaltyRule(id: string, rule: Partial<Omit<LoyaltyRule, 'id' | 'created_at'>>, userName = 'Super Admin'): Promise<LoyaltyRule> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const userId = await this.getUserId();
 
-    const { data, error } = await supabase.from('loyalty_rules').update(rule).eq('id', id).select().single();
+    let query = supabase.from('loyalty_rules').update(rule).eq('id', id);
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+
+    const { data, error } = await query.select().maybeSingle();
     if (error) throw new Error(error.message);
+    if (!data) {
+      throw new Error('Loyalty rule not found');
+    }
 
     await this.logAudit({
       user_name: userName,
       action: 'UPDATE_LOYALTY_RULE',
-      entity: `Rule ${data.rule_name}`,
+      entity: `Loyalty Rule ID ${id}`,
       new_value: JSON.stringify(data)
     });
 
     return data;
   }
 
+
   static async deleteLoyaltyRule(id: string, userName = 'Super Admin'): Promise<void> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
-    const { error } = await supabase.from('loyalty_rules').delete().eq('id', id);
+    const userId = await this.getUserId();
+
+    // Verify existence & ownership
+    let checkQuery = supabase.from('loyalty_rules').select('id').eq('id', id);
+    if (userId) {
+      checkQuery = checkQuery.eq('user_id', userId);
+    }
+    const { data: existing } = await checkQuery.maybeSingle();
+    if (!existing) {
+      throw new Error('Loyalty rule not found');
+    }
+
+    let delQuery = supabase.from('loyalty_rules').delete().eq('id', id);
+    if (userId) {
+      delQuery = delQuery.eq('user_id', userId);
+    }
+    const { error } = await delQuery;
     if (error) throw new Error(error.message);
 
     await this.logAudit({
@@ -438,6 +582,7 @@ export class ApiService {
   }
 
   // --- ROUNDING HELPER ---
+
   static calculateRounding(subtotalAfterDiscount: number, method: RoundingMethod): {
     roundedTotal: number;
     roundingAdjustment: number;
@@ -466,35 +611,45 @@ export class ApiService {
   }
 
   // --- SETTINGS SERVICE ---
-  static async getSettings(): Promise<AllSettings> {
-    if (!isSupabaseConfigured) return DEFAULT_SETTINGS;
-    try {
-      const { data, error } = await supabase.from('settings').select('*');
-      if (error || !data || data.length === 0) return DEFAULT_SETTINGS;
 
-      const merged = { ...DEFAULT_SETTINGS };
-      data.forEach(row => {
-        if (row.key in merged) {
-          const defaultSub = (DEFAULT_SETTINGS as unknown as Record<string, object>)[row.key] || {};
-          (merged as unknown as Record<string, object>)[row.key] = {
-            ...defaultSub,
-            ...(row.value || {})
-          };
-        }
-      });
-      return merged;
-    } catch {
+
+  static async getSettings(): Promise<AllSettings> {
+    if (!isSupabaseConfigured) {
       return DEFAULT_SETTINGS;
     }
+
+    const userId = await this.getUserId();
+    let query = supabase.from('settings').select('*');
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+
+    const { data, error } = await query;
+    if (error || !data) return DEFAULT_SETTINGS;
+
+    const merged = { ...DEFAULT_SETTINGS };
+    data.forEach((row: { key: string; value: unknown }) => {
+      const k = row.key as keyof AllSettings;
+      if (k in merged) {
+        (merged as unknown as Record<string, unknown>)[k] = {
+          ...((merged as unknown as Record<string, unknown>)[k] as Record<string, unknown>),
+          ...(row.value as Record<string, unknown>)
+        };
+      }
+    });
+    return merged;
   }
+
 
   static async saveSettings(key: keyof AllSettings, value: unknown, userName = 'Super Admin'): Promise<void> {
     if (!isSupabaseConfigured) return;
+    const userId = await this.getUserId();
     
     const prev = await this.getSettings();
     const { error } = await supabase.from('settings').upsert({
       key,
       value,
+      ...(userId ? { user_id: userId } : {}),
       updated_at: new Date().toISOString()
     });
 
@@ -509,13 +664,15 @@ export class ApiService {
     });
   }
 
-  // --- AUDIT LOGGING ---
+
   static async logAudit(log: Omit<AuditLog, 'id' | 'created_at'>): Promise<void> {
     if (!isSupabaseConfigured) return;
     try {
+      const userId = await this.getUserId();
       const auditNumber = await this.getNextSequence('AUDIT');
       await supabase.from('audit_logs').insert([{
         ...log,
+        ...(userId ? { user_id: userId } : {}),
         audit_number: auditNumber
       }]);
     } catch (err) {
@@ -523,74 +680,115 @@ export class ApiService {
     }
   }
 
+
   static async getAuditLogs(): Promise<AuditLog[]> {
     if (!isSupabaseConfigured) return [];
-    const { data, error } = await supabase
+    const userId = await this.getUserId();
+    let query = supabase
       .from('audit_logs')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(100);
+      .select('*');
 
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+
+    const { data, error } = await query.order('created_at', { ascending: false }).limit(200);
     if (error) return [];
     return data || [];
   }
 
-  // --- PRODUCTS ---
+
   static async getProducts(): Promise<Product[]> {
     if (!isSupabaseConfigured) return [];
-    const { data, error } = await supabase
+    const userId = await this.getUserId();
+    let query = supabase
       .from('products')
-      .select('*')
-      .order('name', { ascending: true });
-    
+      .select('*');
+
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+
+    const { data, error } = await query.order('name', { ascending: true });
     if (error) return [];
     return data || [];
   }
+
 
   static async getProductById(id: string): Promise<Product | null> {
     if (!isSupabaseConfigured) return null;
-    const { data, error } = await supabase
-      .from('products')
-      .select('*')
-      .eq('id', id)
-      .single();
-    
-    if (error || !data) return null;
-    return data;
+    try {
+      const userId = await this.getUserId();
+      let query = supabase
+        .from('products')
+        .select('*')
+        .eq('id', id);
+
+      if (userId) {
+        query = query.eq('user_id', userId);
+      }
+
+      const { data, error } = await query.maybeSingle();
+      if (error || !data) return null;
+      return data;
+    } catch {
+      return null;
+    }
   }
+
 
   static async addProduct(product: Omit<Product, 'id' | 'created_at'>, userName = 'Admin'): Promise<Product> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const userId = await this.getUserId();
     const product_code = await this.getNextSequence('PRODUCT');
+
+    const payload = {
+      ...product,
+      product_code,
+      ...(userId ? { user_id: userId } : {})
+    };
 
     const { data, error } = await supabase
       .from('products')
-      .insert([{ ...product, product_code }])
+      .insert([payload])
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw new Error(error.message);
+    if (!data) throw new Error('Failed to create product');
 
     await this.logAudit({
       user_name: userName,
-      action: 'ADD_PRODUCT',
-      entity: `Product ${data.name} (${product_code})`,
+      action: 'CREATE_PRODUCT',
+      entity: `Product ${product.name}`,
       new_value: JSON.stringify(data)
     });
 
     return data;
   }
 
+
   static async updateProduct(id: string, product: Partial<Omit<Product, 'id' | 'created_at'>>, userName = 'Admin'): Promise<Product> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
-    const { data, error } = await supabase
+    const userId = await this.getUserId();
+
+    let query = supabase
       .from('products')
       .update(product)
-      .eq('id', id)
+      .eq('id', id);
+
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+
+    const { data, error } = await query
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw new Error(error.message);
+    if (!data) {
+      throw new Error('Product not found');
+    }
 
     await this.logAudit({
       user_name: userName,
@@ -602,9 +800,23 @@ export class ApiService {
     return data;
   }
 
+
   static async deleteProduct(id: string, userName = 'Admin'): Promise<void> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
-    const { error } = await supabase.from('products').delete().eq('id', id);
+    const userId = await this.getUserId();
+
+    // Verify existence & ownership
+    const existing = await this.getProductById(id);
+    if (!existing) {
+      throw new Error('Product not found');
+    }
+
+    let delQuery = supabase.from('products').delete().eq('id', id);
+    if (userId) {
+      delQuery = delQuery.eq('user_id', userId);
+    }
+
+    const { error } = await delQuery;
     if (error) throw new Error(error.message);
 
     await this.logAudit({
@@ -614,109 +826,144 @@ export class ApiService {
     });
   }
 
-  // --- CUSTOMERS ---
+
   static async getCustomers(): Promise<Customer[]> {
     if (!isSupabaseConfigured) return [];
-    const { data, error } = await supabase
+    const userId = await this.getUserId();
+    let query = supabase
       .from('customers')
-      .select('*')
-      .order('name', { ascending: true });
+      .select('*');
 
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+
+    const { data, error } = await query.order('name', { ascending: true });
     if (error) return [];
     return data || [];
   }
 
+
   static async addCustomer(customer: { name: string; mobile?: string; email?: string }, userName = 'Admin'): Promise<Customer> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const userId = await this.getUserId();
     const customer_code = await this.getNextSequence('CUSTOMER');
+
+    const payload = {
+      name: customer.name,
+      mobile: customer.mobile || null,
+      email: customer.email || null,
+      customer_code,
+      advance_balance: 0,
+      loyalty_points: 0,
+      ...(userId ? { user_id: userId } : {})
+    };
 
     const { data, error } = await supabase
       .from('customers')
-      .insert([{ 
-        customer_code,
-        name: customer.name, 
-        mobile: customer.mobile || null,
-        email: customer.email || null,
-        advance_balance: 0,
-        loyalty_points: 0
-      }])
+      .insert([payload])
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw new Error(error.message);
+    if (!data) throw new Error('Failed to create customer');
 
     await this.logAudit({
       user_name: userName,
-      action: 'ADD_CUSTOMER',
-      entity: `Customer ${data.name} (${customer_code})`,
+      action: 'CREATE_CUSTOMER',
+      entity: `Customer ${customer.name}`,
       new_value: JSON.stringify(data)
     });
 
     return data;
   }
 
+
   static async updateCustomer(id: string, customer: { name: string; mobile?: string; email?: string }, userName = 'Admin'): Promise<Customer> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
-    const { data, error } = await supabase
+    const userId = await this.getUserId();
+
+    let query = supabase
       .from('customers')
-      .update({ 
-        name: customer.name, 
+      .update({
+        name: customer.name,
         mobile: customer.mobile || null,
-        email: customer.email || null 
+        email: customer.email || null
       })
-      .eq('id', id)
+      .eq('id', id);
+
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+
+    const { data, error } = await query
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw new Error(error.message);
+    if (!data) {
+      throw new Error('Customer not found');
+    }
 
     await this.logAudit({
       user_name: userName,
       action: 'UPDATE_CUSTOMER',
-      entity: `Customer ${data.name}`,
+      entity: `Customer ${customer.name}`,
       new_value: JSON.stringify(data)
     });
 
     return data;
   }
 
-  static async getCustomerSummaries(): Promise<CustomerSummary[]> {
-    if (!isSupabaseConfigured) return [];
-    
-    const customers = await this.getCustomers();
-    if (customers.length === 0) return [];
 
-    const { data: bills } = await supabase.from('bills').select('customer_id, grand_total, paid_total');
+  static async getCustomerSummaries(): Promise<CustomerSummary[]> {
+    const customers = await this.getCustomers();
+    if (!customers.length) return [];
+
+    const userId = await this.getUserId();
+    let billsQuery = supabase.from('bills').select('customer_id, grand_total, paid_total');
+    let paymentsQuery = supabase.from('payments').select('customer_id, amount, bill_id, status');
+
+    if (userId) {
+      billsQuery = billsQuery.eq('user_id', userId);
+      paymentsQuery = paymentsQuery.eq('user_id', userId);
+    }
+
+    const { data: bills } = await billsQuery;
+    const { data: payments } = await paymentsQuery;
 
     return customers.map(cust => {
-      const custBills = bills?.filter(b => b.customer_id === cust.id) || [];
+      const custBills = (bills || []).filter(b => b.customer_id === cust.id);
+      const custPayments = (payments || []).filter(
+        p => p.customer_id === cust.id && p.status !== 'CANCELLED' && p.status !== 'REVERSED'
+      );
+
       const totalBilled = custBills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
-      const totalPaid = custBills.reduce((sum, b) => sum + Math.min(Number(b.grand_total || 0), Number(b.paid_total || 0)), 0);
-      const rawUnpaidOnBills = custBills.reduce((sum, b) => {
-        const g = Number(b.grand_total || 0);
-        const p = Math.min(g, Number(b.paid_total || 0));
-        return sum + Math.max(0, g - p);
-      }, 0);
-      const balanceDue = Math.max(0, rawUnpaidOnBills - Number(cust.advance_balance || 0));
+      const totalPaid = custBills.reduce((sum, b) => sum + Number(b.paid_total || 0), 0);
+      const totalUnallocatedPayments = custPayments
+        .filter(p => !p.bill_id)
+        .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+
+      const dues = Math.max(0, totalBilled - totalPaid);
 
       return {
         id: cust.id,
         user_id: cust.user_id,
-        customer_code: cust.customer_code,
         name: cust.name,
         mobile: cust.mobile,
         email: cust.email,
-        total_billed: totalBilled,
-        total_paid: totalPaid,
-        balance_due: balanceDue,
+        customer_code: cust.customer_code,
         advance_balance: Number(cust.advance_balance || 0),
         loyalty_points: Number(cust.loyalty_points || 0),
+        total_billed: Number(totalBilled.toFixed(2)),
+        total_paid: Number((totalPaid + totalUnallocatedPayments).toFixed(2)),
+        balance_due: Number(dues.toFixed(2)),
         created_at: cust.created_at
       };
     });
   }
 
-  // --- BILLING WITH DYNAMIC REDEMPTION RULES ---
+
   static async createBill(billData: {
     customer_id?: string | null;
     total: number;
@@ -724,7 +971,6 @@ export class ApiService {
     rounding_method: RoundingMethod;
     cash_paid: number;
     upi_paid: number;
-
     advance_used: number;
     points_to_redeem: number;
     items: {
@@ -736,6 +982,7 @@ export class ApiService {
     }[];
   }, userName = 'Admin'): Promise<Bill> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const userId = await this.getUserId();
 
     const [settings, activeRedemptionRules] = await Promise.all([
       this.getSettings(),
@@ -755,208 +1002,149 @@ export class ApiService {
     const totalBeforeRounding = subtotalAfterDiscount + gstAmount;
 
     const { roundedTotal, roundingAdjustment } = this.calculateRounding(totalBeforeRounding, billData.rounding_method);
+    const grandTotal = roundedTotal;
 
-    // 3. Payments, Prior Balance & Advance Math
-    let priorOutstanding = 0;
-    const priorUnpaidBillsList: Array<{ id: string; due: number; bill: Bill }> = [];
+    const directCashPaid = Number(billData.cash_paid || 0);
+    const directUpiPaid = Number(billData.upi_paid || 0);
+    const advanceUsed = Number(billData.advance_used || 0);
+    const totalDirectPaid = directCashPaid + directUpiPaid;
+    const totalTendered = totalDirectPaid + advanceUsed;
 
+    // Verify customer if provided
+    let verifiedCustomer: Customer | null = null;
     if (billData.customer_id) {
-      const { data: priorUnpaid } = await supabase
+      let custQuery = supabase.from('customers').select('*').eq('id', billData.customer_id);
+      if (userId) custQuery = custQuery.eq('user_id', userId);
+      const { data: custData, error: custErr } = await custQuery.maybeSingle();
+      if (custErr || !custData) {
+        throw new Error('Customer not found');
+      }
+      verifiedCustomer = custData;
+    }
+
+    // Auto-allocate payment if paid exceeds grand total or against older bills
+    let paidTotal = Math.min(grandTotal, totalTendered);
+    let advanceEarned = 0;
+
+    if (billData.customer_id && totalTendered > 0) {
+      let olderBillsQuery = supabase
         .from('bills')
         .select('*')
-        .eq('customer_id', billData.customer_id)
-        .order('created_at', { ascending: true });
+        .eq('customer_id', billData.customer_id);
 
-      (priorUnpaid || []).forEach(pb => {
-        const due = Math.max(0, Number(pb.grand_total || 0) - Number(pb.paid_total || 0));
-        if (due > 0.01) {
-          priorOutstanding += due;
-          priorUnpaidBillsList.push({ id: pb.id, due, bill: pb });
-        }
-      });
+      if (userId) olderBillsQuery = olderBillsQuery.eq('user_id', userId);
+
+      const { data: olderBills } = await olderBillsQuery.order('created_at', { ascending: true });
+
+      const unpaidOlderBills = (olderBills || []).filter(b => Number(b.paid_total || 0) < Number(b.grand_total || 0));
+
+      let availablePayment = totalTendered;
+
+      for (const oldBill of unpaidOlderBills) {
+        if (availablePayment <= 0) break;
+        const due = Number(oldBill.grand_total || 0) - Number(oldBill.paid_total || 0);
+        const allocate = Math.min(due, availablePayment);
+        const newPaidTotal = Number((Number(oldBill.paid_total || 0) + allocate).toFixed(2));
+
+        let updateOldBillQ = supabase
+          .from('bills')
+          .update({ paid_total: newPaidTotal })
+          .eq('id', oldBill.id);
+
+        if (userId) updateOldBillQ = updateOldBillQ.eq('user_id', userId);
+        await updateOldBillQ;
+
+        const pSeq = await this.getNextSequence('PAYMENT');
+        await supabase.from('payments').insert([{
+          payment_number: pSeq,
+          customer_id: billData.customer_id,
+          bill_id: oldBill.id,
+          amount: allocate,
+          payment_method: 'Auto-Allocation',
+          status: 'COMPLETED',
+          notes: `Payment auto-cleared against outstanding Bill ${oldBill.bill_number}`,
+          ...(userId ? { user_id: userId } : {})
+        }]);
+
+        availablePayment -= allocate;
+      }
+
+      paidTotal = Math.min(grandTotal, availablePayment);
+      availablePayment -= paidTotal;
+
+      if (availablePayment > 0) {
+        advanceEarned = Number(availablePayment.toFixed(2));
+      }
+    } else if (totalTendered > grandTotal) {
+      advanceEarned = Number((totalTendered - grandTotal).toFixed(2));
     }
 
-    const directPaid = billData.cash_paid + billData.upi_paid;
-    const netDueForBill = Math.max(0, roundedTotal - billData.advance_used);
+    let primaryPaymentMethod: PaymentMethod = 'Cash';
+    if (directUpiPaid > 0 && directCashPaid === 0) primaryPaymentMethod = 'UPI';
+    else if (advanceUsed > 0 && directCashPaid === 0 && directUpiPaid === 0) primaryPaymentMethod = 'Advance Used';
+    else if (directCashPaid > 0 && directUpiPaid > 0) primaryPaymentMethod = 'Split Payment';
 
-    // Calculate overpayment beyond current bill
-    const overpayment = Math.max(0, directPaid - netDueForBill);
-
-    // Overpayments first clear customer's prior unpaid balance (Case 1 & Case 2)
-    const allocatedToPriorBills = Math.min(priorOutstanding, overpayment);
-
-    // Remaining overpayment after clearing prior outstanding is earned as advance (Case 2 & Scenario 3)
-    const advanceEarned = overpayment - allocatedToPriorBills;
-
-    // Bill paid_total strictly capped at roundedTotal to prevent overpayment from bleeding into other bills
-    const paidTotal = Math.min(roundedTotal, directPaid + billData.advance_used);
-
-    const isFullyPaidAtCreation = paidTotal >= roundedTotal - 0.01;
-
-    // 4. Dynamic Loyalty Earning Calculator (Awarded ONLY if bill is fully paid)
-    let pointsEarned = 0;
-    if (settings.loyalty.enabled && isFullyPaidAtCreation) {
-      pointsEarned = await this.calculateLoyaltyPointsEarned(roundedTotal);
-    }
-
-    let payment_method: PaymentMethod = 'Pay Later';
-    if (paidTotal <= 0.01) {
-      payment_method = 'Pay Later';
-    } else if (billData.cash_paid > 0 && billData.upi_paid > 0) {
-      payment_method = 'Split Payment';
-    } else if (billData.upi_paid > 0) {
-      payment_method = 'UPI';
-    } else if (billData.cash_paid > 0) {
-      payment_method = 'Cash';
-    } else if (billData.advance_used > 0) {
-      payment_method = 'Advance Used';
-    }
-
-    // 5. ATOMIC DATABASE SEQUENCE GENERATOR
     const bill_number = await this.getNextSequence('BILL');
 
-    let { data: bill, error: billErr } = await supabase
+    const billPayload = {
+      bill_number,
+      customer_id: billData.customer_id || null,
+      total: billData.total,
+      discount: totalDiscountApplied,
+      gst_amount: gstAmount,
+      rounding_method: billData.rounding_method,
+      rounding_adjustment: roundingAdjustment,
+      grand_total: grandTotal,
+      cash_paid: directCashPaid,
+      upi_paid: directUpiPaid,
+      paid_total: paidTotal,
+      advance_used: advanceUsed,
+      advance_earned: advanceEarned,
+      payment_method: primaryPaymentMethod,
+      loyalty_points_earned: 0,
+      loyalty_points_redeemed: billData.points_to_redeem || 0,
+      ...(userId ? { user_id: userId } : {})
+    };
+
+    const { data: bill, error: billErr } = await supabase
       .from('bills')
-      .insert([{
-        bill_number,
-        customer_id: billData.customer_id || null,
-        total: billData.total,
-        discount: totalDiscountApplied,
-        gst_amount: gstAmount,
-        rounding_method: billData.rounding_method,
-        rounding_adjustment: roundingAdjustment,
-        grand_total: roundedTotal,
-        cash_paid: billData.cash_paid,
-        upi_paid: billData.upi_paid,
-
-        paid_total: paidTotal,
-        advance_used: billData.advance_used,
-        advance_earned: advanceEarned,
-        payment_method,
-        loyalty_points_earned: isFullyPaidAtCreation ? pointsEarned : 0,
-        loyalty_points_redeemed: billData.points_to_redeem
-      }])
-      .select()
-      .single();
-
-    if (billErr && (billErr.message?.includes('bills_payment_method_check') || billErr.message?.includes('check constraint'))) {
-      const fallbackMethod = (billData.upi_paid > billData.cash_paid) ? 'UPI' : 'Cash';
-      const retryResult = await supabase
-        .from('bills')
-        .insert([{
-          bill_number,
-          customer_id: billData.customer_id || null,
-          total: billData.total,
-          discount: totalDiscountApplied,
-          gst_amount: gstAmount,
-          rounding_method: billData.rounding_method,
-          rounding_adjustment: roundingAdjustment,
-          grand_total: roundedTotal,
-          cash_paid: billData.cash_paid,
-          upi_paid: billData.upi_paid,
-
-          paid_total: paidTotal,
-          advance_used: billData.advance_used,
-          advance_earned: advanceEarned,
-          payment_method: fallbackMethod,
-          loyalty_points_earned: isFullyPaidAtCreation ? pointsEarned : 0,
-          loyalty_points_redeemed: billData.points_to_redeem
-        }])
-        .select()
-        .single();
-
-      bill = retryResult.data;
-      billErr = retryResult.error;
-    }
+      .insert([billPayload])
+      .select('*, customers(name, mobile, email)')
+      .maybeSingle();
 
     if (billErr) throw new Error(billErr.message);
+    if (!bill) throw new Error('Failed to create bill');
 
-    // 6. Insert Items
     const itemsToInsert = billData.items.map(item => ({
       bill_id: bill.id,
       product_id: item.product_id || null,
       product_name: item.product_name,
       quantity: item.quantity,
       price: item.price,
-      total: item.total
+      total: item.total,
+      ...(userId ? { user_id: userId } : {})
     }));
 
     const { error: itemsErr } = await supabase.from('bill_items').insert(itemsToInsert);
     if (itemsErr) throw new Error(itemsErr.message);
 
-    // 7. Insert Payment Records per method used (Single Source of Truth)
-    // Deduct amount allocated to prior bills so total payment inserted equals exact cash/UPI handed over
-    const cashForCurrentBill = Math.max(0, billData.cash_paid - allocatedToPriorBills);
-    const remainingAlloc = Math.max(0, allocatedToPriorBills - billData.cash_paid);
-    const upiForCurrentBill = Math.max(0, billData.upi_paid - remainingAlloc);
-
-    if (cashForCurrentBill > 0) {
-      const pNum = await this.getNextSequence('PAYMENT');
+    if (billData.customer_id && totalDirectPaid > 0) {
+      const paySeq = await this.getNextSequence('PAYMENT');
       await supabase.from('payments').insert([{
-        payment_number: pNum,
-        customer_id: billData.customer_id || null,
+        payment_number: paySeq,
+        customer_id: billData.customer_id,
         bill_id: bill.id,
-        amount: cashForCurrentBill,
-        payment_method: 'Cash',
-        notes: `Initial Cash payment for ${bill.bill_number}`
+        amount: totalDirectPaid,
+        payment_method: primaryPaymentMethod,
+        status: 'COMPLETED',
+        notes: `Initial payment for Bill ${bill.bill_number}`,
+        ...(userId ? { user_id: userId } : {})
       }]);
     }
 
-    if (upiForCurrentBill > 0) {
-      const pNum = await this.getNextSequence('PAYMENT');
-      await supabase.from('payments').insert([{
-        payment_number: pNum,
-        customer_id: billData.customer_id || null,
-        bill_id: bill.id,
-        amount: upiForCurrentBill,
-        payment_method: 'UPI',
-        notes: `Initial UPI payment for ${bill.bill_number}`
-      }]);
-    }
-
-    // Allocate payment surplus to clear customer's prior unpaid bills (Case 1 & Case 2)
-    if (allocatedToPriorBills > 0 && billData.customer_id) {
-      let remainingToAllocate = allocatedToPriorBills;
-      for (const item of priorUnpaidBillsList) {
-        if (remainingToAllocate <= 0) break;
-        const alloc = Math.min(item.due, remainingToAllocate);
-        remainingToAllocate -= alloc;
-
-        const newPaidTotal = Number(item.bill.paid_total || 0) + alloc;
-        const updateData: Record<string, number> = { paid_total: newPaidTotal };
-        if (billData.cash_paid > 0 && billData.upi_paid > 0) {
-          const cashRatio = billData.cash_paid / (billData.cash_paid + billData.upi_paid);
-          updateData.cash_paid = Number(item.bill.cash_paid || 0) + (alloc * cashRatio);
-          updateData.upi_paid = Number(item.bill.upi_paid || 0) + (alloc * (1 - cashRatio));
-        } else if (billData.cash_paid > 0) {
-          updateData.cash_paid = Number(item.bill.cash_paid || 0) + alloc;
-        } else if (billData.upi_paid > 0) {
-          updateData.upi_paid = Number(item.bill.upi_paid || 0) + alloc;
-        }
-
-        await supabase.from('bills').update(updateData).eq('id', item.id);
-
-        const pNum = await this.getNextSequence('PAYMENT');
-        await supabase.from('payments').insert([{
-          payment_number: pNum,
-          customer_id: billData.customer_id,
-          bill_id: item.id,
-          amount: alloc,
-          payment_method: billData.upi_paid > billData.cash_paid ? 'UPI' : 'Cash',
-          notes: `Automated payment allocation from Bill #${bill.bill_number}`
-        }]);
-
-        // Process loyalty point award if this prior bill has now become fully paid
-        await this.processBillFullPaymentLoyalty(item.id);
-      }
-    }
-
-    let customerName = 'N/A';
-    let customerMobile: string | null = null;
-
-    if (billData.customer_id) {
-      // Record loyalty earn transaction ONLY if bill is fully paid
-      if (isFullyPaidAtCreation && pointsEarned > 0) {
+    if (billData.customer_id && paidTotal >= grandTotal - 0.01 && grandTotal > 0) {
+      const pointsEarned = await this.calculateLoyaltyPointsEarned(grandTotal);
+      if (pointsEarned > 0) {
         const loySeq = await this.getNextSequence('LOYALTY');
         await supabase.from('loyalty_transactions').insert([{
           transaction_number: loySeq,
@@ -964,57 +1152,99 @@ export class ApiService {
           bill_id: bill.id,
           points: pointsEarned,
           type: 'EARN',
-          notes: `Award Reason: Bill Fully Paid - ${bill.bill_number}`
+          notes: `Award Reason: Bill Fully Paid - ${bill.bill_number}`,
+          ...(userId ? { user_id: userId } : {})
         }]);
+
+        let updateBillQ = supabase
+          .from('bills')
+          .update({ loyalty_points_earned: pointsEarned })
+          .eq('id', bill.id);
+
+        if (userId) updateBillQ = updateBillQ.eq('user_id', userId);
+        await updateBillQ;
+        bill.loyalty_points_earned = pointsEarned;
       }
+    }
 
-      // Record loyalty redeem transaction
-      if (billData.points_to_redeem > 0) {
-        const loySeq = await this.getNextSequence('LOYALTY');
-        await supabase.from('loyalty_transactions').insert([{
-          transaction_number: loySeq,
-          customer_id: billData.customer_id,
-          bill_id: bill.id,
-          points: billData.points_to_redeem,
-          type: 'REDEEM',
-          notes: `Loyalty points redeemed for ₹${redemptionDiscount} discount on bill ${bill.bill_number}`
-        }]);
-      }
+    if (billData.customer_id && billData.points_to_redeem > 0) {
+      const redSeq = await this.getNextSequence('LOYALTY');
+      await supabase.from('loyalty_transactions').insert([{
+        transaction_number: redSeq,
+        customer_id: billData.customer_id,
+        bill_id: bill.id,
+        points: -billData.points_to_redeem,
+        type: 'REDEEM',
+        notes: `Redemption: Redeemed on Bill ${bill.bill_number} (Discount: ₹${redemptionDiscount})`,
+        ...(userId ? { user_id: userId } : {})
+      }]);
+    }
 
-      const { data: custInfo } = await supabase.from('customers').select('name, mobile, advance_balance, loyalty_points').eq('id', billData.customer_id).single();
-      if (custInfo) {
-        customerName = custInfo.name;
-        customerMobile = custInfo.mobile || null;
+    if (billData.customer_id && verifiedCustomer) {
+      const currentAdvance = Number(verifiedCustomer.advance_balance || 0);
+      const currentLoyalty = Number(verifiedCustomer.loyalty_points || 0);
+      const pointsEarnedNow = bill.loyalty_points_earned || 0;
 
-        const newAdvance = Math.max(0, Number(custInfo.advance_balance || 0) - billData.advance_used + advanceEarned);
-        const addedLoyalty = isFullyPaidAtCreation ? pointsEarned : 0;
-        const newLoyalty = Math.max(0, Number(custInfo.loyalty_points || 0) - billData.points_to_redeem + addedLoyalty);
+      const newAdvance = Math.max(0, currentAdvance - advanceUsed + advanceEarned);
+      const newLoyalty = Math.max(0, currentLoyalty - (billData.points_to_redeem || 0) + pointsEarnedNow);
 
-        await supabase.from('customers').update({
-          advance_balance: newAdvance,
-          loyalty_points: newLoyalty
-        }).eq('id', billData.customer_id);
-      }
+      let updateCustQ = supabase.from('customers').update({
+        advance_balance: newAdvance,
+        loyalty_points: newLoyalty
+      }).eq('id', billData.customer_id);
+
+      if (userId) updateCustQ = updateCustQ.eq('user_id', userId);
+      await updateCustQ;
     }
 
     await this.logAudit({
       user_name: userName,
       action: 'CREATE_BILL',
       entity: `Bill ${bill.bill_number}`,
-      new_value: JSON.stringify({ grand_total: roundedTotal, payment_method, pointsEarned, pointsRedeemed: billData.points_to_redeem, redemptionDiscount })
+      new_value: `Grand Total: ₹${grandTotal}, Paid: ₹${paidTotal}, Advance Earned: ₹${advanceEarned}`
     });
 
-    return {
+    return this.formatBillRow({
       ...bill,
-      customer_name: customerName,
-      customer_mobile: customerMobile,
-      items: billData.items
+      items: billData.items.map((item, idx) => ({
+        id: `temp-${idx}`,
+        bill_id: bill.id,
+        product_id: item.product_id || null,
+        product_name: item.product_name,
+        quantity: item.quantity,
+        price: item.price,
+        total: item.total,
+        created_at: new Date().toISOString()
+      }))
+    });
+  }
+
+
+  public static formatBillRow(row: any): Bill {
+    if (!row) return row;
+    const cust = Array.isArray(row.customers) ? row.customers[0] : row.customers;
+    const rawItems = row.items || row.bill_items || [];
+    const formattedItems = rawItems.map((it: any) => ({
+      ...it,
+      price: Number(it.price || 0),
+      quantity: Number(it.quantity || 0),
+      total: Number(it.total || 0)
+    }));
+
+    return {
+      ...row,
+      customer_name: row.customer_name || cust?.name || (row.customer_id ? 'Customer' : 'Walk-in Customer'),
+      customer_mobile: row.customer_mobile || cust?.mobile || null,
+      customer_email: row.customer_email || cust?.email || null,
+      items: formattedItems,
+      bill_items: formattedItems
     };
   }
 
-  // --- EDIT BILL DISCOUNT ---
+
   static async editBillDiscount(billId: string, newDiscount: number, reason: string, userName = 'Super Admin'): Promise<Bill> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const userId = await this.getUserId();
 
     const bill = await this.getBillById(billId);
     if (!bill) throw new Error('Bill not found');
@@ -1038,7 +1268,7 @@ export class ApiService {
       (bill.rounding_method as RoundingMethod) || 'None'
     );
 
-    const { data: updatedBill, error } = await supabase
+    let updateQuery = supabase
       .from('bills')
       .update({
         discount: newDiscount,
@@ -1049,59 +1279,61 @@ export class ApiService {
         edited_by: userName,
         edit_reason: reason
       })
-      .eq('id', billId)
-      .select()
-      .single();
+      .eq('id', billId);
+
+    if (userId) {
+      updateQuery = updateQuery.eq('user_id', userId);
+    }
+
+    const { data: updatedBill, error } = await updateQuery
+      .select('*, customers(name, mobile, email)')
+      .maybeSingle();
 
     if (error) throw new Error(error.message);
+    if (!updatedBill) throw new Error('Bill not found');
 
     await this.logAudit({
       user_name: userName,
       action: 'EDIT_BILL_DISCOUNT',
-      entity: `Bill ${bill.bill_number}`,
-      previous_value: `Discount: ₹${bill.discount}, Total: ₹${bill.grand_total}`,
-      new_value: `Discount: ₹${newDiscount}, Total: ₹${newGrandTotal}, Reason: ${reason}`
+      entity: `Bill ${updatedBill.bill_number}`,
+      previous_value: `Discount: ₹${bill.discount}, Grand Total: ₹${bill.grand_total}`,
+      new_value: `New Discount: ₹${newDiscount}, New Grand Total: ₹${newGrandTotal}, Reason: ${reason}`
     });
 
-    return updatedBill;
+    return this.formatBillRow(updatedBill);
   }
+
 
   static async getBills(): Promise<Bill[]> {
     if (!isSupabaseConfigured) return [];
-    
-    const { data: bills, error } = await supabase
+    const userId = await this.getUserId();
+    let query = supabase
       .from('bills')
-      .select('*, customers(name, mobile, email)')
-      .order('created_at', { ascending: false });
+      .select('*, customers(name, mobile, email)');
 
-    if (error) return [];
-
-    return (bills || []).map(b => ({
-      ...b,
-      customer_name: b.customers?.name || 'N/A',
-      customer_mobile: b.customers?.mobile || null,
-      customer_email: b.customers?.email || null
-    }));
-  }
-
-  static async getBillsByDateRange(filter: DateFilterOption, customRange?: { from: string; to: string }): Promise<Bill[]> {
-    if (!isSupabaseConfigured) {
-      const allBills = await this.getBills();
-      const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
-      return allBills.filter(b => {
-        const bTime = new Date(b.created_at).getTime();
-        if (startDate && bTime < startDate.getTime()) return false;
-        if (endDate && bTime > endDate.getTime()) return false;
-        return true;
-      });
+    if (userId) {
+      query = query.eq('user_id', userId);
     }
 
-    const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
+    const { data, error } = await query.order('created_at', { ascending: false });
+    if (error) return [];
+    return (data || []).map(b => this.formatBillRow(b));
+  }
+
+
+  static async getBillsByDateRange(filter: DateFilterOption, customRange?: { from: string; to: string }): Promise<Bill[]> {
+    if (!isSupabaseConfigured) return [];
+    const userId = await this.getUserId();
 
     let query = supabase
       .from('bills')
-      .select('*, customers(name, mobile, email), bill_items(*)')
-      .order('created_at', { ascending: false });
+      .select('*, customers(name, mobile, email), bill_items(*)');
+
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+
+    const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
 
     if (startDate) {
       query = query.gte('created_at', startDate.toISOString());
@@ -1110,72 +1342,95 @@ export class ApiService {
       query = query.lte('created_at', endDate.toISOString());
     }
 
-    const { data: bills, error } = await query;
-    if (error) return [];
-
-    return (bills || []).map(b => ({
-      ...b,
-      customer_name: b.customers?.name || 'N/A',
-      customer_mobile: b.customers?.mobile || null,
-      customer_email: b.customers?.email || null,
-      items: b.bill_items || []
-    }));
+    const { data, error } = await query.order('created_at', { ascending: false });
+    if (error) {
+      console.error('Error fetching bills by date range:', error);
+      return [];
+    }
+    return (data || []).map(b => this.formatBillRow(b));
   }
+
 
   static async getBillById(id: string): Promise<Bill | null> {
     if (!isSupabaseConfigured) return null;
+    const userId = await this.getUserId();
 
-    const { data: bill, error } = await supabase
+    let billQuery = supabase
       .from('bills')
       .select('*, customers(name, mobile, email)')
-      .eq('id', id)
-      .single();
+      .eq('id', id);
 
-    if (error || !bill) return null;
+    if (userId) {
+      billQuery = billQuery.eq('user_id', userId);
+    }
 
-    const { data: items } = await supabase
+    const { data: bill, error: billErr } = await billQuery.maybeSingle();
+    if (billErr || !bill) return null;
+
+    let itemsQuery = supabase
       .from('bill_items')
       .select('*')
       .eq('bill_id', id);
 
-    return {
+    if (userId) {
+      itemsQuery = itemsQuery.eq('user_id', userId);
+    }
+
+    const { data: items, error: itemsErr } = await itemsQuery;
+    if (itemsErr) return null;
+
+    return this.formatBillRow({
       ...bill,
-      customer_name: bill.customers?.name || 'N/A',
-      customer_mobile: bill.customers?.mobile || null,
-      customer_email: bill.customers?.email || null,
-      items: items || []
-    };
+      items: items || [],
+      bill_items: items || []
+    });
   }
 
-  // --- CUSTOMER LEDGER ---
+
   static async getCustomerLedger(customerId: string): Promise<{
-    customer: Customer;
+    customer: Customer | null;
     entries: CustomerLedgerEntry[];
     totalBilled: number;
     totalPaid: number;
     runningBalance: number;
     pendingPoints: number;
   }> {
-    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    if (!isSupabaseConfigured) {
+      return { customer: null, entries: [], totalBilled: 0, totalPaid: 0, runningBalance: 0, pendingPoints: 0 };
+    }
+    const userId = await this.getUserId();
 
-    const { data: customer, error: custErr } = await supabase
+    let custQuery = supabase
       .from('customers')
       .select('*')
-      .eq('id', customerId)
-      .single();
+      .eq('id', customerId);
 
-    if (custErr || !customer) throw new Error('Customer not found');
+    if (userId) {
+      custQuery = custQuery.eq('user_id', userId);
+    }
 
-    const { data: bills } = await supabase
+    const { data: customer, error: custErr } = await custQuery.maybeSingle();
+    if (custErr || !customer) {
+      return { customer: null, entries: [], totalBilled: 0, totalPaid: 0, runningBalance: 0, pendingPoints: 0 };
+    }
+
+    let billsQuery = supabase
       .from('bills')
       .select('*, bill_items(*)')
-      .eq('customer_id', customerId)
-      .order('created_at', { ascending: true });
-    const { data: payments } = await supabase
+      .eq('customer_id', customerId);
+
+    let paymentsQuery = supabase
       .from('payments')
       .select('*')
-      .eq('customer_id', customerId)
-      .order('created_at', { ascending: true });
+      .eq('customer_id', customerId);
+
+    if (userId) {
+      billsQuery = billsQuery.eq('user_id', userId);
+      paymentsQuery = paymentsQuery.eq('user_id', userId);
+    }
+
+    const { data: bills } = await billsQuery.order('created_at', { ascending: true });
+    const { data: payments } = await paymentsQuery.order('created_at', { ascending: true });
 
     let pendingPoints = 0;
     for (const b of (bills || [])) {
@@ -1195,62 +1450,76 @@ export class ApiService {
       paid_amount: number;
       advance_used: number;
       loyalty_points: number;
-      items?: { product_name: string; quantity: number; price: number; total: number }[];
+      items_summary: string;
+      payment_method: string;
+      items?: {
+        product_name: string;
+        quantity: number;
+        price: number;
+        total: number;
+      }[];
     }[] = [];
 
-    const paymentBillIds = new Set((payments || []).map(p => p.bill_id).filter(Boolean));
+    let totalBilled = 0;
+    let totalPaid = 0;
 
     (bills || []).forEach(b => {
-      const hasPaymentRecord = paymentBillIds.has(b.id);
-      const directPaidForBill = hasPaymentRecord ? 0 : Math.max(0, Number(b.paid_total || 0) - Number(b.advance_used || 0));
-      const effectivePaidOnBill = Number(b.advance_used || 0) + directPaidForBill;
+      const grand = Number(b.grand_total || 0);
+      const items = (b.bill_items as BillItem[]) || [];
+      const itemsSummary = items.map(i => `${i.product_name} (${i.quantity})`).join(', ');
 
-      const items = ((b.bill_items as BillItem[]) || []).map(item => ({
-        product_name: item.product_name,
-        quantity: Number(item.quantity || 0),
-        price: Number(item.price || 0),
-        total: Number(item.total || (Number(item.quantity || 0) * Number(item.price || 0)))
-      }));
+      totalBilled += grand;
 
       rawEvents.push({
         date: b.created_at,
         type: 'BILL',
         reference_no: b.bill_number,
-        description: `Bill generated (${b.payment_method})`,
-        bill_amount: Number(b.grand_total),
-        paid_amount: effectivePaidOnBill,
+        description: itemsSummary || 'Invoice billed',
+        bill_amount: grand,
+        paid_amount: 0,
         advance_used: Number(b.advance_used || 0),
         loyalty_points: Number(b.loyalty_points_earned || 0),
-        items
+        items_summary: itemsSummary,
+        payment_method: b.payment_method || 'Cash',
+        items: items.map(it => ({
+          product_name: it.product_name,
+          quantity: it.quantity,
+          price: it.price,
+          total: it.total
+        }))
       });
     });
 
     (payments || []).forEach(p => {
+      const amt = Number(p.amount || 0);
+      totalPaid += amt;
+
       rawEvents.push({
         date: p.created_at,
         type: 'PAYMENT',
-        reference_no: p.payment_number || `PAY-${p.id.slice(0, 6).toUpperCase()}`,
-        description: p.notes || `Payment received via ${p.payment_method}`,
+        reference_no: p.payment_number || 'PAY',
+        description: p.notes || `Payment received via ${p.payment_method || 'Cash'}`,
         bill_amount: 0,
-        paid_amount: Number(p.amount),
+        paid_amount: amt,
         advance_used: 0,
-        loyalty_points: 0
+        loyalty_points: 0,
+        items_summary: '',
+        payment_method: p.payment_method || 'Cash'
       });
     });
 
     rawEvents.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-    let balance = 0;
-    let totalBilled = 0;
-    let totalPaid = 0;
-
+    let runningBalance = 0;
     const entries: CustomerLedgerEntry[] = rawEvents.map((evt, idx) => {
-      totalBilled += evt.bill_amount;
-      totalPaid += evt.paid_amount;
-      balance = balance + evt.bill_amount - evt.paid_amount;
+      if (evt.type === 'BILL') {
+        runningBalance += evt.bill_amount;
+      } else {
+        runningBalance -= evt.paid_amount;
+      }
 
       return {
-        id: `ledger-${idx}`,
+        id: `entry-${idx}`,
         date: evt.date,
         type: evt.type,
         reference_no: evt.reference_no,
@@ -1259,7 +1528,7 @@ export class ApiService {
         paid_amount: evt.paid_amount,
         advance_used: evt.advance_used,
         loyalty_points: evt.loyalty_points,
-        running_balance: balance,
+        running_balance: Number(runningBalance.toFixed(2)),
         items: evt.items
       };
     });
@@ -1267,36 +1536,54 @@ export class ApiService {
     return {
       customer,
       entries,
-      totalBilled,
-      totalPaid,
-      runningBalance: Math.max(0, balance),
+      totalBilled: Number(totalBilled.toFixed(2)),
+      totalPaid: Number(totalPaid.toFixed(2)),
+      runningBalance: Number(runningBalance.toFixed(2)),
       pendingPoints
     };
   }
 
+
   static async processBillFullPaymentLoyalty(billId: string): Promise<number> {
     if (!isSupabaseConfigured || !billId) return 0;
+    const userId = await this.getUserId();
 
-    const { data: bill, error } = await supabase.from('bills').select('*').eq('id', billId).single();
+    let billQuery = supabase.from('bills').select('*').eq('id', billId);
+    if (userId) {
+      billQuery = billQuery.eq('user_id', userId);
+    }
+    const { data: bill, error } = await billQuery.maybeSingle();
     if (error || !bill || !bill.customer_id) return 0;
 
     const settings = await this.getSettings();
     if (!settings.loyalty.enabled) return 0;
 
     // Prevent duplicate loyalty awards for the same bill
-    const { data: existingEarnTx } = await supabase
+    let existingEarnQuery = supabase
       .from('loyalty_transactions')
       .select('id')
       .eq('bill_id', billId)
       .eq('type', 'EARN');
+
+    if (userId) {
+      existingEarnQuery = existingEarnQuery.eq('user_id', userId);
+    }
+
+    const { data: existingEarnTx } = await existingEarnQuery;
 
     if (existingEarnTx && existingEarnTx.length > 0) {
       return 0; // Already awarded!
     }
 
     // Determine total payments for this specific bill
-    const { data: billPayments } = await supabase.from('payments').select('amount').eq('bill_id', billId);
-    const directPaymentsSum = (billPayments || []).reduce((sum, p) => sum + Number(p.amount || 0), 0);
+    let paymentsQuery = supabase.from('payments').select('amount, status').eq('bill_id', billId);
+    if (userId) {
+      paymentsQuery = paymentsQuery.eq('user_id', userId);
+    }
+    const { data: billPayments } = await paymentsQuery;
+    const directPaymentsSum = (billPayments || [])
+      .filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED')
+      .reduce((sum, p) => sum + Number(p.amount || 0), 0);
     const totalPaidForBill = Number(bill.advance_used || 0) + Math.max(Number(bill.paid_total || 0) - Number(bill.advance_used || 0), directPaymentsSum);
 
     const isFullyPaid = totalPaidForBill >= Number(bill.grand_total || 0) - 0.01;
@@ -1318,37 +1605,65 @@ export class ApiService {
       points: pointsEarned,
       type: 'EARN',
       created_at: bill.created_at || new Date().toISOString(),
-      notes: `Award Reason: Bill Fully Paid - ${bill.bill_number}`
+      notes: `Award Reason: Bill Fully Paid - ${bill.bill_number}`,
+      ...(userId ? { user_id: userId } : {})
     }]);
 
     // Update bill record
-    await supabase.from('bills').update({
+    let updateBillQuery = supabase.from('bills').update({
       loyalty_points_earned: pointsEarned
     }).eq('id', billId);
 
+    if (userId) {
+      updateBillQuery = updateBillQuery.eq('user_id', userId);
+    }
+    await updateBillQuery;
+
     // Update customer loyalty points balance
-    const { data: cust } = await supabase.from('customers').select('loyalty_points').eq('id', bill.customer_id).single();
+    let custQuery = supabase.from('customers').select('loyalty_points').eq('id', bill.customer_id);
+    if (userId) {
+      custQuery = custQuery.eq('user_id', userId);
+    }
+    const { data: cust } = await custQuery.maybeSingle();
+
     if (cust) {
       const currentPoints = Number(cust.loyalty_points || 0);
-      await supabase.from('customers').update({
+      let updateCustQuery = supabase.from('customers').update({
         loyalty_points: currentPoints + pointsEarned
       }).eq('id', bill.customer_id);
+
+      if (userId) {
+        updateCustQuery = updateCustQuery.eq('user_id', userId);
+      }
+      await updateCustQuery;
     }
 
     return pointsEarned;
   }
 
+
   static async reverseLoyaltyPointsForBill(billId: string, userName = 'Admin'): Promise<number> {
     if (!isSupabaseConfigured || !billId) return 0;
+    const userId = await this.getUserId();
 
-    const { data: bill } = await supabase.from('bills').select('*').eq('id', billId).single();
+    let billQuery = supabase.from('bills').select('*').eq('id', billId);
+    if (userId) {
+      billQuery = billQuery.eq('user_id', userId);
+    }
+    const { data: bill } = await billQuery.maybeSingle();
     if (!bill || !bill.customer_id) return 0;
 
-    const { data: earnTxs } = await supabase
+    let earnTxQuery = supabase
       .from('loyalty_transactions')
       .select('*')
       .eq('bill_id', billId)
       .eq('type', 'EARN');
+
+    if (userId) {
+      earnTxQuery = earnTxQuery.eq('user_id', userId);
+    }
+
+    const { data: earnTxs } = await earnTxQuery;
 
     if (!earnTxs || earnTxs.length === 0) return 0;
 
@@ -1365,15 +1680,26 @@ export class ApiService {
         bill_id: billId,
         points: -totalPointsToReverse,
         type: 'ADJUST',
-        notes: `Loyalty Reversal: Bill Cancelled/Refunded (${bill.bill_number})`
+        notes: `Loyalty Reversal: Bill Cancelled/Refunded (${bill.bill_number})`,
+        ...(userId ? { user_id: userId } : {})
       }]);
 
-      const { data: cust } = await supabase.from('customers').select('loyalty_points').eq('id', bill.customer_id).single();
+      let custQuery = supabase.from('customers').select('loyalty_points').eq('id', bill.customer_id);
+      if (userId) {
+        custQuery = custQuery.eq('user_id', userId);
+      }
+      const { data: cust } = await custQuery.maybeSingle();
+
       if (cust) {
         const currentPoints = Number(cust.loyalty_points || 0);
-        await supabase.from('customers').update({
+        let updateCustQuery = supabase.from('customers').update({
           loyalty_points: Math.max(0, currentPoints - totalPointsToReverse)
         }).eq('id', bill.customer_id);
+
+        if (userId) {
+          updateCustQuery = updateCustQuery.eq('user_id', userId);
+        }
+        await updateCustQuery;
       }
 
       await this.logAudit({
@@ -1387,6 +1713,7 @@ export class ApiService {
     return totalPointsToReverse;
   }
 
+
   static async recalculateAllCustomerLoyaltyPoints(userName = 'Super Admin'): Promise<{
     customersProcessed: number;
     customersUpdated: number;
@@ -1396,21 +1723,25 @@ export class ApiService {
     if (!isSupabaseConfigured) {
       throw new Error('Supabase is not configured.');
     }
+    const userId = await this.getUserId();
 
-    // 1. Fetch all customers
-    const { data: customers, error: custErr } = await supabase.from('customers').select('*');
+    let custQ = supabase.from('customers').select('*');
+    let billsQ = supabase.from('bills').select('*');
+    let txQ = supabase.from('loyalty_transactions').select('*');
+
+    if (userId) {
+      custQ = custQ.eq('user_id', userId);
+      billsQ = billsQ.eq('user_id', userId);
+      txQ = txQ.eq('user_id', userId);
+    }
+
+    const { data: customers, error: custErr } = await custQ;
     if (custErr) throw new Error(custErr.message);
 
-    // 2. Fetch all bills
-    const { data: bills, error: billsErr } = await supabase.from('bills').select('*');
+    const { data: bills, error: billsErr } = await billsQ;
     if (billsErr) throw new Error(billsErr.message);
 
-    // 3. Fetch all payments
-    const { data: payments, error: payErr } = await supabase.from('payments').select('*');
-    if (payErr) throw new Error(payErr.message);
-
-    // 4. Fetch all loyalty transactions
-    const { data: transactions, error: txErr } = await supabase.from('loyalty_transactions').select('*');
+    const { data: transactions, error: txErr } = await txQ;
     if (txErr) throw new Error(txErr.message);
 
     let customersUpdated = 0;
@@ -1418,75 +1749,53 @@ export class ApiService {
     let totalActivePoints = 0;
 
     for (const cust of (customers || [])) {
-      const custBills = (bills || []).filter(b => b.customer_id === cust.id && b.status !== 'CANCELLED');
+      const custBills = (bills || []).filter(b => b.customer_id === cust.id);
       const custTxs = (transactions || []).filter(t => t.customer_id === cust.id);
 
       let customerEarnedPoints = 0;
 
       for (const bill of custBills) {
         const grandTotal = Number(bill.grand_total || 0);
-        const correctEarned = await this.calculateLoyaltyPointsEarned(grandTotal);
+        const paidTotal = Number(bill.paid_total || 0);
+        const isPaid = paidTotal >= grandTotal - 0.01 && grandTotal > 0;
 
-        // Update bill loyalty_points_earned if changed
-        if (Number(bill.loyalty_points_earned || 0) !== correctEarned) {
-          await supabase.from('bills').update({ loyalty_points_earned: correctEarned }).eq('id', bill.id);
-          billsUpdated++;
-        }
+        if (isPaid) {
+          const expectedPoints = await this.calculateLoyaltyPointsEarned(grandTotal);
+          customerEarnedPoints += expectedPoints;
 
-        // Determine if bill is fully paid
-        const billPayments = (payments || []).filter(p => p.bill_id === bill.id);
-        const directPaymentsSum = billPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
-        const totalPaidForBill = Number(bill.advance_used || 0) + Math.max(Number(bill.paid_total || 0) - Number(bill.advance_used || 0), directPaymentsSum);
-        const isFullyPaid = totalPaidForBill >= grandTotal - 0.01;
-
-        // Existing EARN transaction for this bill
-        const earnTx = custTxs.find(t => t.bill_id === bill.id && t.type === 'EARN');
-
-        if (isFullyPaid) {
-          customerEarnedPoints += correctEarned;
-
-          if (earnTx) {
-            if (Number(earnTx.points || 0) !== correctEarned) {
-              await supabase.from('loyalty_transactions').update({
-                points: correctEarned,
-                notes: `Award Reason: Bill Fully Paid (Reconciled) - ${bill.bill_number}`
-              }).eq('id', earnTx.id);
-            }
-          } else if (correctEarned > 0) {
-            const loySeq = await this.getNextSequence('LOYALTY');
-            await supabase.from('loyalty_transactions').insert([{
-              transaction_number: loySeq,
-              customer_id: cust.id,
-              bill_id: bill.id,
-              points: correctEarned,
-              type: 'EARN',
-              created_at: bill.created_at || new Date().toISOString(),
-              notes: `Award Reason: Bill Fully Paid - ${bill.bill_number}`
-            }]);
+          if (Number(bill.loyalty_points_earned || 0) !== expectedPoints) {
+            let updateBillQ = supabase.from('bills').update({ loyalty_points_earned: expectedPoints }).eq('id', bill.id);
+            if (userId) updateBillQ = updateBillQ.eq('user_id', userId);
+            await updateBillQ;
+            billsUpdated++;
           }
         } else {
-          // If not fully paid, EARN transaction should not exist or be removed
-          if (earnTx) {
-            await supabase.from('loyalty_transactions').delete().eq('id', earnTx.id);
+          if (Number(bill.loyalty_points_earned || 0) !== 0) {
+            let updateBillQ = supabase.from('bills').update({ loyalty_points_earned: 0 }).eq('id', bill.id);
+            if (userId) updateBillQ = updateBillQ.eq('user_id', userId);
+            await updateBillQ;
+            billsUpdated++;
           }
         }
       }
 
-      // Calculate redeemed points from REDEEM transactions
-      const redeemTxs = custTxs.filter(t => t.type === 'REDEEM');
-      const totalRedeemed = redeemTxs.reduce((sum, t) => sum + Math.abs(Number(t.points || 0)), 0);
+      let totalRedeemed = 0;
+      let totalAdjusted = 0;
+      for (const tx of custTxs) {
+        if (tx.type === 'REDEEM') {
+          totalRedeemed += Math.abs(Number(tx.points || 0));
+        } else if (tx.type === 'ADJUST') {
+          totalAdjusted += Number(tx.points || 0);
+        }
+      }
 
-      // Calculate manual adjustments (not bill-related)
-      const manualAdjustTxs = custTxs.filter(t => t.type === 'ADJUST' && !t.bill_id);
-      const totalAdjustments = manualAdjustTxs.reduce((sum, t) => sum + Number(t.points || 0), 0);
+      const calculatedLoyalty = Math.max(0, customerEarnedPoints - totalRedeemed + totalAdjusted);
+      totalActivePoints += calculatedLoyalty;
 
-      const finalLoyaltyPoints = Math.max(0, customerEarnedPoints - totalRedeemed + totalAdjustments);
-      totalActivePoints += finalLoyaltyPoints;
-
-      if (Number(cust.loyalty_points || 0) !== finalLoyaltyPoints) {
-        await supabase.from('customers').update({
-          loyalty_points: finalLoyaltyPoints
-        }).eq('id', cust.id);
+      if (Number(cust.loyalty_points || 0) !== calculatedLoyalty) {
+        let updateCustQ = supabase.from('customers').update({ loyalty_points: calculatedLoyalty }).eq('id', cust.id);
+        if (userId) updateCustQ = updateCustQ.eq('user_id', userId);
+        await updateCustQ;
         customersUpdated++;
       }
     }
@@ -1495,16 +1804,17 @@ export class ApiService {
       user_name: userName,
       action: 'RECALCULATE_LOYALTY_POINTS',
       entity: 'All Customers',
-      new_value: `Recalculated: ${customers?.length || 0} customers checked, ${customersUpdated} customer balances updated, ${billsUpdated} bills updated`
+      new_value: `Processed ${(customers || []).length} customers, updated ${customersUpdated} customer balances, ${billsUpdated} bills. Total active points: ${totalActivePoints}`
     });
 
     return {
-      customersProcessed: customers?.length || 0,
+      customersProcessed: (customers || []).length,
       customersUpdated,
       billsUpdated,
       totalActivePoints
     };
   }
+
 
   static async getBillFinancialSummary(bill: Bill): Promise<BillFinancialSummary> {
     const defaultSummary: BillFinancialSummary = {
@@ -1514,7 +1824,6 @@ export class ApiService {
       total_amount_due: Number(bill.grand_total || 0),
       cash_paid: Number(bill.cash_paid || 0),
       upi_paid: Number(bill.upi_paid || 0),
-
       advance_used: Number(bill.advance_used || 0),
       total_paid: Number(bill.paid_total || 0),
       remaining_balance: Math.max(0, Number(bill.grand_total || 0) - Number(bill.paid_total || 0)),
@@ -1529,12 +1838,26 @@ export class ApiService {
     }
 
     try {
+      const userId = await this.getUserId();
+
+      let custQ = supabase.from('customers').select('*').eq('id', bill.customer_id);
+      let billsQ = supabase.from('bills').select('*').eq('customer_id', bill.customer_id).order('created_at', { ascending: true });
+      let payQ = supabase.from('payments').select('*').eq('customer_id', bill.customer_id).order('created_at', { ascending: true });
+      let loyQ = supabase.from('loyalty_transactions').select('*').eq('customer_id', bill.customer_id).order('created_at', { ascending: true });
+
+      if (userId) {
+        custQ = custQ.eq('user_id', userId);
+        billsQ = billsQ.eq('user_id', userId);
+        payQ = payQ.eq('user_id', userId);
+        loyQ = loyQ.eq('user_id', userId);
+      }
+
       const [settings, { data: customer }, { data: allCustBills }, { data: allCustPayments }, { data: allCustLoyalty }] = await Promise.all([
         this.getSettings(),
-        supabase.from('customers').select('*').eq('id', bill.customer_id).single(),
-        supabase.from('bills').select('*').eq('customer_id', bill.customer_id).order('created_at', { ascending: true }),
-        supabase.from('payments').select('*').eq('customer_id', bill.customer_id).order('created_at', { ascending: true }),
-        supabase.from('loyalty_transactions').select('*').eq('customer_id', bill.customer_id).order('created_at', { ascending: true })
+        custQ.maybeSingle(),
+        billsQ,
+        payQ,
+        loyQ
       ]);
 
       if (!customer) return defaultSummary;
@@ -1547,12 +1870,14 @@ export class ApiService {
       const priorBillIds = new Set(priorBills.map(b => b.id));
       const billTimestamp = new Date(bill.created_at || Date.now()).getTime();
 
-      const priorPayments = (allCustPayments || []).filter(p => {
-        if (p.bill_id === bill.id) return false;
-        if (p.bill_id && priorBillIds.has(p.bill_id)) return true;
-        const pTime = new Date(p.created_at).getTime();
-        return pTime <= billTimestamp;
-      });
+      const priorPayments = (allCustPayments || [])
+        .filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED')
+        .filter(p => {
+          if (p.bill_id === bill.id) return false;
+          if (p.bill_id && priorBillIds.has(p.bill_id)) return true;
+          const pTime = new Date(p.created_at).getTime();
+          return pTime <= billTimestamp;
+        });
 
       const priorLoyalty = (allCustLoyalty || []).filter(lt => {
         if (lt.bill_id === bill.id) return false;
@@ -1603,13 +1928,17 @@ export class ApiService {
 
       let loyaltySummary: BillFinancialSummary['loyalty'] = undefined;
       if (settings?.loyalty?.enabled) {
-        // Query if an EARN transaction exists for this bill
-        const { data: earnTx } = await supabase
+        let earnTxQuery = supabase
           .from('loyalty_transactions')
           .select('*')
           .eq('bill_id', bill.id)
-          .eq('type', 'EARN')
-          .maybeSingle();
+          .eq('type', 'EARN');
+
+        if (userId) {
+          earnTxQuery = earnTxQuery.eq('user_id', userId);
+        }
+
+        const { data: earnTx } = await earnTxQuery.maybeSingle();
 
         const is_fully_paid = bill_remaining <= 0.01;
         const points_awarded = !!earnTx;
@@ -1632,7 +1961,6 @@ export class ApiService {
         const points_added = (is_fully_paid || points_awarded) ? points_earned : 0;
         const current_points_balance = Math.max(0, previous_points + points_added - points_redeemed);
 
-        // Calculate total pending points across all unpaid customer bills
         let total_pending_points = 0;
         const processedBillIds = new Set<string>();
         for (const b of (allCustBills || [])) {
@@ -1671,7 +1999,6 @@ export class ApiService {
         total_amount_due,
         cash_paid,
         upi_paid,
-
         advance_used,
         total_paid,
         remaining_balance,
@@ -1685,6 +2012,7 @@ export class ApiService {
     }
   }
 
+
   static async recordCustomerPayment(payment: {
     customer_id: string;
     amount: number;
@@ -1693,144 +2021,566 @@ export class ApiService {
     notes?: string;
   }, userName = 'Admin'): Promise<Payment> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const userId = await this.getUserId();
+
+    // Verify customer exists and belongs to tenant
+    let custCheck = supabase.from('customers').select('*').eq('id', payment.customer_id);
+    if (userId) {
+      custCheck = custCheck.eq('user_id', userId);
+    }
+    const { data: custRecord, error: custErr } = await custCheck.maybeSingle();
+    if (custErr || !custRecord) {
+      throw new Error('Customer not found');
+    }
+
+    // Verify bill if specified
+    if (payment.bill_id) {
+      let billCheck = supabase.from('bills').select('*').eq('id', payment.bill_id);
+      if (userId) {
+        billCheck = billCheck.eq('user_id', userId);
+      }
+      const { data: billRecord, error: billErr } = await billCheck.maybeSingle();
+      if (billErr || !billRecord) {
+        throw new Error('Bill not found');
+      }
+    }
+
     const payment_number = await this.getNextSequence('PAYMENT');
+
+    const paymentPayload = {
+      payment_number,
+      customer_id: payment.customer_id,
+      bill_id: payment.bill_id || null,
+      amount: payment.amount,
+      payment_method: payment.payment_method || 'Cash',
+      status: 'COMPLETED',
+      notes: payment.notes || null,
+      ...(userId ? { user_id: userId } : {})
+    };
 
     const { data, error } = await supabase
       .from('payments')
-      .insert([{
-        payment_number,
-        customer_id: payment.customer_id,
-        bill_id: payment.bill_id || null,
-        amount: payment.amount,
-        payment_method: payment.payment_method,
-        notes: payment.notes || null
-      }])
+      .insert([paymentPayload])
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw new Error(error.message);
+    if (!data) throw new Error('Failed to record payment');
 
-    // Update Bill paid_total and payment_status with FIFO logic
+    let unallocatedAmount = Number(payment.amount || 0);
+
+    // 1. Direct Bill Allocation
     if (payment.bill_id) {
-      // 1. Direct payment for a specific bill
-      const { data: bill } = await supabase.from('bills').select('*').eq('id', payment.bill_id).single();
+      let billQuery = supabase.from('bills').select('*').eq('id', payment.bill_id);
+      if (userId) billQuery = billQuery.eq('user_id', userId);
+      const { data: bill } = await billQuery.maybeSingle();
+
       if (bill) {
+        const grandTotal = Number(bill.grand_total || 0);
         const currentPaid = Number(bill.paid_total || 0);
-        const newPaidTotal = currentPaid + payment.amount;
+        const remainingDue = Math.max(0, grandTotal - currentPaid);
+        const allocate = Math.min(remainingDue, unallocatedAmount);
 
-        const updateData: Record<string, string | number> = {
-          paid_total: newPaidTotal
-        };
+        const newPaidTotal = Number((currentPaid + allocate).toFixed(2));
+        const isNowFullyPaid = newPaidTotal >= grandTotal - 0.01;
 
-        if (payment.payment_method === 'Cash') {
-          updateData.cash_paid = Number(bill.cash_paid || 0) + payment.amount;
-        } else if (payment.payment_method === 'UPI') {
-          updateData.upi_paid = Number(bill.upi_paid || 0) + payment.amount;
-        }
+        const updateData: { paid_total: number; loyalty_points_earned?: number } = { paid_total: newPaidTotal };
 
-        if (bill.payment_method === 'Pay Later' || !bill.payment_method) {
-          updateData.payment_method = payment.payment_method;
-        }
-
-        await supabase.from('bills').update(updateData).eq('id', payment.bill_id);
-        await this.processBillFullPaymentLoyalty(payment.bill_id);
-      }
-    } else {
-      // 2. Customer-level payment: Apply FIFO to unpaid bills (oldest created_at first)
-      const { data: custBills } = await supabase
-        .from('bills')
-        .select('*')
-        .eq('customer_id', payment.customer_id)
-        .order('created_at', { ascending: true });
-
-      let unallocatedAmount = payment.amount;
-
-      if (custBills && custBills.length > 0) {
-        for (const b of custBills) {
-          if (unallocatedAmount <= 0) break;
-
-          const grandTotal = Number(b.grand_total || 0);
-          const paidTotal = Number(b.paid_total || 0);
-          const remainingBillBalance = Math.max(0, grandTotal - paidTotal);
-
-          if (remainingBillBalance > 0) {
-            const allocation = Math.min(remainingBillBalance, unallocatedAmount);
-            const newPaidTotal = paidTotal + allocation;
-            unallocatedAmount -= allocation;
-
-            const updateData: Record<string, string | number> = {
-              paid_total: newPaidTotal
-            };
-
-            if (payment.payment_method === 'Cash') {
-              updateData.cash_paid = Number(b.cash_paid || 0) + allocation;
-            } else if (payment.payment_method === 'UPI') {
-              updateData.upi_paid = Number(b.upi_paid || 0) + allocation;
-            }
-
-            if (b.payment_method === 'Pay Later' || !b.payment_method) {
-              updateData.payment_method = payment.payment_method;
-            }
-
-            await supabase.from('bills').update(updateData).eq('id', b.id);
-
-            if (!data.bill_id) {
-              await supabase.from('payments').update({ bill_id: b.id }).eq('id', data.id);
-            }
-
-            await this.processBillFullPaymentLoyalty(b.id);
+        if (isNowFullyPaid && Number(bill.loyalty_points_earned || 0) === 0) {
+          const pointsEarned = await this.calculateLoyaltyPointsEarned(grandTotal);
+          if (pointsEarned > 0) {
+            const loySeq = await this.getNextSequence('LOYALTY');
+            await supabase.from('loyalty_transactions').insert([{
+              transaction_number: loySeq,
+              customer_id: payment.customer_id,
+              bill_id: payment.bill_id,
+              points: pointsEarned,
+              type: 'EARN',
+              notes: `Award Reason: Bill Fully Paid - ${bill.bill_number}`,
+              ...(userId ? { user_id: userId } : {})
+            }]);
+            updateData.loyalty_points_earned = pointsEarned;
           }
         }
-      }
 
-      // If there is still leftover payment after clearing all bills, credit to customer's advance_balance
-      if (unallocatedAmount > 0) {
-        const { data: cust } = await supabase.from('customers').select('advance_balance').eq('id', payment.customer_id).single();
-        if (cust) {
-          const currentAdvance = Number(cust.advance_balance || 0);
-          await supabase.from('customers').update({
-            advance_balance: currentAdvance + unallocatedAmount
-          }).eq('id', payment.customer_id);
+        let updateBillQ = supabase.from('bills').update(updateData).eq('id', payment.bill_id);
+        if (userId) updateBillQ = updateBillQ.eq('user_id', userId);
+        await updateBillQ;
+
+        unallocatedAmount = Math.max(0, unallocatedAmount - allocate);
+      }
+    } 
+    // 2. FIFO Auto-Allocation across outstanding customer bills
+    else {
+      let billsQuery = supabase
+        .from('bills')
+        .select('*')
+        .eq('customer_id', payment.customer_id);
+
+      if (userId) billsQuery = billsQuery.eq('user_id', userId);
+
+      const { data: bills } = await billsQuery.order('created_at', { ascending: true });
+
+      const unpaidBills = (bills || []).filter(b => Number(b.paid_total || 0) < Number(b.grand_total || 0));
+
+      for (const b of unpaidBills) {
+        if (unallocatedAmount <= 0) break;
+
+        const grandTotal = Number(b.grand_total || 0);
+        const currentPaid = Number(b.paid_total || 0);
+        const due = grandTotal - currentPaid;
+        const allocate = Math.min(due, unallocatedAmount);
+
+        const newPaidTotal = Number((currentPaid + allocate).toFixed(2));
+        const isNowFullyPaid = newPaidTotal >= grandTotal - 0.01;
+
+        const updateData: { paid_total: number; loyalty_points_earned?: number } = { paid_total: newPaidTotal };
+
+        if (isNowFullyPaid && Number(b.loyalty_points_earned || 0) === 0) {
+          const pointsEarned = await this.calculateLoyaltyPointsEarned(grandTotal);
+          if (pointsEarned > 0) {
+            const loySeq = await this.getNextSequence('LOYALTY');
+            await supabase.from('loyalty_transactions').insert([{
+              transaction_number: loySeq,
+              customer_id: payment.customer_id,
+              bill_id: b.id,
+              points: pointsEarned,
+              type: 'EARN',
+              notes: `Award Reason: Bill Fully Paid - ${b.bill_number}`,
+              ...(userId ? { user_id: userId } : {})
+            }]);
+            updateData.loyalty_points_earned = pointsEarned;
+          }
         }
+
+        let updateBillQ = supabase.from('bills').update(updateData).eq('id', b.id);
+        if (userId) updateBillQ = updateBillQ.eq('user_id', userId);
+        await updateBillQ;
+
+        let updatePayQ = supabase.from('payments').update({ bill_id: b.id }).eq('id', data.id);
+        if (userId) updatePayQ = updatePayQ.eq('user_id', userId);
+        await updatePayQ;
+
+        unallocatedAmount -= allocate;
+      }
+    }
+
+    // 3. Excess payment turns into Advance Balance
+    if (unallocatedAmount > 0) {
+      let custQuery = supabase.from('customers').select('advance_balance').eq('id', payment.customer_id);
+      if (userId) custQuery = custQuery.eq('user_id', userId);
+      const { data: cust } = await custQuery.maybeSingle();
+
+      if (cust) {
+        const currentAdvance = Number(cust.advance_balance || 0);
+        let updateCustQ = supabase.from('customers').update({
+          advance_balance: currentAdvance + unallocatedAmount
+        }).eq('id', payment.customer_id);
+
+        if (userId) updateCustQ = updateCustQ.eq('user_id', userId);
+        await updateCustQ;
       }
     }
 
     await this.logAudit({
       user_name: userName,
       action: 'RECORD_PAYMENT',
-      entity: `Payment ${payment_number} (₹${payment.amount})`,
-      new_value: JSON.stringify(data)
+      entity: `Payment ${payment_number}`,
+      new_value: `Amount: ₹${payment.amount}, Customer ID: ${payment.customer_id}, Method: ${payment.payment_method}`
     });
 
     return data;
   }
 
+
   static async getPayments(): Promise<Payment[]> {
     if (!isSupabaseConfigured) return [];
-    const { data, error } = await supabase
-      .from('payments')
-      .select('*, customers(name, mobile)')
-      .order('created_at', { ascending: false });
+    const userId = await this.getUserId();
 
-    if (error) return [];
-    return (data || []).map((p: Payment & { customers?: { name?: string; mobile?: string } | null }) => ({
-      ...p,
-      customer_name: p.customers?.name || undefined,
-      customer_mobile: p.customers?.mobile || undefined
-    }));
+    let query = supabase
+      .from('payments')
+      .select('*, customers(name, mobile)');
+
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+
+    const { data, error } = await query.order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching payments:', error);
+      return [];
+    }
+
+    return data || [];
   }
 
-  // --- EXPENSES ---
+
+  static async reverseBillPayment(
+    billId: string, 
+    reason: string, 
+    adminPin: string, 
+    userName = 'Super Admin',
+    overridePast48Hours = false
+  ): Promise<{ success: boolean; reversedAmount: number }> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const settings = await this.getSettings();
+
+    if (settings.security.super_admin_pin && settings.security.super_admin_pin !== adminPin) {
+      throw new Error('Invalid Super Admin Security PIN. Reversal rejected.');
+    }
+
+    const userId = await this.getUserId();
+
+    let billQuery = supabase
+      .from('bills')
+      .select('*')
+      .eq('id', billId);
+
+    if (userId) {
+      billQuery = billQuery.eq('user_id', userId);
+    }
+
+    const { data: bill, error: billErr } = await billQuery.maybeSingle();
+    if (billErr || !bill) {
+      throw new Error('Bill not found');
+    }
+
+    const totalPaidToReverse = Number(bill.paid_total || 0);
+
+    // Check payment timestamps for 48-hour limit
+    let activePayQuery = supabase
+      .from('payments')
+      .select('created_at')
+      .eq('bill_id', billId)
+      .neq('status', 'CANCELLED')
+      .neq('status', 'REVERSED');
+    if (userId) activePayQuery = activePayQuery.eq('user_id', userId);
+    const { data: attachedPayments } = await activePayQuery;
+
+    const latestPaymentTime = (attachedPayments && attachedPayments.length > 0)
+      ? Math.max(...attachedPayments.map(p => new Date(p.created_at).getTime()))
+      : new Date(bill.created_at).getTime();
+
+    const elapsedHours = (Date.now() - latestPaymentTime) / (1000 * 60 * 60);
+    const isPast48Hours = elapsedHours > 48;
+
+    if (isPast48Hours && !overridePast48Hours) {
+      throw new Error('Payment was recorded more than 48 hours ago. Super Admin 48-Hour Override confirmation is required.');
+    }
+
+    // 1. Soft-delete / reverse all payments attached to this bill
+    let reversePayQuery = supabase
+      .from('payments')
+      .update({
+        status: 'REVERSED',
+        cancellation_reason: isPast48Hours ? `[48H Override] ${reason}` : reason,
+        cancelled_at: new Date().toISOString(),
+        cancelled_by: userName
+      })
+      .eq('bill_id', billId);
+
+    if (userId) {
+      reversePayQuery = reversePayQuery.eq('user_id', userId);
+    }
+
+    await reversePayQuery;
+
+    // 2. Reverse advance_used and advance_earned
+    if (bill.customer_id) {
+      let custQuery = supabase
+        .from('customers')
+        .select('advance_balance')
+        .eq('id', bill.customer_id);
+
+      if (userId) {
+        custQuery = custQuery.eq('user_id', userId);
+      }
+
+      const { data: cust } = await custQuery.maybeSingle();
+
+      if (cust) {
+        let currentAdvance = Number(cust.advance_balance || 0);
+        currentAdvance += Number(bill.advance_used || 0);
+        currentAdvance = Math.max(0, currentAdvance - Number(bill.advance_earned || 0));
+
+        let updateCustQuery = supabase
+          .from('customers')
+          .update({ advance_balance: currentAdvance })
+          .eq('id', bill.customer_id);
+
+        if (userId) {
+          updateCustQuery = updateCustQuery.eq('user_id', userId);
+        }
+
+        await updateCustQuery;
+      }
+    }
+
+    // 3. Reset bill payment fields
+    let updateBillQuery = supabase
+      .from('bills')
+      .update({
+        paid_total: 0,
+        cash_paid: 0,
+        upi_paid: 0,
+        advance_used: 0,
+        advance_earned: 0,
+        edited_at: new Date().toISOString(),
+        edited_by: userName,
+        edit_reason: isPast48Hours ? `Payment Reversal (48H Override): ${reason}` : `Payment Reversal: ${reason}`
+      })
+      .eq('id', billId);
+
+    if (userId) {
+      updateBillQuery = updateBillQuery.eq('user_id', userId);
+    }
+
+    const { error: updateErr } = await updateBillQuery;
+    if (updateErr) throw new Error(updateErr.message);
+
+    // 4. Reverse loyalty points if any were awarded
+    await this.reverseLoyaltyPointsForBill(billId, userName);
+
+    await this.logAudit({
+      user_name: userName,
+      action: isPast48Hours ? 'REVERSE_BILL_PAYMENT_OVERRIDE_48H' : 'REVERSE_BILL_PAYMENT',
+      entity: `Bill ${bill.bill_number}`,
+      previous_value: `Paid Total: ₹${totalPaidToReverse}`,
+      new_value: `Payment cleared to ₹0 and marked REVERSED.${isPast48Hours ? ' [SUPER ADMIN 48H OVERRIDE]' : ''} Reason: ${reason}`
+    });
+
+    return { success: true, reversedAmount: totalPaidToReverse };
+  }
+
+
+  static async deletePayment(
+    paymentId: string, 
+    reason: string, 
+    adminPin: string, 
+    userName = 'Super Admin',
+    overridePast48Hours = false
+  ): Promise<void> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const settings = await this.getSettings();
+
+    if (settings.security.super_admin_pin && settings.security.super_admin_pin !== adminPin) {
+      throw new Error('Invalid Super Admin Security PIN. Delete rejected.');
+    }
+
+    const userId = await this.getUserId();
+
+    let payQuery = supabase
+      .from('payments')
+      .select('*')
+      .eq('id', paymentId);
+
+    if (userId) {
+      payQuery = payQuery.eq('user_id', userId);
+    }
+
+    const { data: payment, error: payErr } = await payQuery.maybeSingle();
+    if (payErr || !payment) {
+      throw new Error('Payment not found');
+    }
+
+    if (payment.status === 'CANCELLED' || payment.status === 'REVERSED') {
+      throw new Error('This payment has already been cancelled or reversed.');
+    }
+
+    const paymentTime = new Date(payment.created_at).getTime();
+    const elapsedHours = (Date.now() - paymentTime) / (1000 * 60 * 60);
+    const isPast48Hours = elapsedHours > 48;
+
+    if (isPast48Hours && !overridePast48Hours) {
+      throw new Error('Payment was recorded more than 48 hours ago. Super Admin 48-Hour Override confirmation is required.');
+    }
+
+    const amount = Number(payment.amount || 0);
+
+    // If attached to a bill, deduct from bill paid_total
+    if (payment.bill_id) {
+      let billQuery = supabase
+        .from('bills')
+        .select('*')
+        .eq('id', payment.bill_id);
+
+      if (userId) {
+        billQuery = billQuery.eq('user_id', userId);
+      }
+
+      const { data: bill } = await billQuery.maybeSingle();
+
+      if (bill) {
+        const grandTotal = Number(bill.grand_total || 0);
+        const currentPaid = Number(bill.paid_total || 0);
+        const newPaid = Math.max(0, currentPaid - amount);
+
+        const updateData: { paid_total: number; loyalty_points_earned?: number } = { paid_total: newPaid };
+
+        if (newPaid < grandTotal - 0.01 && Number(bill.loyalty_points_earned || 0) > 0) {
+          await this.reverseLoyaltyPointsForBill(bill.id, userName);
+          updateData.loyalty_points_earned = 0;
+        }
+
+        let updateBillQ = supabase.from('bills').update(updateData).eq('id', payment.bill_id);
+        if (userId) updateBillQ = updateBillQ.eq('user_id', userId);
+        await updateBillQ;
+      }
+    } else if (payment.customer_id) {
+      let custQuery = supabase
+        .from('customers')
+        .select('advance_balance')
+        .eq('id', payment.customer_id);
+
+      if (userId) {
+        custQuery = custQuery.eq('user_id', userId);
+      }
+
+      const { data: cust } = await custQuery.maybeSingle();
+
+      if (cust) {
+        const currentAdvance = Number(cust.advance_balance || 0);
+        const newAdvance = Math.max(0, currentAdvance - amount);
+        let updateCustQ = supabase
+          .from('customers')
+          .update({ advance_balance: newAdvance })
+          .eq('id', payment.customer_id);
+
+        if (userId) updateCustQ = updateCustQ.eq('user_id', userId);
+        await updateCustQ;
+      }
+    }
+
+    // Soft delete payment record by updating status to CANCELLED
+    let cancelPayQ = supabase
+      .from('payments')
+      .update({
+        status: 'CANCELLED',
+        cancellation_reason: isPast48Hours ? `[48H Override] ${reason}` : reason,
+        cancelled_at: new Date().toISOString(),
+        cancelled_by: userName
+      })
+      .eq('id', paymentId);
+
+    if (userId) cancelPayQ = cancelPayQ.eq('user_id', userId);
+    const { error: cancelErr } = await cancelPayQ;
+    if (cancelErr) throw new Error(cancelErr.message);
+
+    await this.logAudit({
+      user_name: userName,
+      action: isPast48Hours ? 'CANCEL_PAYMENT_OVERRIDE_48H' : 'CANCEL_PAYMENT',
+      entity: `Payment ${payment.payment_number || paymentId}`,
+      previous_value: `Amount: ₹${amount}, Customer ID: ${payment.customer_id}`,
+      new_value: `Payment cancelled/soft-deleted.${isPast48Hours ? ' [SUPER ADMIN 48H OVERRIDE]' : ''} Reason: ${reason}`
+    });
+  }
+
+
+  static async reconcileCustomerAdvanceBalances(userName = 'Super Admin'): Promise<{
+    customersReconciled: number;
+    discrepanciesFixed: number;
+    totalAdvanceBefore: number;
+    totalAdvanceAfter: number;
+  }> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const userId = await this.getUserId();
+
+    let custQ = supabase.from('customers').select('id, name, advance_balance');
+    let billsQ = supabase.from('bills').select('customer_id, advance_used, advance_earned');
+    let payQ = supabase.from('payments').select('customer_id, bill_id, amount, status');
+
+    if (userId) {
+      custQ = custQ.eq('user_id', userId);
+      billsQ = billsQ.eq('user_id', userId);
+      payQ = payQ.eq('user_id', userId);
+    }
+
+    const [
+      { data: customers, error: custErr },
+      { data: bills, error: billsErr },
+      { data: payments, error: payErr }
+    ] = await Promise.all([custQ, billsQ, payQ]);
+
+    if (custErr) throw new Error(custErr.message);
+    if (billsErr) throw new Error(billsErr.message);
+    if (payErr) throw new Error(payErr.message);
+
+    const custList = customers || [];
+    const billList = bills || [];
+    const payList = payments || [];
+
+    let totalAdvanceBefore = 0;
+    let totalAdvanceAfter = 0;
+    let discrepanciesFixed = 0;
+    let customersReconciled = 0;
+
+    for (const cust of custList) {
+      const storedAdvance = Number(cust.advance_balance || 0);
+      totalAdvanceBefore += storedAdvance;
+
+      const custUnallocatedPayments = payList
+        .filter(p => p.customer_id === cust.id && !p.bill_id && p.status !== 'CANCELLED' && p.status !== 'REVERSED')
+        .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+
+      const custAdvanceEarned = billList
+        .filter(b => b.customer_id === cust.id)
+        .reduce((sum, b) => sum + Number(b.advance_earned || 0), 0);
+
+      const custAdvanceUsed = billList
+        .filter(b => b.customer_id === cust.id)
+        .reduce((sum, b) => sum + Number(b.advance_used || 0), 0);
+
+      const calculatedAdvance = Math.max(0, Number((custAdvanceEarned + custUnallocatedPayments - custAdvanceUsed).toFixed(2)));
+      totalAdvanceAfter += calculatedAdvance;
+
+      if (Math.abs(calculatedAdvance - storedAdvance) > 0.001) {
+        let updateCustQ = supabase
+          .from('customers')
+          .update({ advance_balance: calculatedAdvance })
+          .eq('id', cust.id);
+
+        if (userId) updateCustQ = updateCustQ.eq('user_id', userId);
+        await updateCustQ;
+
+        discrepanciesFixed++;
+      }
+      customersReconciled++;
+    }
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'RECONCILE_ADVANCE_BALANCES',
+      entity: 'All Customers',
+      new_value: `Reconciled ${customersReconciled} customers, fixed ${discrepanciesFixed} discrepancies. Advance before: ₹${totalAdvanceBefore.toFixed(2)}, after: ₹${totalAdvanceAfter.toFixed(2)}`
+    });
+
+    return {
+      customersReconciled,
+      discrepanciesFixed,
+      totalAdvanceBefore: Number(totalAdvanceBefore.toFixed(2)),
+      totalAdvanceAfter: Number(totalAdvanceAfter.toFixed(2))
+    };
+  }
+
+
   static async getExpenses(): Promise<Expense[]> {
     if (!isSupabaseConfigured) return [];
-    const { data, error } = await supabase
-      .from('expenses')
-      .select('*')
-      .order('created_at', { ascending: false });
+    const userId = await this.getUserId();
 
+    let query = supabase
+      .from('expenses')
+      .select('*');
+
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+
+    const { data, error } = await query.order('created_at', { ascending: false });
     if (error) return [];
     return data || [];
   }
+
 
   static async addExpense(expense: { 
     title: string; 
@@ -1840,36 +2590,55 @@ export class ApiService {
     notes?: string;
   }, userName = 'Admin'): Promise<Expense> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const userId = await this.getUserId();
     const expense_number = await this.getNextSequence('EXPENSE');
+
+    const payload = {
+      title: expense.title,
+      amount: expense.amount,
+      category: expense.category,
+      payment_mode: expense.payment_mode || 'Cash',
+      notes: expense.notes || null,
+      expense_number,
+      ...(userId ? { user_id: userId } : {})
+    };
 
     const { data, error } = await supabase
       .from('expenses')
-      .insert([{
-        title: expense.title,
-        amount: expense.amount,
-        category: expense.category,
-        payment_mode: expense.payment_mode || 'Cash',
-        notes: expense.notes || null,
-        expense_number
-      }])
+      .insert([payload])
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw new Error(error.message);
+    if (!data) throw new Error('Failed to create expense');
 
     await this.logAudit({
       user_name: userName,
-      action: 'ADD_EXPENSE',
-      entity: `Expense ${expense.title} (${expense_number})`,
+      action: 'CREATE_EXPENSE',
+      entity: `Expense ${expense.title}`,
       new_value: JSON.stringify(data)
     });
 
     return data;
   }
 
+
   static async deleteExpense(id: string, userName = 'Admin'): Promise<void> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
-    const { error } = await supabase.from('expenses').delete().eq('id', id);
+    const userId = await this.getUserId();
+
+    // Verify existence & ownership
+    let checkQ = supabase.from('expenses').select('id').eq('id', id);
+    if (userId) checkQ = checkQ.eq('user_id', userId);
+    const { data: existing } = await checkQ.maybeSingle();
+    if (!existing) {
+      throw new Error('Expense not found');
+    }
+
+    let delQ = supabase.from('expenses').delete().eq('id', id);
+    if (userId) delQ = delQ.eq('user_id', userId);
+
+    const { error } = await delQ;
     if (error) throw new Error(error.message);
 
     await this.logAudit({
@@ -1879,68 +2648,92 @@ export class ApiService {
     });
   }
 
-  static async addExpenseCategory(categoryName: string, userName = 'Admin'): Promise<string[]> {
-    const settings = await this.getSettings();
-    const existing = settings.expenses?.categories || [
-      'Shop Expense', 'Electricity', 'Rent', 'Paper Stock & Rolls', 
-      'Toner & Cartridges', 'Machine Maintenance', 'Staff Wages', 'Other Expense'
-    ];
-    if (!existing.includes(categoryName)) {
-      const updated = [...existing, categoryName];
-      await this.saveSettings('expenses', { ...settings.expenses, categories: updated }, userName);
-      return updated;
-    }
-    return existing;
-  }
 
-  static async removeExpenseCategory(categoryName: string, userName = 'Admin'): Promise<string[]> {
+  static async addExpenseCategory(categoryName: string, userName = 'Admin'): Promise<string[]> {
+    const trimmed = categoryName.trim();
+    if (!trimmed) throw new Error('Category name cannot be empty');
+
     const settings = await this.getSettings();
-    const existing = settings.expenses?.categories || [
-      'Shop Expense', 'Electricity', 'Rent', 'Other Expense'
-    ];
-    const updated = existing.filter(c => c !== categoryName);
-    await this.saveSettings('expenses', { ...settings.expenses, categories: updated }, userName);
+    const currentCats = settings.expenses?.categories || [];
+
+    if (currentCats.some(c => c.toLowerCase() === trimmed.toLowerCase())) {
+      throw new Error(`Category "${trimmed}" already exists.`);
+    }
+
+    const updated = [...currentCats, trimmed];
+    await this.saveSettings('expenses', {
+      ...(settings.expenses || DEFAULT_SETTINGS.expenses),
+      categories: updated
+    }, userName);
+
     return updated;
   }
 
-  // --- SUPER ADMIN PURGE ---
+
+  static async removeExpenseCategory(categoryName: string, userName = 'Admin'): Promise<string[]> {
+    const settings = await this.getSettings();
+    const currentCats = settings.expenses?.categories || [];
+    const updated = currentCats.filter(c => c.toLowerCase() !== categoryName.toLowerCase());
+
+    await this.saveSettings('expenses', {
+      ...(settings.expenses || DEFAULT_SETTINGS.expenses),
+      categories: updated
+    }, userName);
+
+    return updated;
+  }
+
+
   static async purgeAllBusinessData(userName = 'Super Admin'): Promise<void> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const userId = await this.getUserId();
 
-    await supabase.from('bill_items').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-    await supabase.from('payments').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-    await supabase.from('bills').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-    await supabase.from('expenses').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-    await supabase.from('loyalty_transactions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    let delBillItems = supabase.from('bill_items').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    let delPayments = supabase.from('payments').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    let delBills = supabase.from('bills').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    let delExpenses = supabase.from('expenses').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    let delLoyalty = supabase.from('loyalty_transactions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    let updateCust = supabase.from('customers').update({ advance_balance: 0, loyalty_points: 0 }).neq('id', '00000000-0000-0000-0000-000000000000');
 
-    await supabase.from('customers').update({ advance_balance: 0, loyalty_points: 0 }).neq('id', '00000000-0000-0000-0000-000000000000');
+    if (userId) {
+      delBillItems = delBillItems.eq('user_id', userId);
+      delPayments = delPayments.eq('user_id', userId);
+      delBills = delBills.eq('user_id', userId);
+      delExpenses = delExpenses.eq('user_id', userId);
+      delLoyalty = delLoyalty.eq('user_id', userId);
+      updateCust = updateCust.eq('user_id', userId);
+    }
+
+    await delBillItems;
+    await delPayments;
+    await delBills;
+    await delExpenses;
+    await delLoyalty;
+    await updateCust;
 
     await this.logAudit({
       user_name: userName,
       action: 'PURGE_ALL_BUSINESS_DATA',
-      entity: 'Entire Business Transactional Database'
+      entity: 'All Business Records'
     });
   }
 
-  // --- DASHBOARD PAYMENT RECONCILIATIONS & METRICS ---
-  static async getDashboardStats(filter: DateFilterOption = 'today', customRange?: { from: string; to: string }): Promise<DashboardStats> {
-    const emptyPaymentSummary: PaymentSummary = {
-      total_sales: 0,
-      cash_collected: 0,
-      upi_collected: 0,
-      total_amount_collected: 0,
-      outstanding_amount: 0,
-      customer_advance_balance: 0,
-      payment_method_breakdown: [
-        { method: 'Cash', amount: 0 },
-        { method: 'UPI', amount: 0 },
 
-      ],
-      daily_collection_trend: [],
-      monthly_collection_trend: []
-    };
+  static async getDashboardStats(filter: DateFilterOption = 'today', customRange?: { from: string; to: string }): Promise<DashboardStats> {
+    const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
 
     if (!isSupabaseConfigured) {
+      const emptySummary: PaymentSummary = {
+        total_sales: 0,
+        cash_collected: 0,
+        upi_collected: 0,
+        total_amount_collected: 0,
+        outstanding_amount: 0,
+        customer_advance_balance: 0,
+        payment_method_breakdown: [],
+        daily_collection_trend: [],
+        monthly_collection_trend: []
+      };
       return {
         todays_sales: 0,
         monthly_sales: 0,
@@ -1952,7 +2745,7 @@ export class ApiService {
         net_profit: 0,
         bills_generated: 0,
         average_bill_value: 0,
-        payment_summary: emptyPaymentSummary,
+        payment_summary: emptySummary,
         sales_trend: [],
         monthly_revenue: [],
         payment_distribution: [],
@@ -1960,11 +2753,17 @@ export class ApiService {
       };
     }
 
-    const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
+    const userId = await this.getUserId();
 
     let billsQuery = supabase.from('bills').select('*, bill_items(*)');
     let paymentsQuery = supabase.from('payments').select('*');
     let expensesQuery = supabase.from('expenses').select('*');
+
+    if (userId) {
+      billsQuery = billsQuery.eq('user_id', userId);
+      paymentsQuery = paymentsQuery.eq('user_id', userId);
+      expensesQuery = expensesQuery.eq('user_id', userId);
+    }
 
     if (startDate) {
       billsQuery = billsQuery.gte('created_at', startDate.toISOString());
@@ -1977,84 +2776,34 @@ export class ApiService {
       expensesQuery = expensesQuery.lte('created_at', endDate.toISOString());
     }
 
-    const { data: bills } = await billsQuery;
-    const { data: payments } = await paymentsQuery;
-    const { data: expenses } = await expensesQuery;
+    const [
+      { data: bills },
+      { data: payments },
+      { data: expenses }
+    ] = await Promise.all([
+      billsQuery.order('created_at', { ascending: false }),
+      paymentsQuery.order('created_at', { ascending: false }),
+      expensesQuery.order('created_at', { ascending: false })
+    ]);
 
     const allBills = bills || [];
-    const allPayments = payments || [];
+    const allPayments = (payments || []).filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
     const allExpenses = expenses || [];
 
     const customers = await this.getCustomerSummaries();
     const total_customers = customers.length;
-    // Calculate total net outstanding balance across all customer accounts
     const pending_balance = customers.reduce((sum, c) => sum + Number(c.balance_due || 0), 0);
-
-    // ── PRIMARY formula (unchanged): sum of denormalized advance_balance stored on each customer row
     const total_advance = customers.reduce((sum, c) => sum + Number(c.advance_balance || 0), 0);
-
-    // ── SECONDARY VALIDATION formula: reconstruct advance balance from raw transaction history.
-    //    Advance balance = (payments credited to customer with no bill attached)
-    //                    + SUM(bills.advance_earned)   ← overpayments credited as advance
-    //                    − SUM(bills.advance_used)     ← advance drawn down against bills
-    //    This is intentionally computed from ALL historical records (no date filter) because
-    //    advance_balance is a cumulative running total, not a period-scoped metric.
-    try {
-      const [{ data: allTimeBills }, { data: allTimePayments }] = await Promise.all([
-        supabase.from('bills').select('advance_used, advance_earned, customer_id'),
-        supabase.from('payments').select('amount, bill_id, customer_id'),
-      ]);
-
-      const allTimeBillsData   = allTimeBills   || [];
-      const allTimePaymentsData = allTimePayments || [];
-
-      // Unallocated payments: payments that are not linked to any specific bill
-      const unallocatedPaymentsTotal = allTimePaymentsData
-        .filter(p => !p.bill_id)
-        .reduce((sum, p) => sum + Number(p.amount || 0), 0);
-
-      const totalAdvanceEarned = allTimeBillsData
-        .reduce((sum, b) => sum + Number(b.advance_earned || 0), 0);
-
-      const totalAdvanceUsed = allTimeBillsData
-        .reduce((sum, b) => sum + Number(b.advance_used || 0), 0);
-
-      const total_advance_secondary = unallocatedPaymentsTotal + totalAdvanceEarned - totalAdvanceUsed;
-
-      // Compare and warn if the two formulas diverge by more than ₹0.01
-      const discrepancy = Math.abs(total_advance - total_advance_secondary);
-      if (discrepancy > 0.01) {
-        console.warn(
-          `[AdvanceBalance Validation] DISCREPANCY DETECTED!\n` +
-          `  Primary   (customers.advance_balance sum): ₹${total_advance.toFixed(2)}\n` +
-          `  Secondary (transaction reconstruction):    ₹${total_advance_secondary.toFixed(2)}\n` +
-          `  Difference: ₹${discrepancy.toFixed(2)}\n` +
-          `  Breakdown — Unallocated payments: ₹${unallocatedPaymentsTotal.toFixed(2)}, ` +
-          `Advance earned: ₹${totalAdvanceEarned.toFixed(2)}, ` +
-          `Advance used: ₹${totalAdvanceUsed.toFixed(2)}`
-        );
-      } else {
-        console.debug(
-          `[AdvanceBalance Validation] ✓ Verified — ` +
-          `Primary ₹${total_advance.toFixed(2)} matches Secondary ₹${total_advance_secondary.toFixed(2)} ` +
-          `(Δ ₹${discrepancy.toFixed(2)})`
-        );
-      }
-    } catch (validationErr) {
-      console.warn('[AdvanceBalance Validation] Could not run secondary check:', validationErr);
-    }
 
     let cashCollected = 0;
     let upiCollected = 0;
 
-    // Single Source of Truth: All collections are recorded in the payments table
     allPayments.forEach(p => {
       const amt = Number(p.amount || 0);
       if (p.payment_method === 'Cash') cashCollected += amt;
       else if (p.payment_method === 'UPI') upiCollected += amt;
     });
 
-    // Fallback ONLY for walk-in / legacy bills when no payment records exist at all
     if (allPayments.length === 0) {
       allBills.forEach(b => {
         cashCollected += Number(b.cash_paid || 0);
@@ -2063,18 +2812,18 @@ export class ApiService {
     }
 
     const totalAmountCollected = cashCollected + upiCollected;
-    const totalSales = allBills.reduce((sum, b) => sum + Number(b.grand_total), 0);
+    const totalSales = allBills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
     const bills_generated = allBills.length;
     const average_bill_value = bills_generated > 0 ? totalSales / bills_generated : 0;
 
     const total_income = totalAmountCollected;
-    const total_expense = allExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
+    const total_expense = allExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
     const net_profit = total_income - total_expense;
 
     const currentMonth = new Date().toISOString().slice(0, 7);
     const monthly_sales = allBills
       .filter(b => b.created_at.startsWith(currentMonth))
-      .reduce((sum, b) => sum + Number(b.grand_total), 0);
+      .reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
 
     const paymentSummary: PaymentSummary = {
       total_sales: totalSales,
@@ -2095,14 +2844,14 @@ export class ApiService {
     const salesTrendMap = new Map<string, number>();
     allBills.forEach(b => {
       const dateKey = new Date(b.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
-      salesTrendMap.set(dateKey, (salesTrendMap.get(dateKey) || 0) + Number(b.grand_total));
+      salesTrendMap.set(dateKey, (salesTrendMap.get(dateKey) || 0) + Number(b.grand_total || 0));
     });
     const sales_trend = Array.from(salesTrendMap.entries()).map(([date, amount]) => ({ date, amount }));
 
     const monthlyRevMap = new Map<string, number>();
     allBills.forEach(b => {
       const monthKey = new Date(b.created_at).toLocaleDateString('en-IN', { month: 'short', year: '2-digit' });
-      monthlyRevMap.set(monthKey, (monthlyRevMap.get(monthKey) || 0) + Number(b.grand_total));
+      monthlyRevMap.set(monthKey, (monthlyRevMap.get(monthKey) || 0) + Number(b.grand_total || 0));
     });
     const monthly_revenue = Array.from(monthlyRevMap.entries()).map(([month, amount]) => ({ month, amount }));
 
@@ -2113,12 +2862,12 @@ export class ApiService {
 
     const prodMap = new Map<string, { quantity: number; revenue: number }>();
     allBills.forEach(b => {
-      b.bill_items?.forEach((item: BillItem) => {
+      ((b.bill_items || []) as BillItem[]).forEach((item: BillItem) => {
         const name = item.product_name;
         const existing = prodMap.get(name) || { quantity: 0, revenue: 0 };
         prodMap.set(name, {
-          quantity: existing.quantity + Number(item.quantity),
-          revenue: existing.revenue + Number(item.total)
+          quantity: existing.quantity + Number(item.quantity || 0),
+          revenue: existing.revenue + Number(item.total || 0)
         });
       });
     });
@@ -2196,6 +2945,7 @@ export class ApiService {
 
   // --- WHATSAPP TEXT RECEIPT GENERATOR ---
   // --- DIGITAL MULTI-CHANNEL RECEIPT GENERATOR (WhatsApp, Telegram, SMS, Social) ---
+
   static generateDigitalReceiptText(
     bill: Bill, 
     financialSummary?: BillFinancialSummary, 
@@ -2331,11 +3081,13 @@ _(Points will be credited upon bill settlement)_`;
   }
 
   // Backwards compatibility alias
+
   static generateWhatsAppTextReceipt(bill: Bill, financialSummary?: BillFinancialSummary, shopSettings?: Partial<ShopSettings>): string {
     return this.generateDigitalReceiptText(bill, financialSummary, shopSettings);
   }
 
   // --- HTML EMAIL RECEIPT TEMPLATE GENERATOR ---
+
   static generateEmailHtmlReceipt(
     bill: Bill, 
     financialSummary?: BillFinancialSummary, 
@@ -2455,102 +3207,84 @@ _(Points will be credited upon bill settlement)_`;
   }
 
   // --- DATABASE SEED UTILITY ---
+
+
   static async seedDefaultCatalogAndCustomers(userName = 'Super Admin'): Promise<{ productsAdded: number; customersAdded: number }> {
-    if (!isSupabaseConfigured) return { productsAdded: 0, customersAdded: 0 };
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const userId = await this.getUserId();
 
-    let productsAdded = 0;
-    let customersAdded = 0;
+    const seedProducts = [
+      { product_code: 'PRD-000001', name: 'A4 B/W Xerox (Single)', price: 2.00, category: 'Printing & Xerox', ...(userId ? { user_id: userId } : {}) },
+      { product_code: 'PRD-000002', name: 'A4 B/W Xerox (Back-to-Back)', price: 3.00, category: 'Printing & Xerox', ...(userId ? { user_id: userId } : {}) },
+      { product_code: 'PRD-000003', name: 'A4 Color Printout', price: 10.00, category: 'Printing & Xerox', ...(userId ? { user_id: userId } : {}) },
+      { product_code: 'PRD-000004', name: 'Spiral Binding (upto 100 pgs)', price: 40.00, category: 'Binding & Finishing', ...(userId ? { user_id: userId } : {}) },
+      { product_code: 'PRD-000005', name: 'A4 Document Lamination', price: 25.00, category: 'Binding & Finishing', ...(userId ? { user_id: userId } : {}) },
+      { product_code: 'PRD-000006', name: 'Passport Size Photo (Set of 8)', price: 50.00, category: 'Photography', ...(userId ? { user_id: userId } : {}) },
+      { product_code: 'PRD-000007', name: 'Classmate Notebook (Long)', price: 65.00, category: 'Stationery', ...(userId ? { user_id: userId } : {}) },
+      { product_code: 'PRD-000008', name: 'Reynolds Ball Pen (Blue)', price: 10.00, category: 'Stationery', ...(userId ? { user_id: userId } : {}) }
+    ];
 
-    try {
-      const existingProds = await this.getProducts();
-      if (existingProds.length === 0) {
-        const seedProducts = [
-          { name: 'A4 B&W Single', category: 'Xerox & Print', price: 2.00, product_code: 'PRD-000001' },
-          { name: 'A4 B&W Both Sides', category: 'Xerox & Print', price: 3.00, product_code: 'PRD-000002' },
-          { name: 'A4 Color Print Single', category: 'Xerox & Print', price: 10.00, product_code: 'PRD-000003' },
-          { name: 'A4 Color Both Sides', category: 'Xerox & Print', price: 18.00, product_code: 'PRD-000004' },
-          { name: 'Legal B&W Print', category: 'Xerox & Print', price: 3.00, product_code: 'PRD-000005' },
-          { name: 'A3 B&W Print', category: 'Xerox & Print', price: 5.00, product_code: 'PRD-000006' },
-          { name: 'A3 Color Print', category: 'Xerox & Print', price: 25.00, product_code: 'PRD-000007' },
-          { name: 'Glossy Photo Print 4x6', category: 'Xerox & Print', price: 15.00, product_code: 'PRD-000008' },
-          { name: 'Glossy Photo Print A4', category: 'Xerox & Print', price: 40.00, product_code: 'PRD-000009' },
-          { name: 'PVC ID Card Print', category: 'Xerox & Print', price: 50.00, product_code: 'PRD-000010' },
-          { name: 'A4 Document Lamination', category: 'Lamination & Binding', price: 30.00, product_code: 'PRD-000011' },
-          { name: 'A3 Certificate Lamination', category: 'Lamination & Binding', price: 50.00, product_code: 'PRD-000012' },
-          { name: 'ID Card Lamination (Pouch)', category: 'Lamination & Binding', price: 15.00, product_code: 'PRD-000013' },
-          { name: 'Spiral Binding (Up to 100 pgs)', category: 'Lamination & Binding', price: 40.00, product_code: 'PRD-000014' },
-          { name: 'Spiral Binding (Over 100 pgs)', category: 'Lamination & Binding', price: 60.00, product_code: 'PRD-000015' },
-          { name: 'Hard Cover Project Binding', category: 'Lamination & Binding', price: 200.00, product_code: 'PRD-000016' },
-          { name: 'Ballpoint Pen (Blue/Black)', category: 'Stationery', price: 10.00, product_code: 'PRD-000017' },
-          { name: 'Gel Pen 0.5mm', category: 'Stationery', price: 20.00, product_code: 'PRD-000018' },
-          { name: 'A4 75GSM Copier Paper Ream', category: 'Paper & Envelopes', price: 280.00, product_code: 'PRD-000019' },
-          { name: 'Long Ruled Notebook 180 Pgs', category: 'Stationery', price: 60.00, product_code: 'PRD-000020' },
-          { name: 'A4 Clear Display Folder (20 Pockets)', category: 'Stationery', price: 80.00, product_code: 'PRD-000021' }
-        ];
+    const seedCustomers = [
+      { customer_code: 'CUS-000001', name: 'Rahul Sharma', mobile: '9876543210', email: 'rahul.s@example.com', advance_balance: 150.00, loyalty_points: 25.00, ...(userId ? { user_id: userId } : {}) },
+      { customer_code: 'CUS-000002', name: 'Pooja Patel', mobile: '9823456789', email: 'pooja.p@example.com', advance_balance: 0.00, loyalty_points: 10.00, ...(userId ? { user_id: userId } : {}) },
+      { customer_code: 'CUS-000003', name: 'Dr. Ramesh Gupta', mobile: '9123456780', email: 'dr.gupta@clinic.org', advance_balance: 500.00, loyalty_points: 80.00, ...(userId ? { user_id: userId } : {}) }
+    ];
 
-        const { error: pErr } = await supabase.from('products').insert(seedProducts);
-        if (!pErr) productsAdded = seedProducts.length;
-      }
+    const { error: pErr } = await supabase.from('products').insert(seedProducts);
+    const { error: cErr } = await supabase.from('customers').insert(seedCustomers);
 
-      const existingCusts = await this.getCustomers();
-      if (existingCusts.length === 0) {
-        const seedCustomers = [
-          { name: 'Sample Walk-in Customer', mobile: '9876543210', email: 'customer@example.com', advance_balance: 0.00, loyalty_points: 0.0, customer_code: 'CUS-000001' }
-        ];
+    if (pErr) console.warn('Products seed note:', pErr.message);
+    if (cErr) console.warn('Customers seed note:', cErr.message);
 
-        const { error: cErr } = await supabase.from('customers').insert(seedCustomers);
-        if (!cErr) customersAdded = seedCustomers.length;
-      }
+    await this.logAudit({
+      user_name: userName,
+      action: 'SEED_CATALOG',
+      entity: 'Default Catalog & Customers'
+    });
 
-      if (productsAdded > 0 || customersAdded > 0) {
-        await this.logAudit({
-          user_name: userName,
-          action: 'SEED_DEFAULT_DATABASE_CATALOG',
-          entity: 'System Seed Data',
-          new_value: `Added ${productsAdded} products, ${customersAdded} customers`
-        });
-      }
-    } catch (e) {
-      console.error('Database seed error:', e);
-    }
-
-    return { productsAdded, customersAdded };
+    return { productsAdded: seedProducts.length, customersAdded: seedCustomers.length };
   }
 
-  // --- PRODUCT SALES HISTORY & ANALYTICS ---
+
   static async getProductSalesAnalytics(
     productId: string,
     filter: DateFilterOption = 'all_time',
     customRange?: { from: string; to: string }
   ): Promise<ProductSalesAnalytics> {
+    if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const userId = await this.getUserId();
+
     const isCustom = productId.startsWith('custom:');
     let product: Product;
 
     if (isCustom) {
-      const customName = decodeURIComponent(productId.replace(/^custom:/, ''));
+      const decodedName = decodeURIComponent(productId.replace('custom:', ''));
       product = {
         id: productId,
-        name: customName,
+        name: decodedName,
         price: 0,
-        category: 'Custom Service',
-        product_code: 'CUSTOM',
+        category: 'Custom Service / Item',
         created_at: new Date().toISOString()
       };
     } else {
       const p = await this.getProductById(productId);
-      if (!p) throw new Error('Product not found');
+      if (!p) {
+        return {
+          product: {
+            id: productId,
+            name: 'Not Found',
+            price: 0,
+            category: 'Unknown',
+            created_at: new Date().toISOString()
+          },
+          total_quantity_sold: 0,
+          total_revenue: 0,
+          average_selling_rate: 0,
+          orders_count: 0,
+          transactions: []
+        };
+      }
       product = p;
-    }
-
-    if (!isSupabaseConfigured) {
-      return {
-        product,
-        total_quantity_sold: 0,
-        total_revenue: 0,
-        average_selling_rate: product.price,
-        orders_count: 0,
-        transactions: []
-      };
     }
 
     const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
@@ -2558,6 +3292,10 @@ _(Points will be credited upon bill settlement)_`;
     let query = supabase
       .from('bill_items')
       .select('*, bills(id, bill_number, created_at, customer_id, customers(name))');
+
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
 
     if (isCustom) {
       query = query.is('product_id', null).eq('product_name', product.name);
@@ -2585,7 +3323,7 @@ _(Points will be credited upon bill settlement)_`;
     let totalRev = 0;
 
     for (const item of (items || [])) {
-      const bill = item.bills;
+      const bill = item.bills as { id?: string; bill_number?: string; created_at?: string; customer_id?: string; customers?: { name?: string }; customer_name?: string } | null;
       const createdAt = bill?.created_at || item.created_at || new Date().toISOString();
       const itemTime = new Date(createdAt).getTime();
 
@@ -2636,115 +3374,145 @@ _(Points will be credited upon bill settlement)_`;
     };
   }
 
-  // --- CUSTOM & AD-HOC SERVICES ANALYTICS ---
+
   static async getCustomItemsAnalytics(
     filter: DateFilterOption = 'all_time',
     customRange?: { from: string; to: string }
   ): Promise<CustomItemAnalytics[]> {
     if (!isSupabaseConfigured) return [];
+    const userId = await this.getUserId();
 
     const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
 
     let query = supabase
       .from('bill_items')
       .select('product_name, quantity, price, total, created_at, bill_id')
-      .is('product_id', null)
-      .order('created_at', { ascending: false });
+      .is('product_id', null);
 
-    if (startDate) {
-      query = query.gte('created_at', startDate.toISOString());
-    }
-    if (endDate) {
-      query = query.lte('created_at', endDate.toISOString());
+    if (userId) {
+      query = query.eq('user_id', userId);
     }
 
-    const { data: items, error } = await query;
-    if (error || !items) {
-      console.error('Error fetching custom items analytics:', error);
+    const { data: customItems, error } = await query.order('created_at', { ascending: false });
+
+    if (error || !customItems) {
+      console.error('Error fetching custom items:', error);
       return [];
     }
 
-    const groupMap = new Map<string, {
+    const itemMap = new Map<string, {
       name: string;
       total_quantity: number;
       total_revenue: number;
+      rates: number[];
       bill_ids: Set<string>;
       first_used_at: string;
       last_used_at: string;
     }>();
 
-    for (const item of items) {
-      const name = (item.product_name || 'Custom Service').trim();
+    for (const item of customItems) {
+      const itemTime = new Date(item.created_at).getTime();
+      if (startDate && itemTime < startDate.getTime()) continue;
+      if (endDate && itemTime > endDate.getTime()) continue;
+
+      const name = (item.product_name || 'Ad-hoc Service').trim();
       const qty = Number(item.quantity || 0);
       const price = Number(item.price || 0);
       const total = Number(item.total || (qty * price));
-      const createdAt = item.created_at || new Date().toISOString();
 
-      const existing = groupMap.get(name);
-      if (!existing) {
-        groupMap.set(name, {
+      if (!itemMap.has(name)) {
+        itemMap.set(name, {
           name,
-          total_quantity: qty,
-          total_revenue: total,
-          bill_ids: new Set(item.bill_id ? [item.bill_id] : []),
-          first_used_at: createdAt,
-          last_used_at: createdAt,
+          total_quantity: 0,
+          total_revenue: 0,
+          rates: [],
+          bill_ids: new Set<string>(),
+          first_used_at: item.created_at,
+          last_used_at: item.created_at
         });
-      } else {
-        existing.total_quantity += qty;
-        existing.total_revenue += total;
-        if (item.bill_id) existing.bill_ids.add(item.bill_id);
-        if (new Date(createdAt).getTime() < new Date(existing.first_used_at).getTime()) {
-          existing.first_used_at = createdAt;
-        }
-        if (new Date(createdAt).getTime() > new Date(existing.last_used_at).getTime()) {
-          existing.last_used_at = createdAt;
-        }
+      }
+
+      const entry = itemMap.get(name)!;
+      entry.total_quantity += qty;
+      entry.total_revenue += total;
+      entry.rates.push(price);
+      if (item.bill_id) entry.bill_ids.add(item.bill_id);
+      if (new Date(item.created_at).getTime() > new Date(entry.last_used_at).getTime()) {
+        entry.last_used_at = item.created_at;
+      }
+      if (new Date(item.created_at).getTime() < new Date(entry.first_used_at).getTime()) {
+        entry.first_used_at = item.created_at;
       }
     }
 
-    const results: CustomItemAnalytics[] = Array.from(groupMap.values()).map(g => ({
-      name: g.name,
-      total_quantity: Number(g.total_quantity.toFixed(2)),
-      total_revenue: Number(g.total_revenue.toFixed(2)),
-      average_selling_rate: g.total_quantity > 0 ? Number((g.total_revenue / g.total_quantity).toFixed(2)) : 0,
-      orders_count: g.bill_ids.size,
-      first_used_at: g.first_used_at,
-      last_used_at: g.last_used_at,
-    }));
+    return Array.from(itemMap.values()).map(entry => {
+      const avgRate = entry.total_quantity > 0 
+        ? Number((entry.total_revenue / entry.total_quantity).toFixed(2)) 
+        : (entry.rates[0] || 0);
 
-    return results.sort((a, b) => b.total_revenue - a.total_revenue);
+      const minRate = Math.min(...entry.rates);
+      const maxRate = Math.max(...entry.rates);
+      const isDynamic = entry.rates.length > 1 && (maxRate - minRate > 0.01);
+
+      return {
+        name: entry.name,
+        total_quantity: Number(entry.total_quantity.toFixed(2)),
+        total_revenue: Number(entry.total_revenue.toFixed(2)),
+        average_selling_rate: avgRate,
+        is_dynamic_rate: isDynamic,
+        min_rate: minRate,
+        max_rate: maxRate,
+        orders_count: entry.bill_ids.size,
+        first_used_at: entry.first_used_at,
+        last_used_at: entry.last_used_at
+      };
+    }).sort((a, b) => b.total_revenue - a.total_revenue);
   }
 
-  // --- CUSTOMER CONSOLIDATED STATEMENT DATA ---
+
   static async getCustomerStatementData(
     customerId: string,
     filter: DateFilterOption = 'all_time',
     customRange?: { from: string; to: string }
-  ): Promise<CustomerStatementData> {
+  ): Promise<CustomerStatementData | null> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
+    const userId = await this.getUserId();
 
-    const { data: customer, error: custErr } = await supabase
+    let custQuery = supabase
       .from('customers')
       .select('*')
-      .eq('id', customerId)
-      .single();
+      .eq('id', customerId);
 
-    if (custErr || !customer) throw new Error('Customer not found');
+    if (userId) {
+      custQuery = custQuery.eq('user_id', userId);
+    }
+
+    const { data: customer, error: custErr } = await custQuery.maybeSingle();
+
+    if (custErr || !customer) {
+      return null;
+    }
 
     const settings = await this.getSettings();
 
-    const { data: bills } = await supabase
+    let billsQuery = supabase
       .from('bills')
       .select('*, bill_items(*)')
-      .eq('customer_id', customerId)
-      .order('created_at', { ascending: true });
+      .eq('customer_id', customerId);
 
-    const { data: payments } = await supabase
+    let paymentsQuery = supabase
       .from('payments')
       .select('*')
-      .eq('customer_id', customerId)
-      .order('created_at', { ascending: true });
+      .eq('customer_id', customerId);
+
+    if (userId) {
+      billsQuery = billsQuery.eq('user_id', userId);
+      paymentsQuery = paymentsQuery.eq('user_id', userId);
+    }
+
+    const { data: bills } = await billsQuery.order('created_at', { ascending: true });
+    const { data: payments } = await paymentsQuery.order('created_at', { ascending: true });
+    const activePayments = (payments || []).filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
 
     let allTimeBilled = 0;
     let allTimePaid = 0;
@@ -2753,8 +3521,8 @@ _(Points will be credited upon bill settlement)_`;
       allTimePaid += Number(b.paid_total || 0);
     });
 
-    const paymentBillIds = new Set((payments || []).map(p => p.bill_id).filter(Boolean));
-    (payments || []).forEach(p => {
+    const paymentBillIds = new Set(activePayments.map(p => p.bill_id).filter(Boolean));
+    activePayments.forEach(p => {
       if (!p.bill_id || !paymentBillIds.has(p.bill_id)) {
         allTimePaid += Number(p.amount || 0);
       }
@@ -2870,5 +3638,3 @@ _(Points will be credited upon bill settlement)_`;
     };
   }
 }
-
-

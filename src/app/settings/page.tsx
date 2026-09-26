@@ -66,10 +66,35 @@ export default function SettingsPage() {
     totalActivePoints: number;
   } | null>(null);
 
+  // Advance Balance Reconcile State
+  const [reconcilingAdvance, setReconcilingAdvance] = useState(false);
+  const [advanceSummary, setAdvanceSummary] = useState<{
+    customersReconciled: number;
+    discrepanciesFixed: number;
+    totalAdvanceBefore: number;
+    totalAdvanceAfter: number;
+  } | null>(null);
+
   // Status feedback
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [saving, setSaving] = useState(false);
+
+  const handleReconcileAdvanceBalances = async () => {
+    setReconcilingAdvance(true);
+    setErrorMsg('');
+    setSuccessMsg('');
+    setAdvanceSummary(null);
+    try {
+      const res = await ApiService.reconcileCustomerAdvanceBalances('Super Admin');
+      setAdvanceSummary(res);
+      setSuccessMsg(`Reconciled ${res.customersReconciled} customer ledgers! Fixed ${res.discrepanciesFixed} balance discrepancies.`);
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to reconcile advance balances');
+    } finally {
+      setReconcilingAdvance(false);
+    }
+  };
 
   const loadSettings = async () => {
     setLoading(true);
@@ -1259,12 +1284,40 @@ export default function SettingsPage() {
                     <button
                       onClick={() => handleSaveSection('security')}
                       disabled={saving}
-                      className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2 rounded-lg shadow transition flex items-center space-x-1.5"
+                      className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2 rounded-lg shadow transition flex items-center space-x-1.5 cursor-pointer"
                     >
                       <Save size={15} />
                       <span>Save Security PIN</span>
                     </button>
                   </div>
+                </div>
+
+                {/* LEDGER & ADVANCE BALANCE INTEGRITY CARD */}
+                <div className="bg-indigo-50/70 border-l-4 border-indigo-500 p-5 rounded-r-xl space-y-3">
+                  <div className="flex items-center space-x-2 text-indigo-950 font-extrabold text-base">
+                    <RefreshCw size={20} className="text-indigo-600" />
+                    <span>Customer Ledgers & Advance Balance Integrity</span>
+                  </div>
+                  <p className="text-xs text-indigo-800 leading-relaxed">
+                    Recomputes and syncs customer advance balances from raw transaction history (unallocated payments + earned advance − consumed advance) to eliminate any discrepancies across the system.
+                  </p>
+
+                  {advanceSummary && (
+                    <div className="bg-white/90 border border-indigo-200 rounded-lg p-3 text-xs space-y-1 font-mono text-slate-800">
+                      <div>✓ Processed: <strong>{advanceSummary.customersReconciled}</strong> customer accounts</div>
+                      <div>✓ Fixed Discrepancies: <strong>{advanceSummary.discrepanciesFixed}</strong></div>
+                      <div>✓ Total Advance Pool: <strong>₹{advanceSummary.totalAdvanceAfter.toFixed(2)}</strong></div>
+                    </div>
+                  )}
+
+                  <button
+                    onClick={handleReconcileAdvanceBalances}
+                    disabled={reconcilingAdvance}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5 cursor-pointer"
+                  >
+                    <RefreshCw size={15} className={reconcilingAdvance ? 'animate-spin' : ''} />
+                    <span>{reconcilingAdvance ? 'Reconciling Ledgers...' : 'Run Ledger & Advance Balance Reconciliation'}</span>
+                  </button>
                 </div>
 
                 <div className="bg-rose-50 border-l-4 border-rose-500 p-5 rounded-r-xl space-y-3">

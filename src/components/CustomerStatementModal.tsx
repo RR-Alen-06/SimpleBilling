@@ -223,7 +223,7 @@ export function CustomerStatementModal({ customerId, onClose }: CustomerStatemen
               <span className="font-medium text-slate-600">Compiling consolidated multi-bill ledger statement...</span>
             </div>
           ) : !statementData ? (
-            <div className="py-16 text-center text-rose-500 font-semibold">Failed to load statement data. Please try again.</div>
+            <div className="py-16 text-center text-slate-500 font-medium">Customer record not found or access denied.</div>
           ) : (
             <div className="max-w-4xl mx-auto bg-white rounded-2xl shadow-sm border border-slate-200 p-6 sm:p-8 space-y-6">
               

@@ -6,9 +6,13 @@ import { Navigation } from '@/components/Navigation';
 
 export function ClientLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const isLoginPage = pathname === '/login';
+  const isAuthPage =
+    pathname === '/login' ||
+    pathname === '/verify-email' ||
+    pathname.startsWith('/auth/') ||
+    pathname === '/reset-password';
 
-  if (isLoginPage) {
+  if (isAuthPage) {
     return (
       <div className="min-h-screen w-full flex items-center justify-center bg-slate-100">
         {children}

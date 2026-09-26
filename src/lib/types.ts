@@ -135,6 +135,10 @@ export interface Payment {
   payment_method: string;
   notes?: string | null;
   created_at: string;
+  status?: 'COMPLETED' | 'CANCELLED' | 'REVERSED';
+  cancellation_reason?: string | null;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
 }
 
 export interface Expense {

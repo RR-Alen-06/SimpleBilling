@@ -16,7 +16,9 @@ import {
   X, 
   ShieldAlert,
   Clock,
-  CreditCard
+  CreditCard,
+  RotateCcw,
+  RefreshCw
 } from 'lucide-react';
 
 export default function ManageBillsPage() {
@@ -32,10 +34,17 @@ export default function ManageBillsPage() {
   const [editReason, setEditReason] = useState('');
   const [adminPin, setAdminPin] = useState('');
 
+  // Reverse Payment Modal
+  const [reversingBill, setReversingBill] = useState<Bill | null>(null);
+  const [reverseReason, setReverseReason] = useState('');
+  const [reversePin, setReversePin] = useState('');
+  const [override48h, setOverride48h] = useState(false);
+
   // Feedback
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [reconciling, setReconciling] = useState(false);
 
   const loadData = async () => {
     setLoading(true);
@@ -65,6 +74,69 @@ export default function ManageBillsPage() {
     setAdminPin('');
     setErrorMsg('');
     setSuccessMsg('');
+  };
+
+  const handleOpenReversePayment = (bill: Bill) => {
+    setReversingBill(bill);
+    setReverseReason('Accidentally recorded payment when no funds received');
+    setReversePin('');
+    setOverride48h(false);
+    setErrorMsg('');
+    setSuccessMsg('');
+  };
+
+  const handleReversePaymentSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    if (!reversingBill) return;
+
+    if (!reverseReason.trim()) {
+      setErrorMsg('Please specify a reason for reversing this payment.');
+      return;
+    }
+
+    const isPast48h = (Date.now() - new Date(reversingBill.created_at).getTime()) > 48 * 3600 * 1000;
+    if (isPast48h && !override48h) {
+      setErrorMsg('This payment is older than 48 hours. Please check the Super Admin 48-Hour Override box to proceed.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await ApiService.reverseBillPayment(
+        reversingBill.id,
+        reverseReason.trim(),
+        reversePin,
+        'Super Admin',
+        override48h
+      );
+      // Auto-reconcile advance balances to keep customer ledgers in 100% sync
+      await ApiService.reconcileCustomerAdvanceBalances('Super Admin');
+      setSuccessMsg(`Payment for ${reversingBill.bill_number} has been reversed back to Unpaid.`);
+      setReversingBill(null);
+      loadData();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to reverse payment');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleReconcileBalances = async () => {
+    setReconciling(true);
+    setErrorMsg('');
+    setSuccessMsg('');
+    try {
+      const result = await ApiService.reconcileCustomerAdvanceBalances('Super Admin');
+      setSuccessMsg(`Reconciliation complete: checked ${result.customersReconciled} customer ledgers, fixed ${result.discrepanciesFixed} balance discrepancies.`);
+      loadData();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to reconcile customer balances');
+    } finally {
+      setReconciling(false);
+    }
   };
 
   const handleEditSubmit = async (e: React.FormEvent) => {
@@ -127,8 +199,18 @@ export default function ManageBillsPage() {
             <FileText className="text-blue-600" size={26} />
             <span>Manage Bills & Super Admin Overrides</span>
           </h1>
-          <p className="text-sm text-slate-500 mt-0.5">Search bills, view details, and edit discounts with audit logging</p>
+          <p className="text-sm text-slate-500 mt-0.5">Search bills, view details, edit discounts, and reverse accidental payments with audit logging</p>
         </div>
+
+        <button
+          onClick={handleReconcileBalances}
+          disabled={reconciling}
+          className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-bold px-3.5 py-2 rounded-lg transition flex items-center space-x-1.5 self-start sm:self-auto cursor-pointer"
+          title="Reconcile and sync all customer advance balances from transaction history"
+        >
+          <RefreshCw size={14} className={reconciling ? 'animate-spin' : ''} />
+          <span>{reconciling ? 'Reconciling Ledgers...' : 'Reconcile Balances'}</span>
+        </button>
       </div>
 
       {/* Messages */}
@@ -203,7 +285,7 @@ export default function ManageBillsPage() {
                       <td className="px-6 py-4 text-xs font-data-mono text-slate-500">
                         {new Date(b.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
                       </td>
-                      <td className="px-6 py-4 font-medium text-slate-800">{b.customer_name}</td>
+                      <td className="px-6 py-4 font-medium text-slate-800">{b.customer_name || 'Walk-in Customer'}</td>
                       <td className="px-6 py-4">
                         {paid <= 0.01 || b.payment_method === 'Pay Later' ? (
                           <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-amber-50 text-amber-700 uppercase border border-amber-200">
@@ -249,7 +331,7 @@ export default function ManageBillsPage() {
                         )}
                       </td>
                     <td className="px-6 py-4 text-center">
-                      <div className="flex items-center justify-center space-x-2">
+                      <div className="flex items-center justify-center space-x-1.5">
                         {!isFullyPaid && b.customer_id && (
                           <Link
                             href={`/payments?customerId=${b.customer_id}`}
@@ -273,6 +355,15 @@ export default function ManageBillsPage() {
                         >
                           <Edit3 size={16} />
                         </button>
+                        {paid > 0.01 && (
+                          <button
+                            onClick={() => handleOpenReversePayment(b)}
+                            className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded transition"
+                            title="Super Admin: Reverse Payment / Reset to Unpaid"
+                          >
+                            <RotateCcw size={16} />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -283,6 +374,114 @@ export default function ManageBillsPage() {
           </div>
         )}
       </div>
+
+      {/* REVERSE PAYMENT CONFIRMATION MODAL */}
+      {reversingBill && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4 border border-slate-200">
+            <div className="flex justify-between items-center border-b border-slate-200 pb-3">
+              <h2 className="text-lg font-bold text-rose-700 flex items-center space-x-2">
+                <RotateCcw className="text-rose-600" size={20} />
+                <span>Reverse Payment ({reversingBill.bill_number})</span>
+              </h2>
+              <button onClick={() => setReversingBill(null)} className="text-slate-400 hover:text-slate-600">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="bg-rose-50 border-l-4 border-rose-500 p-3 rounded-r-lg space-y-1 text-xs text-rose-800">
+              <span className="font-bold block">Payment Reversal Warning</span>
+              <p>This action will delete all recorded payment entries for this bill, revoke any awarded loyalty points, restore customer ledger dues, and reset the bill to <strong className="font-mono">Unpaid (₹0.00)</strong>.</p>
+            </div>
+
+            <div className="bg-slate-50 rounded-lg p-3 text-xs space-y-1 border border-slate-200">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Customer:</span>
+                <span className="font-semibold text-slate-800">{reversingBill.customer_name || 'Walk-in'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Bill Grand Total:</span>
+                <span className="font-mono font-bold text-slate-800">₹{Number(reversingBill.grand_total).toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Recorded Paid Total:</span>
+                <span className="font-mono font-extrabold text-rose-700">₹{Number(reversingBill.paid_total).toFixed(2)}</span>
+              </div>
+            </div>
+
+            {/* 48-HOUR LIMIT WARNING & OVERRIDE */}
+            {reversingBill && ((Date.now() - new Date(reversingBill.created_at).getTime()) > 48 * 3600 * 1000) && (
+              <div className="space-y-2 p-3 bg-amber-50 border border-amber-300 rounded-lg text-amber-900 text-xs">
+                <div className="flex items-start space-x-2">
+                  <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold">48-Hour Reversal Window Exceeded</span>
+                    <p className="text-[11px] text-amber-700 mt-0.5">
+                      This payment was recorded on {new Date(reversingBill.created_at).toLocaleString('en-IN')}. Super Admin override is mandatory to reverse past 48 hours.
+                    </p>
+                  </div>
+                </div>
+
+                <label className="flex items-center space-x-2 pt-1 border-t border-amber-200 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={override48h}
+                    onChange={(e) => setOverride48h(e.target.checked)}
+                    className="w-4 h-4 text-amber-600 rounded border-amber-300 focus:ring-amber-500 cursor-pointer"
+                  />
+                  <span className="font-bold text-[11px] text-amber-950">
+                    I confirm Super Admin Override for payment older than 48 hours
+                  </span>
+                </label>
+              </div>
+            )}
+
+            <form onSubmit={handleReversePaymentSubmit} className="space-y-3.5">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Reason for Reversal *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Accidental payment marked on checkout / no cash received"
+                  value={reverseReason}
+                  onChange={(e) => setReverseReason(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Super Admin Security PIN *</label>
+                <input
+                  type="password"
+                  required
+                  placeholder="PIN (Default: 1234)"
+                  value={reversePin}
+                  onChange={(e) => setReversePin(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono font-bold"
+                />
+              </div>
+
+              <div className="flex justify-end space-x-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setReversingBill(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="px-5 py-2 text-xs font-extrabold bg-rose-600 hover:bg-rose-500 text-white rounded-lg shadow disabled:opacity-50 flex items-center space-x-1.5 cursor-pointer"
+                >
+                  <RotateCcw size={14} className={submitting ? 'animate-spin' : ''} />
+                  <span>{submitting ? 'Reversing...' : 'Confirm Reversal to Unpaid'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* EDIT DISCOUNT MODAL */}
       {editingBill && (
