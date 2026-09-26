@@ -48,17 +48,32 @@ export async function GET(request: NextRequest) {
     },
   });
 
-  // Flow 1: Token hash verification (OTP / Email Confirmation / Invite)
-  if (token_hash && type) {
-    const { error } = await supabase.auth.verifyOtp({
-      type,
+  // Flow 1: Token hash verification (OTP / Email Confirmation / Invite / Signup)
+  if (token_hash) {
+    const targetType = type || 'signup';
+    let { error } = await supabase.auth.verifyOtp({
+      type: targetType,
       token_hash,
     });
+
+    if (error && targetType !== 'email') {
+      const fallback = await supabase.auth.verifyOtp({
+        type: 'email',
+        token_hash,
+      });
+      if (!fallback.error) {
+        error = null;
+      }
+    }
+
     if (!error) {
       return NextResponse.redirect(`${origin}${next}`);
     }
+
     return NextResponse.redirect(
-      `${origin}/auth/confirm?error=${encodeURIComponent(error.message || 'Email link is invalid or has expired.')}&type=${encodeURIComponent(type || '')}`
+      `${origin}/auth/confirm?error=${encodeURIComponent(
+        error.message || 'Verification link is invalid, expired (links expire in 24 hours), or has already been used.'
+      )}&type=${encodeURIComponent(type || 'signup')}`
     );
   }
 

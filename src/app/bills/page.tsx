@@ -38,6 +38,7 @@ export default function ManageBillsPage() {
   const [reversingBill, setReversingBill] = useState<Bill | null>(null);
   const [reverseReason, setReverseReason] = useState('');
   const [reversePin, setReversePin] = useState('');
+  const [override48h, setOverride48h] = useState(false);
 
   // Feedback
   const [errorMsg, setErrorMsg] = useState('');
@@ -79,6 +80,7 @@ export default function ManageBillsPage() {
     setReversingBill(bill);
     setReverseReason('Accidentally recorded payment when no funds received');
     setReversePin('');
+    setOverride48h(false);
     setErrorMsg('');
     setSuccessMsg('');
   };
@@ -95,13 +97,20 @@ export default function ManageBillsPage() {
       return;
     }
 
+    const isPast48h = (Date.now() - new Date(reversingBill.created_at).getTime()) > 48 * 3600 * 1000;
+    if (isPast48h && !override48h) {
+      setErrorMsg('This payment is older than 48 hours. Please check the Super Admin 48-Hour Override box to proceed.');
+      return;
+    }
+
     setSubmitting(true);
     try {
       await ApiService.reverseBillPayment(
         reversingBill.id,
         reverseReason.trim(),
         reversePin,
-        'Super Admin'
+        'Super Admin',
+        override48h
       );
       // Auto-reconcile advance balances to keep customer ledgers in 100% sync
       await ApiService.reconcileCustomerAdvanceBalances('Super Admin');
@@ -276,7 +285,7 @@ export default function ManageBillsPage() {
                       <td className="px-6 py-4 text-xs font-data-mono text-slate-500">
                         {new Date(b.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
                       </td>
-                      <td className="px-6 py-4 font-medium text-slate-800">{b.customer_name}</td>
+                      <td className="px-6 py-4 font-medium text-slate-800">{b.customer_name || 'Walk-in Customer'}</td>
                       <td className="px-6 py-4">
                         {paid <= 0.01 || b.payment_method === 'Pay Later' ? (
                           <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-amber-50 text-amber-700 uppercase border border-amber-200">
@@ -399,6 +408,33 @@ export default function ManageBillsPage() {
                 <span className="font-mono font-extrabold text-rose-700">₹{Number(reversingBill.paid_total).toFixed(2)}</span>
               </div>
             </div>
+
+            {/* 48-HOUR LIMIT WARNING & OVERRIDE */}
+            {reversingBill && ((Date.now() - new Date(reversingBill.created_at).getTime()) > 48 * 3600 * 1000) && (
+              <div className="space-y-2 p-3 bg-amber-50 border border-amber-300 rounded-lg text-amber-900 text-xs">
+                <div className="flex items-start space-x-2">
+                  <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold">48-Hour Reversal Window Exceeded</span>
+                    <p className="text-[11px] text-amber-700 mt-0.5">
+                      This payment was recorded on {new Date(reversingBill.created_at).toLocaleString('en-IN')}. Super Admin override is mandatory to reverse past 48 hours.
+                    </p>
+                  </div>
+                </div>
+
+                <label className="flex items-center space-x-2 pt-1 border-t border-amber-200 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={override48h}
+                    onChange={(e) => setOverride48h(e.target.checked)}
+                    className="w-4 h-4 text-amber-600 rounded border-amber-300 focus:ring-amber-500 cursor-pointer"
+                  />
+                  <span className="font-bold text-[11px] text-amber-950">
+                    I confirm Super Admin Override for payment older than 48 hours
+                  </span>
+                </label>
+              </div>
+            )}
 
             <form onSubmit={handleReversePaymentSubmit} className="space-y-3.5">
               <div>

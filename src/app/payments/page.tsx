@@ -45,6 +45,7 @@ function PaymentsContent() {
   const [deletingPayment, setDeletingPayment] = useState<Payment | null>(null);
   const [deleteReason, setDeleteReason] = useState('');
   const [deletePin, setDeletePin] = useState('');
+  const [override48h, setOverride48h] = useState(false);
 
   // Receipt Modal State
   const [selectedPaymentForReceipt, setSelectedPaymentForReceipt] = useState<Payment | null>(null);
@@ -74,6 +75,7 @@ function PaymentsContent() {
     setDeletingPayment(payment);
     setDeleteReason('Accidental payment entry / payment not received');
     setDeletePin('');
+    setOverride48h(false);
     setErrorMsg('');
     setSuccessMsg('');
   };
@@ -90,13 +92,20 @@ function PaymentsContent() {
       return;
     }
 
+    const isPast48h = (Date.now() - new Date(deletingPayment.created_at).getTime()) > 48 * 3600 * 1000;
+    if (isPast48h && !override48h) {
+      setErrorMsg('This payment is older than 48 hours. Please check the Super Admin 48-Hour Override box to proceed.');
+      return;
+    }
+
     setSubmitting(true);
     try {
       await ApiService.deletePayment(
         deletingPayment.id,
         deleteReason.trim(),
         deletePin,
-        'Super Admin'
+        'Super Admin',
+        override48h
       );
       await ApiService.reconcileCustomerAdvanceBalances('Super Admin');
       setSuccessMsg(`Payment ${deletingPayment.payment_number || ''} (₹${deletingPayment.amount}) was deleted and customer ledger updated.`);
@@ -579,13 +588,31 @@ function PaymentsContent() {
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {filteredPayments.slice(0, 20).map((pay) => {
+                      const isCancelled = pay.status === 'CANCELLED';
+                      const isReversed = pay.status === 'REVERSED';
+                      const isInactive = isCancelled || isReversed;
+
                       const hasAdv = pay.notes?.includes('Advance Credited') || pay.notes?.includes('Advance Payment');
                       const hasDues = pay.notes?.includes('Dues Settled');
 
                       return (
-                        <tr key={pay.id} className="hover:bg-slate-50/80 transition">
+                        <tr key={pay.id} className={`hover:bg-slate-50/80 transition ${isInactive ? 'bg-slate-50/50 opacity-75' : ''}`}>
                           <td className="py-2.5 px-3 font-mono font-bold text-slate-900">
-                            {pay.payment_number || 'PAY-N/A'}
+                            <div className="flex items-center space-x-1.5">
+                              <span className={isInactive ? 'line-through text-slate-400' : ''}>
+                                {pay.payment_number || 'PAY-N/A'}
+                              </span>
+                              {isCancelled && (
+                                <span className="bg-rose-100 text-rose-700 text-[9px] font-bold px-1.5 py-0.5 rounded border border-rose-200 uppercase" title={`Cancelled: ${pay.cancellation_reason || 'No reason provided'}`}>
+                                  Cancelled
+                                </span>
+                              )}
+                              {isReversed && (
+                                <span className="bg-amber-100 text-amber-800 text-[9px] font-bold px-1.5 py-0.5 rounded border border-amber-200 uppercase" title={`Reversed: ${pay.cancellation_reason || 'Reversed with Bill'}`}>
+                                  Reversed
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="py-2.5 px-3 text-slate-500">
                             {new Date(pay.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
@@ -603,15 +630,15 @@ function PaymentsContent() {
                             </span>
                           </td>
                           <td className="py-2.5 px-3 text-right">
-                            <span className="font-extrabold text-slate-900 font-mono block">
+                            <span className={`font-extrabold font-mono block ${isInactive ? 'line-through text-slate-400' : 'text-slate-900'}`}>
                               ₹{Number(pay.amount).toFixed(2)}
                             </span>
-                            {hasAdv && (
+                            {hasAdv && !isInactive && (
                               <span className="inline-block bg-indigo-50 text-indigo-700 text-[9px] font-bold px-1.5 py-0.2 rounded border border-indigo-100">
                                 Advance Credited
                               </span>
                             )}
-                            {hasDues && !hasAdv && (
+                            {hasDues && !hasAdv && !isInactive && (
                               <span className="inline-block bg-emerald-50 text-emerald-700 text-[9px] font-bold px-1.5 py-0.2 rounded border border-emerald-100">
                                 Dues Cleared
                               </span>
@@ -627,14 +654,20 @@ function PaymentsContent() {
                               >
                                 <Eye size={15} />
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => handleOpenDeletePayment(pay)}
-                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
-                                title="Super Admin: Delete / Reverse Payment Entry"
-                              >
-                                <Trash2 size={14} />
-                              </button>
+                              {!isInactive ? (
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenDeletePayment(pay)}
+                                  className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                                  title="Super Admin: Delete / Reverse Payment Entry"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              ) : (
+                                <span className="p-1.5 text-slate-300 cursor-not-allowed" title={`Already ${isCancelled ? 'Cancelled' : 'Reversed'}: ${pay.cancellation_reason || ''}`}>
+                                  <Trash2 size={14} />
+                                </span>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -681,6 +714,33 @@ function PaymentsContent() {
                 <span className="font-mono font-extrabold text-rose-700">₹{Number(deletingPayment.amount).toFixed(2)}</span>
               </div>
             </div>
+
+            {/* 48-HOUR LIMIT WARNING & OVERRIDE */}
+            {deletingPayment && ((Date.now() - new Date(deletingPayment.created_at).getTime()) > 48 * 3600 * 1000) && (
+              <div className="space-y-2 p-3 bg-amber-50 border border-amber-300 rounded-lg text-amber-900 text-xs">
+                <div className="flex items-start space-x-2">
+                  <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold">48-Hour Deletion Window Exceeded</span>
+                    <p className="text-[11px] text-amber-700 mt-0.5">
+                      This payment was recorded on {new Date(deletingPayment.created_at).toLocaleString('en-IN')}. Super Admin override is mandatory to cancel past 48 hours.
+                    </p>
+                  </div>
+                </div>
+
+                <label className="flex items-center space-x-2 pt-1 border-t border-amber-200 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={override48h}
+                    onChange={(e) => setOverride48h(e.target.checked)}
+                    className="w-4 h-4 text-amber-600 rounded border-amber-300 focus:ring-amber-500 cursor-pointer"
+                  />
+                  <span className="font-bold text-[11px] text-amber-950">
+                    I confirm Super Admin Override for payment older than 48 hours
+                  </span>
+                </label>
+              </div>
+            )}
 
             <form onSubmit={handleDeletePaymentSubmit} className="space-y-3.5">
               <div>

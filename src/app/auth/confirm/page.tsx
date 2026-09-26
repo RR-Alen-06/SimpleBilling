@@ -115,12 +115,23 @@ function ConfirmContent() {
     }
 
     // Flow B: Server-compatible Token Hash OTP verification
-    if (token_hash && effectiveType) {
+    if (token_hash) {
       try {
-        const { error } = await supabase.auth.verifyOtp({
-          type: effectiveType,
+        const verifyType = effectiveType || 'signup';
+        let { error } = await supabase.auth.verifyOtp({
+          type: verifyType,
           token_hash,
         });
+
+        if (error && verifyType !== 'email') {
+          const fallback = await supabase.auth.verifyOtp({
+            type: 'email',
+            token_hash,
+          });
+          if (!fallback.error) {
+            error = null;
+          }
+        }
 
         if (error) throw error;
         handleSuccess(destination);
@@ -130,7 +141,7 @@ function ConfirmContent() {
         setErrorMessage(
           err instanceof Error
             ? err.message
-            : 'Confirmation link is invalid or has already been used. Please request a new link.'
+            : 'Confirmation link is invalid, expired (links expire in 24 hours), or has already been used. Please request a new link.'
         );
         return;
       }

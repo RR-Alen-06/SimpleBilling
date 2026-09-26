@@ -13,7 +13,8 @@ export async function proxy(request: NextRequest) {
   const isPublicAuthRoute =
     pathname === '/login' ||
     pathname.startsWith('/auth/') ||
-    pathname === '/reset-password';
+    pathname === '/reset-password' ||
+    pathname === '/verify-email';
 
   // If Supabase credentials are missing or placeholder, permit access
   if (
@@ -78,8 +79,34 @@ export async function proxy(request: NextRequest) {
       return NextResponse.redirect(url);
     }
 
-    // Authenticated user accessing /login -> redirect to dashboard
-    if (user && pathname === '/login' && !hasCodeOrToken) {
+    // Determine verification status
+    // Existing accounts with email_confirmed_at / confirmed_at remain fully verified and usable
+    const isVerified = Boolean(
+      user && (user.email_confirmed_at || user.confirmed_at || user.app_metadata?.provider !== 'email')
+    );
+
+    // Unverified user attempting to access protected route -> redirect to /verify-email
+    if (user && !isVerified && !isPublicAuthRoute) {
+      const url = request.nextUrl.clone();
+      url.pathname = '/verify-email';
+      if (user.email) {
+        url.searchParams.set('email', user.email);
+      }
+      return NextResponse.redirect(url);
+    }
+
+    // Unverified user on /login -> redirect to /verify-email
+    if (user && !isVerified && pathname === '/login' && !hasCodeOrToken) {
+      const url = request.nextUrl.clone();
+      url.pathname = '/verify-email';
+      if (user.email) {
+        url.searchParams.set('email', user.email);
+      }
+      return NextResponse.redirect(url);
+    }
+
+    // Authenticated AND verified user accessing /login or /verify-email -> redirect to dashboard
+    if (user && isVerified && (pathname === '/login' || pathname === '/verify-email') && !hasCodeOrToken) {
       const url = request.nextUrl.clone();
       url.pathname = '/';
       return NextResponse.redirect(url);
