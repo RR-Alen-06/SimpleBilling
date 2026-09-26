@@ -1490,23 +1490,25 @@ export class ApiService {
       });
     });
 
-    (payments || []).forEach(p => {
-      const amt = Number(p.amount || 0);
-      totalPaid += amt;
+    (payments || [])
+      .filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED')
+      .forEach(p => {
+        const amt = Number(p.amount || 0);
+        totalPaid += amt;
 
-      rawEvents.push({
-        date: p.created_at,
-        type: 'PAYMENT',
-        reference_no: p.payment_number || 'PAY',
-        description: p.notes || `Payment received via ${p.payment_method || 'Cash'}`,
-        bill_amount: 0,
-        paid_amount: amt,
-        advance_used: 0,
-        loyalty_points: 0,
-        items_summary: '',
-        payment_method: p.payment_method || 'Cash'
+        rawEvents.push({
+          date: p.created_at,
+          type: 'PAYMENT',
+          reference_no: p.payment_number || 'PAY',
+          description: p.notes || `Payment received via ${p.payment_method || 'Cash'}`,
+          bill_amount: 0,
+          paid_amount: amt,
+          advance_used: 0,
+          loyalty_points: 0,
+          items_summary: '',
+          payment_method: p.payment_method || 'Cash'
+        });
       });
-    });
 
     rawEvents.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
@@ -2193,13 +2195,28 @@ export class ApiService {
   }
 
 
+  public static formatPaymentRow(row: any): Payment {
+    if (!row) return row;
+    const cust = Array.isArray(row.customers) ? row.customers[0] : row.customers;
+    const bill = Array.isArray(row.bills) ? row.bills[0] : row.bills;
+    return {
+      ...row,
+      payment_number: row.payment_number || 'PAY-N/A',
+      customer_name: row.customer_name || cust?.name || (row.customer_id ? 'Customer' : 'Walk-in Customer'),
+      customer_mobile: row.customer_mobile || cust?.mobile || null,
+      bill_number: row.bill_number || bill?.bill_number || null,
+      amount: Number(row.amount || 0)
+    };
+  }
+
+
   static async getPayments(): Promise<Payment[]> {
     if (!isSupabaseConfigured) return [];
     const userId = await this.getUserId();
 
     let query = supabase
       .from('payments')
-      .select('*, customers(name, mobile)');
+      .select('*, customers(name, mobile), bills(bill_number)');
 
     if (userId) {
       query = query.eq('user_id', userId);
@@ -2212,7 +2229,7 @@ export class ApiService {
       return [];
     }
 
-    return data || [];
+    return (data || []).map(p => this.formatPaymentRow(p));
   }
 
 
@@ -2487,7 +2504,7 @@ export class ApiService {
     const userId = await this.getUserId();
 
     let custQ = supabase.from('customers').select('id, name, advance_balance');
-    let billsQ = supabase.from('bills').select('customer_id, advance_used, advance_earned');
+    let billsQ = supabase.from('bills').select('id, customer_id, grand_total, advance_used, advance_earned');
     let payQ = supabase.from('payments').select('customer_id, bill_id, amount, status');
 
     if (userId) {
@@ -2519,19 +2536,28 @@ export class ApiService {
       const storedAdvance = Number(cust.advance_balance || 0);
       totalAdvanceBefore += storedAdvance;
 
+      const custBills = billList.filter(b => b.customer_id === cust.id);
+
+      // 1. Unallocated standalone payments (no bill_id)
       const custUnallocatedPayments = payList
         .filter(p => p.customer_id === cust.id && !p.bill_id && p.status !== 'CANCELLED' && p.status !== 'REVERSED')
         .reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
-      const custAdvanceEarned = billList
-        .filter(b => b.customer_id === cust.id)
-        .reduce((sum, b) => sum + Number(b.advance_earned || 0), 0);
+      // 2. Excess payments linked to bills (payment amount > bill grand_total)
+      const excessFromBills = custBills.reduce((sum, b) => {
+        const billPays = payList.filter(p => p.bill_id === b.id && p.status !== 'CANCELLED' && p.status !== 'REVERSED');
+        const billPaySum = billPays.reduce((s, p) => s + Number(p.amount || 0), 0);
+        return sum + Math.max(0, billPaySum - Number(b.grand_total || 0));
+      }, 0);
 
-      const custAdvanceUsed = billList
-        .filter(b => b.customer_id === cust.id)
-        .reduce((sum, b) => sum + Number(b.advance_used || 0), 0);
+      // 3. Advance earned on bills (if any stored on bill record)
+      const custAdvanceEarned = custBills.reduce((sum, b) => sum + Number(b.advance_earned || 0), 0);
 
-      const calculatedAdvance = Math.max(0, Number((custAdvanceEarned + custUnallocatedPayments - custAdvanceUsed).toFixed(2)));
+      // 4. Advance used across bills
+      const custAdvanceUsed = custBills.reduce((sum, b) => sum + Number(b.advance_used || 0), 0);
+
+      const totalAdvanceEarned = custUnallocatedPayments + excessFromBills + custAdvanceEarned;
+      const calculatedAdvance = Math.max(0, Number((totalAdvanceEarned - custAdvanceUsed).toFixed(2)));
       totalAdvanceAfter += calculatedAdvance;
 
       if (Math.abs(calculatedAdvance - storedAdvance) > 0.001) {

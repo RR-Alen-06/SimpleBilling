@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ApiService } from '@/lib/services/api';
 import { Customer, Product, Bill, RoundingMethod, AllSettings, LoyaltyRedemptionRule } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
@@ -20,7 +20,8 @@ import {
   Clock,
   Banknote,
   Smartphone,
-  Split
+  Split,
+  ChevronDown
 } from 'lucide-react';
 
 export type BillingPaymentMode = 'Cash' | 'UPI' | 'Split' | 'Pay Later' | 'Advance';
@@ -81,6 +82,20 @@ export default function BillingPage() {
 
   // Customer Ledger Summary State
   const [customerLedgerData, setCustomerLedgerData] = useState<{ runningBalance: number; pendingPoints: number } | null>(null);
+
+  // Custom Dropdown State
+  const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false);
+  const customerDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (customerDropdownRef.current && !customerDropdownRef.current.contains(event.target as Node)) {
+        setCustomerDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -196,17 +211,17 @@ export default function BillingPage() {
 
   const cashVal = Number(cashPaid || 0);
   const upiVal = Number(upiPaid || 0);
-  const advanceVal = Number(advanceUsed || 0);
+  const advanceVal = useAdvance ? Number(advanceUsed || 0) : 0;
 
   const directPaidNow = cashVal + upiVal;
   const totalPaidNow = directPaidNow + advanceVal;
   const remainingBillBalance = Math.max(0, roundedTotal - totalPaidNow);
 
-  const prevOutstanding = customerLedgerData?.runningBalance || 0;
+  const prevOutstanding = Math.max(0, customerLedgerData?.runningBalance || 0);
   const netDueForCurrentBill = Math.max(0, roundedTotal - advanceVal);
   const overpaymentBeyondCurrentBill = Math.max(0, directPaidNow - netDueForCurrentBill);
   const allocatedToPriorBalance = Math.min(prevOutstanding, overpaymentBeyondCurrentBill);
-  const customerAdvanceEarned = overpaymentBeyondCurrentBill - allocatedToPriorBalance;
+  const customerAdvanceEarned = Math.max(0, overpaymentBeyondCurrentBill - allocatedToPriorBalance);
 
   const priorPendingPoints = customerLedgerData?.pendingPoints || 0;
   const currentBillPendingPoints = (remainingBillBalance > 0 && estimatedPointsEarned > 0) ? estimatedPointsEarned : 0;
@@ -301,42 +316,43 @@ export default function BillingPage() {
   // Quick Pay & Mode Selector Handlers
   const handleSelectPaymentMode = (mode: BillingPaymentMode) => {
     setPaymentMode(mode);
+    const effAdv = useAdvance ? Number(advanceUsed || 0) : 0;
+    const netDue = Math.max(0, roundedTotal - effAdv);
+
     if (mode === 'Cash') {
-      setCashPaid(roundedTotal);
+      setCashPaid(netDue);
       setUpiPaid('');
-      setUseAdvance(false);
-      setAdvanceUsed('');
     } else if (mode === 'UPI') {
-      setUpiPaid(roundedTotal);
+      setUpiPaid(netDue);
       setCashPaid('');
-      setUseAdvance(false);
-      setAdvanceUsed('');
     } else if (mode === 'Pay Later') {
       setCashPaid('');
       setUpiPaid('');
-      setUseAdvance(false);
-      setAdvanceUsed('');
     } else if (mode === 'Advance') {
       const adv = Math.min(selectedCustomer?.advance_balance || 0, roundedTotal);
       setUseAdvance(true);
       setAdvanceUsed(adv > 0 ? adv : '');
+      const remainder = Math.max(0, roundedTotal - adv);
       setCashPaid('');
       setUpiPaid('');
     } else if (mode === 'Split') {
-      if (cashVal === roundedTotal || upiVal === roundedTotal) {
+      if (cashVal === roundedTotal || upiVal === roundedTotal || cashVal === netDue || upiVal === netDue) {
         setCashPaid('');
         setUpiPaid('');
       }
     }
   };
 
-  // Sync Payment Mode Values on Total Changes
+  // Sync Payment Mode Values on Total / Advance Changes
   useEffect(() => {
+    const effAdv = useAdvance ? Number(advanceUsed || 0) : 0;
+    const netDue = Math.max(0, roundedTotal - effAdv);
+
     if (paymentMode === 'Cash') {
-      setCashPaid(roundedTotal);
+      setCashPaid(netDue);
       setUpiPaid('');
     } else if (paymentMode === 'UPI') {
-      setUpiPaid(roundedTotal);
+      setUpiPaid(netDue);
       setCashPaid('');
     } else if (paymentMode === 'Advance') {
       const adv = Math.min(selectedCustomer?.advance_balance || 0, roundedTotal);
@@ -346,7 +362,7 @@ export default function BillingPage() {
       setCashPaid('');
       setUpiPaid('');
     }
-  }, [roundedTotal, paymentMode, selectedCustomer?.advance_balance]);
+  }, [roundedTotal, paymentMode, useAdvance, advanceUsed, selectedCustomer?.advance_balance]);
 
   const handleQuickPayCash = () => handleSelectPaymentMode('Cash');
   const handleQuickPayUPI = () => handleSelectPaymentMode('UPI');
@@ -468,26 +484,61 @@ export default function BillingPage() {
             <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
               Select Customer Account *
             </label>
-            <div className="flex gap-2">
-              <select
-                value={selectedCustomerId}
-                onChange={(e) => {
-                  setSelectedCustomerId(e.target.value);
-                  setPointsToRedeem(0);
-                }}
-                className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
-              >
-                <option value="">-- Select Customer * --</option>
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} {c.mobile ? `(${c.mobile})` : ''}
-                  </option>
-                ))}
-              </select>
+            <div className="flex gap-2 relative" ref={customerDropdownRef}>
+              <div className="relative w-full">
+                <button
+                  type="button"
+                  onClick={() => setCustomerDropdownOpen(!customerDropdownOpen)}
+                  className="w-full bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium flex items-center justify-between cursor-pointer transition text-left"
+                >
+                  <span className={selectedCustomer ? 'text-slate-900 font-semibold truncate' : 'text-slate-500'}>
+                    {selectedCustomer 
+                      ? `${selectedCustomer.name} ${selectedCustomer.mobile ? `(${selectedCustomer.mobile})` : ''}` 
+                      : '-- Select Customer * --'}
+                  </span>
+                  <ChevronDown size={16} className={`text-slate-500 transition-transform duration-200 flex-shrink-0 ml-2 ${customerDropdownOpen ? 'rotate-180' : ''}`} />
+                </button>
+
+                {customerDropdownOpen && (
+                  <div className="absolute top-full left-0 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto divide-y divide-slate-100 animate-in fade-in duration-100">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedCustomerId('');
+                        setPointsToRedeem(0);
+                        setCustomerDropdownOpen(false);
+                      }}
+                      className="w-full text-left px-3 py-2 text-xs text-slate-500 hover:bg-slate-50 font-medium transition cursor-pointer"
+                    >
+                      -- Select Customer * --
+                    </button>
+                    {customers.map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedCustomerId(c.id);
+                          setPointsToRedeem(0);
+                          setCustomerDropdownOpen(false);
+                        }}
+                        className={`w-full text-left px-3 py-2.5 text-xs transition flex items-center justify-between cursor-pointer ${
+                          selectedCustomerId === c.id
+                            ? 'bg-blue-50 text-blue-900 font-bold'
+                            : 'text-slate-800 hover:bg-slate-50'
+                        }`}
+                      >
+                        <span className="truncate">{c.name} {c.mobile ? `(${c.mobile})` : ''}</span>
+                        {selectedCustomerId === c.id && <CheckCircle2 size={14} className="text-blue-600 flex-shrink-0 ml-1.5" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <button
                 type="button"
                 onClick={() => setShowAddCustomerModal(true)}
-                className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2 rounded-lg border border-slate-300 transition flex items-center space-x-1 flex-shrink-0 text-xs font-semibold"
+                className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2 rounded-lg border border-slate-300 transition flex items-center space-x-1 flex-shrink-0 text-xs font-semibold cursor-pointer"
               >
                 <UserPlus size={16} />
                 <span>+ New</span>
@@ -505,22 +556,22 @@ export default function BillingPage() {
                   <div className="grid grid-cols-2 gap-2 text-[11px]">
                     <div>
                       <span className="text-slate-500 block text-[10px]">Previous Outstanding:</span>
-                      <span className="font-bold text-amber-700">
-                        ₹{(customerLedgerData?.runningBalance || 0).toFixed(2)}
+                      <span className={`font-bold ${prevOutstanding > 0 ? 'text-amber-700' : 'text-slate-700'}`}>
+                        ₹{prevOutstanding.toFixed(2)}
                       </span>
                     </div>
                     <div>
                       <span className="text-slate-500 block text-[10px]">Available Advance:</span>
-                      <span className="font-bold text-emerald-700">₹{selectedCustomer.advance_balance.toFixed(2)}</span>
+                      <span className="font-bold text-emerald-700">₹{(selectedCustomer.advance_balance || 0).toFixed(2)}</span>
                     </div>
                     <div>
                       <span className="text-slate-500 block text-[10px]">Loyalty Balance:</span>
-                      <span className="font-bold text-purple-700">⭐ {selectedCustomer.loyalty_points} Pts</span>
+                      <span className="font-bold text-purple-700">⭐ {selectedCustomer.loyalty_points || 0} Pts</span>
                     </div>
                     <div>
                       <span className="text-slate-500 block text-[10px]">Est. Total Amount Due:</span>
                       <span className="font-extrabold text-blue-700">
-                        ₹{((customerLedgerData?.runningBalance || 0) + roundedTotal).toFixed(2)}
+                        ₹{(prevOutstanding + (useAdvance ? netDueForCurrentBill : roundedTotal)).toFixed(2)}
                       </span>
                     </div>
                   </div>
@@ -1042,26 +1093,32 @@ export default function BillingPage() {
               {paymentMode === 'Cash' && (
                 <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs space-y-2">
                   <div className="flex justify-between items-center text-emerald-900 font-bold">
-                    <span>Full Cash Payment:</span>
-                    <span className="text-base font-extrabold font-mono">₹{roundedTotal.toFixed(2)}</span>
+                    <span>{advanceVal > 0 ? 'Net Cash to Collect:' : 'Full Cash Payment:'}</span>
+                    <span className="text-base font-extrabold font-mono">₹{netDueForCurrentBill.toFixed(2)}</span>
                   </div>
+                  {advanceVal > 0 && (
+                    <div className="flex justify-between items-center text-[11px] text-teal-800 font-medium bg-teal-100/60 px-2 py-1 rounded">
+                      <span>Total Bill: ₹{roundedTotal.toFixed(2)}</span>
+                      <span className="font-bold text-teal-900">• Less Advance: -₹{advanceVal.toFixed(2)}</span>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between pt-1 border-t border-emerald-200/60 text-slate-600">
                     <span className="text-[11px]">Tendered Amount (Optional):</span>
                     <input
                       type="number"
                       min="0"
                       step="any"
-                      placeholder={`e.g. ${roundedTotal}`}
+                      placeholder={`e.g. ${netDueForCurrentBill}`}
                       value={cashPaid === '' ? '' : cashPaid}
                       onChange={(e) => setCashPaid(e.target.value === '' ? '' : Number(e.target.value))}
                       className="w-24 text-right bg-white border border-emerald-300 rounded px-2 py-0.5 text-xs font-bold text-slate-900 focus:ring-1 focus:ring-emerald-500"
                     />
                   </div>
-                  {Number(cashPaid || 0) > roundedTotal && (
+                  {Number(cashPaid || 0) > netDueForCurrentBill && (
                     <div className="bg-indigo-50/90 border border-indigo-200 p-2.5 rounded-lg space-y-1 text-xs">
                       <div className="flex justify-between items-center text-indigo-950 font-bold">
                         <span>Excess Paid:</span>
-                        <span className="font-mono font-extrabold text-indigo-700">₹{(Number(cashPaid) - roundedTotal).toFixed(2)}</span>
+                        <span className="font-mono font-extrabold text-indigo-700">₹{(Number(cashPaid) - netDueForCurrentBill).toFixed(2)}</span>
                       </div>
                       {allocatedToPriorBalance > 0 && (
                         <div className="flex justify-between items-center text-[11px] text-amber-800">
@@ -1083,9 +1140,15 @@ export default function BillingPage() {
               {paymentMode === 'UPI' && (
                 <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-lg text-xs space-y-2">
                   <div className="flex justify-between items-center text-indigo-900 font-bold">
-                    <span>Full UPI Payment:</span>
-                    <span className="text-base font-extrabold font-mono">₹{roundedTotal.toFixed(2)}</span>
+                    <span>{advanceVal > 0 ? 'Net UPI to Collect:' : 'Full UPI Payment:'}</span>
+                    <span className="text-base font-extrabold font-mono">₹{netDueForCurrentBill.toFixed(2)}</span>
                   </div>
+                  {advanceVal > 0 && (
+                    <div className="flex justify-between items-center text-[11px] text-teal-800 font-medium bg-teal-100/60 px-2 py-1 rounded">
+                      <span>Total Bill: ₹{roundedTotal.toFixed(2)}</span>
+                      <span className="font-bold text-teal-900">• Less Advance: -₹{advanceVal.toFixed(2)}</span>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between pt-1 border-t border-indigo-200/60 text-slate-600">
                     <span className="text-[11px]">UPI Paid Amount:</span>
                     <input
@@ -1102,6 +1165,12 @@ export default function BillingPage() {
 
               {paymentMode === 'Split' && (
                 <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg text-xs space-y-3">
+                  {advanceVal > 0 && (
+                    <div className="flex justify-between items-center text-[11px] text-teal-800 font-medium bg-teal-100/60 px-2 py-1 rounded">
+                      <span>Total Bill: ₹{roundedTotal.toFixed(2)}</span>
+                      <span className="font-bold text-teal-900">• Less Advance: -₹{advanceVal.toFixed(2)} (Net: ₹{netDueForCurrentBill.toFixed(2)})</span>
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="text-[11px] font-bold text-slate-700 block mb-1">Cash (₹)</label>
@@ -1134,30 +1203,31 @@ export default function BillingPage() {
                     <button
                       type="button"
                       onClick={() => {
-                        const half = Math.round((roundedTotal / 2) * 100) / 100;
+                        const target = netDueForCurrentBill;
+                        const half = Math.round((target / 2) * 100) / 100;
                         setCashPaid(half);
-                        setUpiPaid(Math.round((roundedTotal - half) * 100) / 100);
+                        setUpiPaid(Math.round((target - half) * 100) / 100);
                       }}
                       className="text-[10px] bg-white border border-purple-300 text-purple-700 hover:bg-purple-100 font-bold px-2 py-1 rounded transition"
                     >
-                      50/50 Split (₹{(roundedTotal / 2).toFixed(2)})
+                      50/50 Split (₹{(netDueForCurrentBill / 2).toFixed(2)})
                     </button>
-                    {cashVal > 0 && cashVal < roundedTotal && (
+                    {cashVal > 0 && cashVal < netDueForCurrentBill && (
                       <button
                         type="button"
-                        onClick={() => setUpiPaid(Math.max(0, roundedTotal - cashVal))}
+                        onClick={() => setUpiPaid(Math.max(0, netDueForCurrentBill - cashVal))}
                         className="text-[10px] bg-white border border-purple-300 text-purple-700 hover:bg-purple-100 font-bold px-2 py-1 rounded transition"
                       >
-                        Fill Remaining in UPI (₹{Math.max(0, roundedTotal - cashVal).toFixed(2)})
+                        Fill Remaining in UPI (₹{Math.max(0, netDueForCurrentBill - cashVal).toFixed(2)})
                       </button>
                     )}
-                    {upiVal > 0 && upiVal < roundedTotal && (
+                    {upiVal > 0 && upiVal < netDueForCurrentBill && (
                       <button
                         type="button"
-                        onClick={() => setCashPaid(Math.max(0, roundedTotal - upiVal))}
+                        onClick={() => setCashPaid(Math.max(0, netDueForCurrentBill - upiVal))}
                         className="text-[10px] bg-white border border-purple-300 text-purple-700 hover:bg-purple-100 font-bold px-2 py-1 rounded transition"
                       >
-                        Fill Remaining in Cash (₹{Math.max(0, roundedTotal - upiVal).toFixed(2)})
+                        Fill Remaining in Cash (₹{Math.max(0, netDueForCurrentBill - upiVal).toFixed(2)})
                       </button>
                     )}
                   </div>
