@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, Suspense } from 'react';
+import React, { useState, useEffect, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { ApiService } from '@/lib/services/api';
@@ -22,7 +22,8 @@ import {
   RotateCcw,
   Trash2,
   RefreshCw,
-  X
+  X,
+  ChevronDown
 } from 'lucide-react';
 
 function PaymentsContent() {
@@ -49,6 +50,20 @@ function PaymentsContent() {
 
   // Receipt Modal State
   const [selectedPaymentForReceipt, setSelectedPaymentForReceipt] = useState<Payment | null>(null);
+
+  // Custom Dropdown State
+  const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false);
+  const customerDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (customerDropdownRef.current && !customerDropdownRef.current.contains(event.target as Node)) {
+        setCustomerDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Feedback State
   const [errorMsg, setErrorMsg] = useState('');
@@ -349,33 +364,97 @@ function PaymentsContent() {
 
             <form onSubmit={handleCollectPayment} className="space-y-4">
               {/* Customer Selector */}
-              <div>
+              <div className="relative" ref={customerDropdownRef}>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Select Customer *
                 </label>
-                <select
-                  value={selectedCustomerId}
-                  onChange={(e) => setSelectedCustomerId(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2.5 text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                >
-                  <option value="">-- Choose Customer --</option>
-                  {customersWithDues.length > 0 && (
-                    <optgroup label="⚠️ Customers With Pending Dues">
-                      {customersWithDues.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name} {c.mobile ? `(${c.mobile})` : ''} — Due: ₹{c.balance_due.toFixed(2)}
-                        </option>
-                      ))}
-                    </optgroup>
+                <div className="relative w-full">
+                  <button
+                    type="button"
+                    onClick={() => setCustomerDropdownOpen(!customerDropdownOpen)}
+                    className="w-full bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-lg px-3 py-2.5 text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-none flex items-center justify-between cursor-pointer transition text-left"
+                  >
+                    <span className={selectedCustomer ? 'text-slate-900 font-bold truncate' : 'text-slate-500 font-normal'}>
+                      {selectedCustomer 
+                        ? `${selectedCustomer.name} ${selectedCustomer.mobile ? `(${selectedCustomer.mobile})` : ''} ${selectedCustomer.balance_due > 0 ? `— Due: ₹${selectedCustomer.balance_due.toFixed(2)}` : ''}` 
+                        : '-- Choose Customer --'}
+                    </span>
+                    <ChevronDown size={16} className={`text-slate-500 transition-transform duration-200 flex-shrink-0 ml-2 ${customerDropdownOpen ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {customerDropdownOpen && (
+                    <div className="absolute top-full left-0 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto divide-y divide-slate-100 animate-in fade-in duration-100">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedCustomerId('');
+                          setCustomerDropdownOpen(false);
+                        }}
+                        className="w-full text-left px-3 py-2 text-xs text-slate-500 hover:bg-slate-50 font-medium transition cursor-pointer"
+                      >
+                        -- Choose Customer --
+                      </button>
+
+                      {customersWithDues.length > 0 && (
+                        <div>
+                          <div className="bg-amber-50/80 px-3 py-1 text-[10px] font-bold text-amber-900 uppercase tracking-wider">
+                            ⚠️ Customers With Pending Dues
+                          </div>
+                          {customersWithDues.map((c) => (
+                            <button
+                              key={c.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedCustomerId(c.id);
+                                setCustomerDropdownOpen(false);
+                              }}
+                              className={`w-full text-left px-3 py-2.5 text-xs transition flex items-center justify-between cursor-pointer ${
+                                selectedCustomerId === c.id
+                                  ? 'bg-blue-50 text-blue-900 font-bold'
+                                  : 'text-slate-800 hover:bg-slate-50'
+                              }`}
+                            >
+                              <span className="truncate">{c.name} {c.mobile ? `(${c.mobile})` : ''}</span>
+                              <span className="text-[11px] font-mono font-bold text-amber-700 ml-2 flex-shrink-0">
+                                Due: ₹{c.balance_due.toFixed(2)}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {customers.filter(c => c.balance_due <= 0).length > 0 && (
+                        <div>
+                          <div className="bg-slate-100 px-3 py-1 text-[10px] font-bold text-slate-600 uppercase tracking-wider">
+                            All Other Customers
+                          </div>
+                          {customers.filter(c => c.balance_due <= 0).map((c) => (
+                            <button
+                              key={c.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedCustomerId(c.id);
+                                setCustomerDropdownOpen(false);
+                              }}
+                              className={`w-full text-left px-3 py-2.5 text-xs transition flex items-center justify-between cursor-pointer ${
+                                selectedCustomerId === c.id
+                                  ? 'bg-blue-50 text-blue-900 font-bold'
+                                  : 'text-slate-800 hover:bg-slate-50'
+                              }`}
+                            >
+                              <span className="truncate">{c.name} {c.mobile ? `(${c.mobile})` : ''}</span>
+                              {c.advance_balance > 0 && (
+                                <span className="text-[10px] font-mono font-bold text-blue-700 ml-2 flex-shrink-0">
+                                  Adv: ₹{c.advance_balance.toFixed(2)}
+                                </span>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   )}
-                  <optgroup label="All Other Customers">
-                    {customers.filter(c => c.balance_due <= 0).map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} {c.mobile ? `(${c.mobile})` : ''} {c.advance_balance > 0 ? `(Advance: ₹${c.advance_balance.toFixed(2)})` : ''}
-                      </option>
-                    ))}
-                  </optgroup>
-                </select>
+                </div>
               </div>
 
               {/* Customer Balance Summary Card */}
