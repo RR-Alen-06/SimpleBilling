@@ -131,6 +131,7 @@ export interface Payment {
   customer_name?: string | null;
   customer_mobile?: string | null;
   bill_id?: string | null;
+  bill_number?: string | null;
   amount: number;
   payment_method: string;
   notes?: string | null;

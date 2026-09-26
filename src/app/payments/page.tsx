@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, Suspense } from 'react';
+import React, { useState, useEffect, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { ApiService } from '@/lib/services/api';
@@ -22,7 +22,8 @@ import {
   RotateCcw,
   Trash2,
   RefreshCw,
-  X
+  X,
+  ChevronDown
 } from 'lucide-react';
 
 function PaymentsContent() {
@@ -50,10 +51,25 @@ function PaymentsContent() {
   // Receipt Modal State
   const [selectedPaymentForReceipt, setSelectedPaymentForReceipt] = useState<Payment | null>(null);
 
+  // Custom Dropdown State
+  const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false);
+  const customerDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (customerDropdownRef.current && !customerDropdownRef.current.contains(event.target as Node)) {
+        setCustomerDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   // Feedback State
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [paymentStatusTab, setPaymentStatusTab] = useState<'ALL' | 'ACTIVE' | 'REVERSED'>('ALL');
 
   const loadData = async () => {
     setLoading(true);
@@ -250,14 +266,30 @@ function PaymentsContent() {
   // Customers with pending dues
   const customersWithDues = customers.filter(c => c.balance_due > 0);
 
+  // Counts
+  const totalPaymentsCount = payments.length;
+  const activePaymentsCount = payments.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED').length;
+  const reversedPaymentsCount = payments.filter(p => p.status === 'CANCELLED' || p.status === 'REVERSED').length;
+
   // Filtered payments list
   const filteredPayments = payments.filter(p => {
+    const isCancelled = p.status === 'CANCELLED';
+    const isReversed = p.status === 'REVERSED';
+    const isInactive = isCancelled || isReversed;
+
+    if (paymentStatusTab === 'ACTIVE' && isInactive) return false;
+    if (paymentStatusTab === 'REVERSED' && !isInactive) return false;
+
+    if (!searchTerm.trim()) return true;
     const term = searchTerm.toLowerCase();
     return (
       (p.payment_number && p.payment_number.toLowerCase().includes(term)) ||
       (p.customer_name && p.customer_name.toLowerCase().includes(term)) ||
+      (p.customer_mobile && p.customer_mobile.includes(term)) ||
+      (p.bill_number && p.bill_number.toLowerCase().includes(term)) ||
       (p.payment_method && p.payment_method.toLowerCase().includes(term)) ||
-      (p.notes && p.notes.toLowerCase().includes(term))
+      (p.notes && p.notes.toLowerCase().includes(term)) ||
+      (p.cancellation_reason && p.cancellation_reason.toLowerCase().includes(term))
     );
   });
 
@@ -332,33 +364,97 @@ function PaymentsContent() {
 
             <form onSubmit={handleCollectPayment} className="space-y-4">
               {/* Customer Selector */}
-              <div>
+              <div className="relative" ref={customerDropdownRef}>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Select Customer *
                 </label>
-                <select
-                  value={selectedCustomerId}
-                  onChange={(e) => setSelectedCustomerId(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2.5 text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                >
-                  <option value="">-- Choose Customer --</option>
-                  {customersWithDues.length > 0 && (
-                    <optgroup label="⚠️ Customers With Pending Dues">
-                      {customersWithDues.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name} {c.mobile ? `(${c.mobile})` : ''} — Due: ₹{c.balance_due.toFixed(2)}
-                        </option>
-                      ))}
-                    </optgroup>
+                <div className="relative w-full">
+                  <button
+                    type="button"
+                    onClick={() => setCustomerDropdownOpen(!customerDropdownOpen)}
+                    className="w-full bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-lg px-3 py-2.5 text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-none flex items-center justify-between cursor-pointer transition text-left"
+                  >
+                    <span className={selectedCustomer ? 'text-slate-900 font-bold truncate' : 'text-slate-500 font-normal'}>
+                      {selectedCustomer 
+                        ? `${selectedCustomer.name} ${selectedCustomer.mobile ? `(${selectedCustomer.mobile})` : ''} ${selectedCustomer.balance_due > 0 ? `— Due: ₹${selectedCustomer.balance_due.toFixed(2)}` : ''}` 
+                        : '-- Choose Customer --'}
+                    </span>
+                    <ChevronDown size={16} className={`text-slate-500 transition-transform duration-200 flex-shrink-0 ml-2 ${customerDropdownOpen ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {customerDropdownOpen && (
+                    <div className="absolute top-full left-0 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto divide-y divide-slate-100 animate-in fade-in duration-100">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedCustomerId('');
+                          setCustomerDropdownOpen(false);
+                        }}
+                        className="w-full text-left px-3 py-2 text-xs text-slate-500 hover:bg-slate-50 font-medium transition cursor-pointer"
+                      >
+                        -- Choose Customer --
+                      </button>
+
+                      {customersWithDues.length > 0 && (
+                        <div>
+                          <div className="bg-amber-50/80 px-3 py-1 text-[10px] font-bold text-amber-900 uppercase tracking-wider">
+                            ⚠️ Customers With Pending Dues
+                          </div>
+                          {customersWithDues.map((c) => (
+                            <button
+                              key={c.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedCustomerId(c.id);
+                                setCustomerDropdownOpen(false);
+                              }}
+                              className={`w-full text-left px-3 py-2.5 text-xs transition flex items-center justify-between cursor-pointer ${
+                                selectedCustomerId === c.id
+                                  ? 'bg-blue-50 text-blue-900 font-bold'
+                                  : 'text-slate-800 hover:bg-slate-50'
+                              }`}
+                            >
+                              <span className="truncate">{c.name} {c.mobile ? `(${c.mobile})` : ''}</span>
+                              <span className="text-[11px] font-mono font-bold text-amber-700 ml-2 flex-shrink-0">
+                                Due: ₹{c.balance_due.toFixed(2)}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {customers.filter(c => c.balance_due <= 0).length > 0 && (
+                        <div>
+                          <div className="bg-slate-100 px-3 py-1 text-[10px] font-bold text-slate-600 uppercase tracking-wider">
+                            All Other Customers
+                          </div>
+                          {customers.filter(c => c.balance_due <= 0).map((c) => (
+                            <button
+                              key={c.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedCustomerId(c.id);
+                                setCustomerDropdownOpen(false);
+                              }}
+                              className={`w-full text-left px-3 py-2.5 text-xs transition flex items-center justify-between cursor-pointer ${
+                                selectedCustomerId === c.id
+                                  ? 'bg-blue-50 text-blue-900 font-bold'
+                                  : 'text-slate-800 hover:bg-slate-50'
+                              }`}
+                            >
+                              <span className="truncate">{c.name} {c.mobile ? `(${c.mobile})` : ''}</span>
+                              {c.advance_balance > 0 && (
+                                <span className="text-[10px] font-mono font-bold text-blue-700 ml-2 flex-shrink-0">
+                                  Adv: ₹{c.advance_balance.toFixed(2)}
+                                </span>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   )}
-                  <optgroup label="All Other Customers">
-                    {customers.filter(c => c.balance_due <= 0).map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} {c.mobile ? `(${c.mobile})` : ''} {c.advance_balance > 0 ? `(Advance: ₹${c.advance_balance.toFixed(2)})` : ''}
-                      </option>
-                    ))}
-                  </optgroup>
-                </select>
+                </div>
               </div>
 
               {/* Customer Balance Summary Card */}
@@ -566,6 +662,54 @@ function PaymentsContent() {
               </div>
             </div>
 
+            {/* Filter Tabs */}
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-100 pb-2">
+              <button
+                type="button"
+                onClick={() => setPaymentStatusTab('ALL')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 cursor-pointer ${
+                  paymentStatusTab === 'ALL'
+                    ? 'bg-slate-900 text-white shadow-sm'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                <span>All Receipts</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${paymentStatusTab === 'ALL' ? 'bg-slate-700 text-slate-200' : 'bg-slate-200 text-slate-700'}`}>
+                  {totalPaymentsCount}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPaymentStatusTab('ACTIVE')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 cursor-pointer ${
+                  paymentStatusTab === 'ACTIVE'
+                    ? 'bg-emerald-700 text-white shadow-sm'
+                    : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                }`}
+              >
+                <span>Active</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${paymentStatusTab === 'ACTIVE' ? 'bg-emerald-800 text-emerald-100' : 'bg-emerald-200 text-emerald-800'}`}>
+                  {activePaymentsCount}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPaymentStatusTab('REVERSED')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 cursor-pointer ${
+                  paymentStatusTab === 'REVERSED'
+                    ? 'bg-rose-700 text-white shadow-sm'
+                    : 'bg-rose-50 text-rose-700 hover:bg-rose-100'
+                }`}
+              >
+                <span>Reversed / Cancelled</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${paymentStatusTab === 'REVERSED' ? 'bg-rose-800 text-rose-100' : 'bg-rose-200 text-rose-800'}`}>
+                  {reversedPaymentsCount}
+                </span>
+              </button>
+            </div>
+
             {loading ? (
               <div className="p-8 text-center text-slate-500 text-xs">Loading transaction history...</div>
             ) : filteredPayments.length === 0 ? (
@@ -578,16 +722,18 @@ function PaymentsContent() {
                 <table className="w-full text-left text-xs border-collapse">
                   <thead>
                     <tr className="bg-slate-50 text-slate-600 uppercase font-bold border-b border-slate-200 text-[11px]">
-                      <th className="py-2.5 px-3">Receipt No</th>
+                      <th className="py-2.5 px-3">Receipt / Payment ID</th>
                       <th className="py-2.5 px-3">Date</th>
                       <th className="py-2.5 px-3">Customer</th>
+                      <th className="py-2.5 px-3">Linked Ref</th>
                       <th className="py-2.5 px-3">Mode</th>
+                      <th className="py-2.5 px-3 text-center">Status</th>
                       <th className="py-2.5 px-3 text-right">Amount (₹)</th>
                       <th className="py-2.5 px-3 text-center w-20">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {filteredPayments.slice(0, 20).map((pay) => {
+                    {filteredPayments.slice(0, 30).map((pay) => {
                       const isCancelled = pay.status === 'CANCELLED';
                       const isReversed = pay.status === 'REVERSED';
                       const isInactive = isCancelled || isReversed;
@@ -596,29 +742,33 @@ function PaymentsContent() {
                       const hasDues = pay.notes?.includes('Dues Settled');
 
                       return (
-                        <tr key={pay.id} className={`hover:bg-slate-50/80 transition ${isInactive ? 'bg-slate-50/50 opacity-75' : ''}`}>
+                        <tr key={pay.id} className={`hover:bg-slate-50/80 transition ${isInactive ? 'bg-rose-50/20' : ''}`}>
                           <td className="py-2.5 px-3 font-mono font-bold text-slate-900">
-                            <div className="flex items-center space-x-1.5">
-                              <span className={isInactive ? 'line-through text-slate-400' : ''}>
-                                {pay.payment_number || 'PAY-N/A'}
-                              </span>
-                              {isCancelled && (
-                                <span className="bg-rose-100 text-rose-700 text-[9px] font-bold px-1.5 py-0.5 rounded border border-rose-200 uppercase" title={`Cancelled: ${pay.cancellation_reason || 'No reason provided'}`}>
-                                  Cancelled
-                                </span>
-                              )}
-                              {isReversed && (
-                                <span className="bg-amber-100 text-amber-800 text-[9px] font-bold px-1.5 py-0.5 rounded border border-amber-200 uppercase" title={`Reversed: ${pay.cancellation_reason || 'Reversed with Bill'}`}>
-                                  Reversed
-                                </span>
-                              )}
-                            </div>
+                            <span className={isInactive ? 'line-through text-slate-400 font-normal' : 'text-slate-900'}>
+                              {pay.payment_number || 'PAY-N/A'}
+                            </span>
                           </td>
-                          <td className="py-2.5 px-3 text-slate-500">
+                          <td className="py-2.5 px-3 text-slate-500 font-data-mono">
                             {new Date(pay.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
                           </td>
-                          <td className="py-2.5 px-3 font-medium text-slate-800">
-                            {pay.customer_name || 'Customer'}
+                          <td className="py-2.5 px-3">
+                            <span className="font-semibold text-slate-800 block">{pay.customer_name || 'Customer'}</span>
+                            {pay.customer_mobile && (
+                              <span className="text-[10px] text-slate-400 font-mono block">{pay.customer_mobile}</span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            {pay.bill_number ? (
+                              <span className="font-mono text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded text-[10px] font-bold border border-slate-200">
+                                {pay.bill_number}
+                              </span>
+                            ) : hasAdv ? (
+                              <span className="text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded text-[10px] font-bold border border-indigo-100">
+                                Advance
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 text-[10px]">Direct</span>
+                            )}
                           </td>
                           <td className="py-2.5 px-3">
                             <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
@@ -629,18 +779,33 @@ function PaymentsContent() {
                               {pay.payment_method}
                             </span>
                           </td>
+                          <td className="py-2.5 px-3 text-center">
+                            {isCancelled ? (
+                              <span className="inline-block bg-rose-100 text-rose-700 text-[9px] font-bold px-1.5 py-0.5 rounded border border-rose-200 uppercase" title={`Reason: ${pay.cancellation_reason || 'Cancelled'}`}>
+                                Cancelled
+                              </span>
+                            ) : isReversed ? (
+                              <span className="inline-block bg-amber-100 text-amber-800 text-[9px] font-bold px-1.5 py-0.5 rounded border border-amber-200 uppercase" title={`Reason: ${pay.cancellation_reason || 'Reversed with Bill'}`}>
+                                Reversed
+                              </span>
+                            ) : (
+                              <span className="inline-block bg-emerald-100 text-emerald-800 text-[9px] font-bold px-1.5 py-0.5 rounded border border-emerald-200 uppercase">
+                                Active
+                              </span>
+                            )}
+                          </td>
                           <td className="py-2.5 px-3 text-right">
                             <span className={`font-extrabold font-mono block ${isInactive ? 'line-through text-slate-400' : 'text-slate-900'}`}>
                               ₹{Number(pay.amount).toFixed(2)}
                             </span>
                             {hasAdv && !isInactive && (
                               <span className="inline-block bg-indigo-50 text-indigo-700 text-[9px] font-bold px-1.5 py-0.2 rounded border border-indigo-100">
-                                Advance Credited
+                                Advance
                               </span>
                             )}
                             {hasDues && !hasAdv && !isInactive && (
                               <span className="inline-block bg-emerald-50 text-emerald-700 text-[9px] font-bold px-1.5 py-0.2 rounded border border-emerald-100">
-                                Dues Cleared
+                                Dues Settled
                               </span>
                             )}
                           </td>
