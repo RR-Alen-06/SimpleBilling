@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Bill, BillFinancialSummary, AllSettings } from '@/lib/types';
+import { Bill, BillItem, BillFinancialSummary, AllSettings } from '@/lib/types';
 import { ApiService, DEFAULT_SETTINGS } from '@/lib/services/api';
 import { 
   Printer, 
@@ -96,7 +96,13 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
   const shop = activeSettings.shop;
   const billingConfig = activeSettings.billing;
   const waConfig = activeSettings.whatsapp;
-  const customerEmail = propEmail || bill.customer_email || undefined;
+
+  const rawCust = (bill as any).customers;
+  const custObj = Array.isArray(rawCust) ? rawCust[0] : rawCust;
+  const customerName = bill.customer_name || custObj?.name || (bill.customer_id ? 'Customer' : 'Walk-in Customer');
+  const customerMobile = bill.customer_mobile || custObj?.mobile || null;
+  const customerEmail = propEmail || bill.customer_email || custObj?.email || undefined;
+  const billItems: BillItem[] = (bill.items && bill.items.length > 0) ? bill.items : ((bill as any).bill_items || []);
 
   const formattedDate = bill.created_at 
     ? new Date(bill.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })
@@ -460,12 +466,12 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                 </div>
                 <div className="flex justify-between">
                   <span>Customer:</span>
-                  <span className="font-semibold">{bill.customer_name || 'N/A'}</span>
+                  <span className="font-semibold">{customerName}</span>
                 </div>
-                {bill.customer_mobile && (
+                {customerMobile && (
                   <div className="flex justify-between">
                     <span>Mobile:</span>
-                    <span>{bill.customer_mobile}</span>
+                    <span>{customerMobile}</span>
                   </div>
                 )}
                 {customerEmail && (
@@ -493,7 +499,7 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {bill.items?.map((item, idx) => (
+                  {billItems.map((item, idx) => (
                     <tr key={idx}>
                       <td className="py-1 font-sans">{item.product_name}</td>
                       <td className="py-1 text-center">{item.quantity}</td>
@@ -695,9 +701,9 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
               <div className="p-2.5 bg-slate-50 rounded-xl text-xs print:text-[8.5px] grid grid-cols-2 gap-3 border border-slate-200 print:p-1.5">
                 <div>
                   <span className="text-slate-400 block uppercase font-bold text-[10px] print:text-[7.5px] tracking-wider">Billed To:</span>
-                  <span className="text-base print:text-xs font-extrabold text-slate-900">{bill.customer_name || 'N/A'}</span>
-                  {bill.customer_mobile ? (
-                    <p className="text-slate-600 font-mono mt-0.5">Mobile: {bill.customer_mobile}</p>
+                  <span className="text-base print:text-xs font-extrabold text-slate-900">{customerName}</span>
+                  {customerMobile ? (
+                    <p className="text-slate-600 font-mono mt-0.5">Mobile: {customerMobile}</p>
                   ) : (
                     <p className="text-slate-400 italic mt-0.5">No registered phone number</p>
                   )}
@@ -734,7 +740,7 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 text-xs print:text-[8.5px]">
-                  {bill.items?.map((item, idx) => (
+                  {billItems.map((item, idx) => (
                     <tr key={idx}>
                       <td className="p-2 print:p-0.5 text-slate-400 font-data-mono">{idx + 1}</td>
                       <td className="p-2 print:p-0.5 font-medium text-slate-800">{item.product_name}</td>
