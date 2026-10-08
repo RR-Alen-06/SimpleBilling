@@ -973,6 +973,7 @@ export class ApiService {
     upi_paid: number;
     advance_used: number;
     points_to_redeem: number;
+    payment_method?: PaymentMethod | string;
     items: {
       product_id?: string | null;
       product_name: string;
@@ -1010,6 +1011,22 @@ export class ApiService {
     const totalDirectPaid = directCashPaid + directUpiPaid;
     const totalTendered = totalDirectPaid + advanceUsed;
 
+    // Determine primary payment method
+    let primaryPaymentMethod: PaymentMethod = 'Cash';
+    if (directUpiPaid > 0 && directCashPaid === 0) {
+      primaryPaymentMethod = 'UPI';
+    } else if (directCashPaid > 0 && directUpiPaid === 0) {
+      primaryPaymentMethod = 'Cash';
+    } else if (directCashPaid > 0 && directUpiPaid > 0) {
+      primaryPaymentMethod = 'Split Payment';
+    } else if (advanceUsed > 0 && directCashPaid === 0 && directUpiPaid === 0) {
+      primaryPaymentMethod = 'Advance Used';
+    } else if (totalDirectPaid === 0 && advanceUsed === 0) {
+      primaryPaymentMethod = (billData.payment_method as PaymentMethod) || 'Pay Later';
+    } else if (billData.payment_method) {
+      primaryPaymentMethod = billData.payment_method as PaymentMethod;
+    }
+
     // Verify customer if provided
     let verifiedCustomer: Customer | null = null;
     if (billData.customer_id) {
@@ -1046,9 +1063,28 @@ export class ApiService {
         const allocate = Math.min(due, availablePayment);
         const newPaidTotal = Number((Number(oldBill.paid_total || 0) + allocate).toFixed(2));
 
+        const oldCash = Number(oldBill.cash_paid || 0);
+        const oldUpi = Number(oldBill.upi_paid || 0);
+        let updatedCash = oldCash;
+        let updatedUpi = oldUpi;
+        const allocMethod = (directUpiPaid > 0 && directCashPaid === 0) ? 'UPI' : (directCashPaid > 0 && directUpiPaid === 0) ? 'Cash' : primaryPaymentMethod;
+
+        if (allocMethod === 'UPI') updatedUpi += allocate;
+        else if (allocMethod === 'Cash') updatedCash += allocate;
+
+        let updatedMethod = oldBill.payment_method;
+        if (updatedUpi > 0 && updatedCash === 0) updatedMethod = 'UPI';
+        else if (updatedCash > 0 && updatedUpi === 0) updatedMethod = 'Cash';
+        else if (updatedCash > 0 && updatedUpi > 0) updatedMethod = 'Split Payment';
+
         let updateOldBillQ = supabase
           .from('bills')
-          .update({ paid_total: newPaidTotal })
+          .update({ 
+            paid_total: newPaidTotal,
+            cash_paid: updatedCash,
+            upi_paid: updatedUpi,
+            payment_method: updatedMethod
+          })
           .eq('id', oldBill.id);
 
         if (userId) updateOldBillQ = updateOldBillQ.eq('user_id', userId);
@@ -1060,7 +1096,7 @@ export class ApiService {
           customer_id: billData.customer_id,
           bill_id: oldBill.id,
           amount: allocate,
-          payment_method: 'Auto-Allocation',
+          payment_method: allocMethod,
           status: 'COMPLETED',
           notes: `Payment auto-cleared against outstanding Bill ${oldBill.bill_number}`,
           ...(userId ? { user_id: userId } : {})
@@ -1078,11 +1114,6 @@ export class ApiService {
     } else if (totalTendered > grandTotal) {
       advanceEarned = Number((totalTendered - grandTotal).toFixed(2));
     }
-
-    let primaryPaymentMethod: PaymentMethod = 'Cash';
-    if (directUpiPaid > 0 && directCashPaid === 0) primaryPaymentMethod = 'UPI';
-    else if (advanceUsed > 0 && directCashPaid === 0 && directUpiPaid === 0) primaryPaymentMethod = 'Advance Used';
-    else if (directCashPaid > 0 && directUpiPaid > 0) primaryPaymentMethod = 'Split Payment';
 
     const bill_number = await this.getNextSequence('BILL');
 
@@ -1231,11 +1262,26 @@ export class ApiService {
       total: Number(it.total || 0)
     }));
 
+    const cash = Number(row.cash_paid || 0);
+    const upi = Number(row.upi_paid || 0);
+    const adv = Number(row.advance_used || 0);
+    const paid = Number(row.paid_total || 0);
+
+    let resolvedPaymentMethod = row.payment_method;
+    if (!resolvedPaymentMethod || resolvedPaymentMethod === 'Cash' || resolvedPaymentMethod === 'Auto-Allocation') {
+      if (upi > 0 && cash === 0) resolvedPaymentMethod = 'UPI';
+      else if (cash > 0 && upi === 0) resolvedPaymentMethod = 'Cash';
+      else if (cash > 0 && upi > 0) resolvedPaymentMethod = 'Split Payment';
+      else if (adv > 0 && cash === 0 && upi === 0) resolvedPaymentMethod = 'Advance Used';
+      else if (paid <= 0.01 && (!resolvedPaymentMethod || resolvedPaymentMethod === 'Cash' || resolvedPaymentMethod === 'Auto-Allocation')) resolvedPaymentMethod = 'Pay Later';
+    }
+
     return {
       ...row,
       customer_name: row.customer_name || cust?.name || (row.customer_id ? 'Customer' : 'Walk-in Customer'),
       customer_mobile: row.customer_mobile || cust?.mobile || null,
       customer_email: row.customer_email || cust?.email || null,
+      payment_method: resolvedPaymentMethod || 'Cash',
       items: formattedItems,
       bill_items: formattedItems
     };
@@ -2086,7 +2132,27 @@ export class ApiService {
         const newPaidTotal = Number((currentPaid + allocate).toFixed(2));
         const isNowFullyPaid = newPaidTotal >= grandTotal - 0.01;
 
-        const updateData: { paid_total: number; loyalty_points_earned?: number } = { paid_total: newPaidTotal };
+        const currentCash = Number(bill.cash_paid || 0);
+        const currentUpi = Number(bill.upi_paid || 0);
+        let newCash = currentCash;
+        let newUpi = currentUpi;
+        if (payment.payment_method === 'UPI') {
+          newUpi += allocate;
+        } else if (payment.payment_method === 'Cash') {
+          newCash += allocate;
+        }
+
+        let newMethod = bill.payment_method;
+        if (newUpi > 0 && newCash === 0) newMethod = 'UPI';
+        else if (newCash > 0 && newUpi === 0) newMethod = 'Cash';
+        else if (newCash > 0 && newUpi > 0) newMethod = 'Split Payment';
+
+        const updateData: { paid_total: number; cash_paid: number; upi_paid: number; payment_method: string; loyalty_points_earned?: number } = {
+          paid_total: newPaidTotal,
+          cash_paid: newCash,
+          upi_paid: newUpi,
+          payment_method: newMethod
+        };
 
         if (isNowFullyPaid && Number(bill.loyalty_points_earned || 0) === 0) {
           const pointsEarned = await this.calculateLoyaltyPointsEarned(grandTotal);
@@ -2136,7 +2202,27 @@ export class ApiService {
         const newPaidTotal = Number((currentPaid + allocate).toFixed(2));
         const isNowFullyPaid = newPaidTotal >= grandTotal - 0.01;
 
-        const updateData: { paid_total: number; loyalty_points_earned?: number } = { paid_total: newPaidTotal };
+        const currentCash = Number(b.cash_paid || 0);
+        const currentUpi = Number(b.upi_paid || 0);
+        let newCash = currentCash;
+        let newUpi = currentUpi;
+        if (payment.payment_method === 'UPI') {
+          newUpi += allocate;
+        } else if (payment.payment_method === 'Cash') {
+          newCash += allocate;
+        }
+
+        let newMethod = b.payment_method;
+        if (newUpi > 0 && newCash === 0) newMethod = 'UPI';
+        else if (newCash > 0 && newUpi === 0) newMethod = 'Cash';
+        else if (newCash > 0 && newUpi > 0) newMethod = 'Split Payment';
+
+        const updateData: { paid_total: number; cash_paid: number; upi_paid: number; payment_method: string; loyalty_points_earned?: number } = {
+          paid_total: newPaidTotal,
+          cash_paid: newCash,
+          upi_paid: newUpi,
+          payment_method: newMethod
+        };
 
         if (isNowFullyPaid && Number(b.loyalty_points_earned || 0) === 0) {
           const pointsEarned = await this.calculateLoyaltyPointsEarned(grandTotal);
