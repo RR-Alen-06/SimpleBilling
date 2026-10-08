@@ -48,6 +48,7 @@ function PaymentsContent() {
   const [deleteReason, setDeleteReason] = useState('');
   const [deletePin, setDeletePin] = useState('');
   const [override48h, setOverride48h] = useState(false);
+  const [isDeletionPastLimit, setIsDeletionPastLimit] = useState(false);
 
   // Receipt Modal State
   const [selectedPaymentForReceipt, setSelectedPaymentForReceipt] = useState<Payment | null>(null);
@@ -95,6 +96,8 @@ function PaymentsContent() {
     setDeleteReason('Accidental payment entry / payment not received');
     setDeletePin('');
     setOverride48h(false);
+    const reversalWindowHours = Number(settings?.security?.payment_reversal_window_hours) || 72;
+    setIsDeletionPastLimit((Date.now() - new Date(payment.created_at).getTime()) > reversalWindowHours * 3600 * 1000);
     setErrorMsg('');
     setSuccessMsg('');
   };
@@ -885,7 +888,7 @@ function PaymentsContent() {
             </div>
 
             {/* REVERSAL / DELETION LIMIT WARNING & OVERRIDE */}
-            {deletingPayment && ((Date.now() - new Date(deletingPayment.created_at).getTime()) > (Number(settings?.security?.payment_reversal_window_hours) || 72) * 3600 * 1000) && (
+            {deletingPayment && isDeletionPastLimit && (
               <div className="space-y-2 p-3 bg-amber-50 border border-amber-300 rounded-lg text-amber-900 text-xs">
                 <div className="flex items-start space-x-2">
                   <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />

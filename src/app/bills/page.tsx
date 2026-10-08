@@ -39,6 +39,7 @@ export default function ManageBillsPage() {
   const [reverseReason, setReverseReason] = useState('');
   const [reversePin, setReversePin] = useState('');
   const [override48h, setOverride48h] = useState(false);
+  const [isReversalPastLimit, setIsReversalPastLimit] = useState(false);
 
   // Feedback
   const [errorMsg, setErrorMsg] = useState('');
@@ -63,7 +64,6 @@ export default function ManageBillsPage() {
   };
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadData();
   }, []);
 
@@ -81,6 +81,8 @@ export default function ManageBillsPage() {
     setReverseReason('Accidentally recorded payment when no funds received');
     setReversePin('');
     setOverride48h(false);
+    const reversalWindowHours = Number(settings?.security?.payment_reversal_window_hours) || 72;
+    setIsReversalPastLimit((Date.now() - new Date(bill.created_at).getTime()) > reversalWindowHours * 3600 * 1000);
     setErrorMsg('');
     setSuccessMsg('');
   };
@@ -411,7 +413,7 @@ export default function ManageBillsPage() {
             </div>
 
             {/* REVERSAL LIMIT WARNING & OVERRIDE */}
-            {reversingBill && ((Date.now() - new Date(reversingBill.created_at).getTime()) > (Number(settings?.security?.payment_reversal_window_hours) || 72) * 3600 * 1000) && (
+            {reversingBill && isReversalPastLimit && (
               <div className="space-y-2 p-3 bg-amber-50 border border-amber-300 rounded-lg text-amber-900 text-xs">
                 <div className="flex items-start space-x-2">
                   <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
