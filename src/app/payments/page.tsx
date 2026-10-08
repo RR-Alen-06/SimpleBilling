@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { ApiService } from '@/lib/services/api';
-import { CustomerSummary, Payment } from '@/lib/types';
+import { CustomerSummary, Payment, AllSettings } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { PaymentReceiptModal } from '@/components/PaymentReceiptModal';
 import { 
@@ -32,6 +32,7 @@ function PaymentsContent() {
 
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
+  const [settings, setSettings] = useState<AllSettings | null>(null);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>(initialCustomerId);
   const [loading, setLoading] = useState(true);
 
@@ -74,12 +75,14 @@ function PaymentsContent() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [custList, payList] = await Promise.all([
+      const [custList, payList, settingsData] = await Promise.all([
         ApiService.getCustomerSummaries(),
-        ApiService.getPayments()
+        ApiService.getPayments(),
+        ApiService.getSettings()
       ]);
       setCustomers(custList);
       setPayments(payList);
+      setSettings(settingsData);
     } catch (err) {
       console.error('Failed to load payment data:', err);
     } finally {
@@ -108,9 +111,10 @@ function PaymentsContent() {
       return;
     }
 
-    const isPast48h = (Date.now() - new Date(deletingPayment.created_at).getTime()) > 48 * 3600 * 1000;
-    if (isPast48h && !override48h) {
-      setErrorMsg('This payment is older than 48 hours. Please check the Super Admin 48-Hour Override box to proceed.');
+    const reversalWindowHours = Number(settings?.security?.payment_reversal_window_hours) || 72;
+    const isPastLimit = (Date.now() - new Date(deletingPayment.created_at).getTime()) > reversalWindowHours * 3600 * 1000;
+    if (isPastLimit && !override48h) {
+      setErrorMsg(`This payment is older than ${reversalWindowHours} hours. Please check the Super Admin ${reversalWindowHours}-Hour Override box to proceed.`);
       return;
     }
 
@@ -880,15 +884,15 @@ function PaymentsContent() {
               </div>
             </div>
 
-            {/* 48-HOUR LIMIT WARNING & OVERRIDE */}
-            {deletingPayment && ((Date.now() - new Date(deletingPayment.created_at).getTime()) > 48 * 3600 * 1000) && (
+            {/* REVERSAL / DELETION LIMIT WARNING & OVERRIDE */}
+            {deletingPayment && ((Date.now() - new Date(deletingPayment.created_at).getTime()) > (Number(settings?.security?.payment_reversal_window_hours) || 72) * 3600 * 1000) && (
               <div className="space-y-2 p-3 bg-amber-50 border border-amber-300 rounded-lg text-amber-900 text-xs">
                 <div className="flex items-start space-x-2">
                   <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
                   <div>
-                    <span className="font-bold">48-Hour Deletion Window Exceeded</span>
+                    <span className="font-bold">{Number(settings?.security?.payment_reversal_window_hours) || 72}-Hour Deletion Window Exceeded</span>
                     <p className="text-[11px] text-amber-700 mt-0.5">
-                      This payment was recorded on {new Date(deletingPayment.created_at).toLocaleString('en-IN')}. Super Admin override is mandatory to cancel past 48 hours.
+                      This payment was recorded on {new Date(deletingPayment.created_at).toLocaleString('en-IN')}. Super Admin override is mandatory to cancel past {Number(settings?.security?.payment_reversal_window_hours) || 72} hours.
                     </p>
                   </div>
                 </div>
@@ -901,7 +905,7 @@ function PaymentsContent() {
                     className="w-4 h-4 text-amber-600 rounded border-amber-300 focus:ring-amber-500 cursor-pointer"
                   />
                   <span className="font-bold text-[11px] text-amber-950">
-                    I confirm Super Admin Override for payment older than 48 hours
+                    I confirm Super Admin Override for payment older than {Number(settings?.security?.payment_reversal_window_hours) || 72} hours
                   </span>
                 </label>
               </div>

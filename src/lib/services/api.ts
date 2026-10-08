@@ -71,7 +71,8 @@ export const DEFAULT_SETTINGS: AllSettings = {
   },
   security: {
     super_admin_pin: '1234',
-    session_timeout_minutes: 30
+    session_timeout_minutes: 30,
+    payment_reversal_window_hours: 72
   },
   app: {
     theme: 'light',
@@ -2351,7 +2352,9 @@ export class ApiService {
 
     const totalPaidToReverse = Number(bill.paid_total || 0);
 
-    // Check payment timestamps for 48-hour limit
+    // Check payment timestamps for reversal limit (default 72 hours)
+    const windowHours = Number(settings.security?.payment_reversal_window_hours) || 72;
+
     let activePayQuery = supabase
       .from('payments')
       .select('created_at')
@@ -2366,10 +2369,10 @@ export class ApiService {
       : new Date(bill.created_at).getTime();
 
     const elapsedHours = (Date.now() - latestPaymentTime) / (1000 * 60 * 60);
-    const isPast48Hours = elapsedHours > 48;
+    const isPastLimit = elapsedHours > windowHours;
 
-    if (isPast48Hours && !overridePast48Hours) {
-      throw new Error('Payment was recorded more than 48 hours ago. Super Admin 48-Hour Override confirmation is required.');
+    if (isPastLimit && !overridePast48Hours) {
+      throw new Error(`Payment was recorded more than ${windowHours} hours ago. Super Admin ${windowHours}-Hour Override confirmation is required.`);
     }
 
     // 1. Soft-delete / reverse all payments attached to this bill
@@ -2377,7 +2380,7 @@ export class ApiService {
       .from('payments')
       .update({
         status: 'REVERSED',
-        cancellation_reason: isPast48Hours ? `[48H Override] ${reason}` : reason,
+        cancellation_reason: isPastLimit ? `[${windowHours}H Override] ${reason}` : reason,
         cancelled_at: new Date().toISOString(),
         cancelled_by: userName
       })
@@ -2429,9 +2432,10 @@ export class ApiService {
         upi_paid: 0,
         advance_used: 0,
         advance_earned: 0,
+        payment_method: 'Pay Later',
         edited_at: new Date().toISOString(),
         edited_by: userName,
-        edit_reason: isPast48Hours ? `Payment Reversal (48H Override): ${reason}` : `Payment Reversal: ${reason}`
+        edit_reason: isPastLimit ? `Payment Reversal (${windowHours}H Override): ${reason}` : `Payment Reversal: ${reason}`
       })
       .eq('id', billId);
 
@@ -2447,10 +2451,10 @@ export class ApiService {
 
     await this.logAudit({
       user_name: userName,
-      action: isPast48Hours ? 'REVERSE_BILL_PAYMENT_OVERRIDE_48H' : 'REVERSE_BILL_PAYMENT',
+      action: isPastLimit ? `REVERSE_BILL_PAYMENT_OVERRIDE_${windowHours}H` : 'REVERSE_BILL_PAYMENT',
       entity: `Bill ${bill.bill_number}`,
       previous_value: `Paid Total: ₹${totalPaidToReverse}`,
-      new_value: `Payment cleared to ₹0 and marked REVERSED.${isPast48Hours ? ' [SUPER ADMIN 48H OVERRIDE]' : ''} Reason: ${reason}`
+      new_value: `Payment cleared to ₹0 and marked REVERSED.${isPastLimit ? ` [SUPER ADMIN ${windowHours}H OVERRIDE]` : ''} Reason: ${reason}`
     });
 
     return { success: true, reversedAmount: totalPaidToReverse };
@@ -2491,12 +2495,13 @@ export class ApiService {
       throw new Error('This payment has already been cancelled or reversed.');
     }
 
+    const windowHours = Number(settings.security?.payment_reversal_window_hours) || 72;
     const paymentTime = new Date(payment.created_at).getTime();
     const elapsedHours = (Date.now() - paymentTime) / (1000 * 60 * 60);
-    const isPast48Hours = elapsedHours > 48;
+    const isPastLimit = elapsedHours > windowHours;
 
-    if (isPast48Hours && !overridePast48Hours) {
-      throw new Error('Payment was recorded more than 48 hours ago. Super Admin 48-Hour Override confirmation is required.');
+    if (isPastLimit && !overridePast48Hours) {
+      throw new Error(`Payment was recorded more than ${windowHours} hours ago. Super Admin ${windowHours}-Hour Override confirmation is required.`);
     }
 
     const amount = Number(payment.amount || 0);
@@ -2519,7 +2524,28 @@ export class ApiService {
         const currentPaid = Number(bill.paid_total || 0);
         const newPaid = Math.max(0, currentPaid - amount);
 
-        const updateData: { paid_total: number; loyalty_points_earned?: number } = { paid_total: newPaid };
+        const currentCash = Number(bill.cash_paid || 0);
+        const currentUpi = Number(bill.upi_paid || 0);
+        let newCash = currentCash;
+        let newUpi = currentUpi;
+        if (payment.payment_method === 'UPI') {
+          newUpi = Math.max(0, newUpi - amount);
+        } else if (payment.payment_method === 'Cash') {
+          newCash = Math.max(0, newCash - amount);
+        }
+
+        let newMethod = bill.payment_method;
+        if (newPaid <= 0.01) newMethod = 'Pay Later';
+        else if (newUpi > 0 && newCash === 0) newMethod = 'UPI';
+        else if (newCash > 0 && newUpi === 0) newMethod = 'Cash';
+        else if (newCash > 0 && newUpi > 0) newMethod = 'Split Payment';
+
+        const updateData: { paid_total: number; cash_paid: number; upi_paid: number; payment_method: string; loyalty_points_earned?: number } = {
+          paid_total: newPaid,
+          cash_paid: newCash,
+          upi_paid: newUpi,
+          payment_method: newMethod
+        };
 
         if (newPaid < grandTotal - 0.01 && Number(bill.loyalty_points_earned || 0) > 0) {
           await this.reverseLoyaltyPointsForBill(bill.id, userName);
@@ -2560,7 +2586,7 @@ export class ApiService {
       .from('payments')
       .update({
         status: 'CANCELLED',
-        cancellation_reason: isPast48Hours ? `[48H Override] ${reason}` : reason,
+        cancellation_reason: isPastLimit ? `[${windowHours}H Override] ${reason}` : reason,
         cancelled_at: new Date().toISOString(),
         cancelled_by: userName
       })
@@ -2572,10 +2598,10 @@ export class ApiService {
 
     await this.logAudit({
       user_name: userName,
-      action: isPast48Hours ? 'CANCEL_PAYMENT_OVERRIDE_48H' : 'CANCEL_PAYMENT',
+      action: isPastLimit ? `CANCEL_PAYMENT_OVERRIDE_${windowHours}H` : 'CANCEL_PAYMENT',
       entity: `Payment ${payment.payment_number || paymentId}`,
       previous_value: `Amount: ₹${amount}, Customer ID: ${payment.customer_id}`,
-      new_value: `Payment cancelled/soft-deleted.${isPast48Hours ? ' [SUPER ADMIN 48H OVERRIDE]' : ''} Reason: ${reason}`
+      new_value: `Payment cancelled/soft-deleted.${isPastLimit ? ` [SUPER ADMIN ${windowHours}H OVERRIDE]` : ''} Reason: ${reason}`
     });
   }
 

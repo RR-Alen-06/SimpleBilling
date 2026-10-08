@@ -288,6 +288,7 @@ export interface WhatsAppSettings {
 export interface SecuritySettings {
   super_admin_pin: string;
   session_timeout_minutes: number;
+  payment_reversal_window_hours?: number;
 }
 
 export interface ApplicationSettings {
