@@ -1264,21 +1264,41 @@ export default function SettingsPage() {
                 {/* CHANGE EMAIL SECTION */}
                 <ChangeEmailForm />
 
-                {/* SECURITY PIN CONFIGURATION CARD */}
+                {/* SECURITY PIN & REVERSAL WINDOW CONFIGURATION CARD */}
                 <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 space-y-4">
-                  <h3 className="text-sm font-bold text-slate-900">Super Admin Security PIN</h3>
-                  <div className="max-w-xs">
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">Super Admin PIN (Used for discount adjustments)</label>
-                    <input
-                      type="password"
-                      placeholder="Default: 1234"
-                      value={settings.security.super_admin_pin}
-                      onChange={(e) => setSettings({
-                        ...settings,
-                        security: { ...settings.security, super_admin_pin: e.target.value }
-                      })}
-                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono font-bold"
-                    />
+                  <h3 className="text-sm font-bold text-slate-900">Security PIN & Reversal Policy</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-xl">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">Super Admin Security PIN</label>
+                      <input
+                        type="password"
+                        placeholder="Default: 1234"
+                        value={settings.security.super_admin_pin}
+                        onChange={(e) => setSettings({
+                          ...settings,
+                          security: { ...settings.security, super_admin_pin: e.target.value }
+                        })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono font-bold"
+                      />
+                      <span className="text-[11px] text-slate-500 mt-1 block">Used for discount edits and payment reversal authorization.</span>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">Payment Reversal Window (Hours)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        placeholder="72"
+                        value={settings.security.payment_reversal_window_hours ?? 72}
+                        onChange={(e) => setSettings({
+                          ...settings,
+                          security: { ...settings.security, payment_reversal_window_hours: Number(e.target.value) || 72 }
+                        })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono font-bold"
+                      />
+                      <span className="text-[11px] text-slate-500 mt-1 block">Reversals older than this require Super Admin confirmation (Default: 72 hrs).</span>
+                    </div>
                   </div>
                   <div className="pt-2">
                     <button
@@ -1287,7 +1307,7 @@ export default function SettingsPage() {
                       className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2 rounded-lg shadow transition flex items-center space-x-1.5 cursor-pointer"
                     >
                       <Save size={15} />
-                      <span>Save Security PIN</span>
+                      <span>Save Security Settings</span>
                     </button>
                   </div>
                 </div>

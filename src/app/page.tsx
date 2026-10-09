@@ -414,9 +414,31 @@ export default function DashboardPage() {
                     </td>
                     <td className="px-6 py-3.5 font-medium text-slate-800">{bill.customer_name}</td>
                     <td className="px-6 py-3.5">
-                      <span className="inline-block px-2.5 py-0.5 rounded text-[11px] font-bold uppercase bg-slate-100 text-slate-700 border border-slate-200">
-                        {bill.payment_method}
-                      </span>
+                      {bill.payment_method === 'UPI' ? (
+                        <span className="inline-block px-2.5 py-0.5 rounded text-[11px] font-bold uppercase bg-indigo-50 text-indigo-700 border border-indigo-200">
+                          UPI
+                        </span>
+                      ) : bill.payment_method === 'Cash' ? (
+                        <span className="inline-block px-2.5 py-0.5 rounded text-[11px] font-bold uppercase bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          Cash
+                        </span>
+                      ) : bill.payment_method === 'Split Payment' || bill.payment_method === 'Split' ? (
+                        <span className="inline-block px-2.5 py-0.5 rounded text-[11px] font-bold uppercase bg-purple-50 text-purple-700 border border-purple-200">
+                          Split
+                        </span>
+                      ) : bill.payment_method === 'Advance Used' ? (
+                        <span className="inline-block px-2.5 py-0.5 rounded text-[11px] font-bold uppercase bg-teal-50 text-teal-700 border border-teal-200">
+                          Advance
+                        </span>
+                      ) : bill.payment_method === 'Pay Later' || Number(bill.paid_total || 0) <= 0.01 ? (
+                        <span className="inline-block px-2.5 py-0.5 rounded text-[11px] font-bold uppercase bg-amber-50 text-amber-700 border border-amber-200">
+                          Pay Later
+                        </span>
+                      ) : (
+                        <span className="inline-block px-2.5 py-0.5 rounded text-[11px] font-bold uppercase bg-slate-100 text-slate-700 border border-slate-200">
+                          {bill.payment_method}
+                        </span>
+                      )}
                     </td>
                     <td className="px-6 py-3.5 text-right font-data-mono font-bold text-slate-900">
                       ₹{Number(bill.grand_total).toFixed(2)}

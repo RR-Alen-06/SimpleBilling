@@ -416,6 +416,7 @@ export default function BillingPage() {
         upi_paid: upiVal,
         advance_used: effectiveAdvanceVal,
         points_to_redeem: pointsToRedeem,
+        payment_method: paymentMode === 'Split' ? 'Split Payment' : paymentMode === 'Advance' ? 'Advance Used' : paymentMode,
         items: cart
       });
 

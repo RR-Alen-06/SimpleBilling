@@ -71,7 +71,8 @@ export const DEFAULT_SETTINGS: AllSettings = {
   },
   security: {
     super_admin_pin: '1234',
-    session_timeout_minutes: 30
+    session_timeout_minutes: 30,
+    payment_reversal_window_hours: 72
   },
   app: {
     theme: 'light',
@@ -939,12 +940,10 @@ export class ApiService {
       );
 
       const totalBilled = custBills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
-      const totalPaid = custBills.reduce((sum, b) => sum + Number(b.paid_total || 0), 0);
-      const totalUnallocatedPayments = custPayments
-        .filter(p => !p.bill_id)
-        .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+      const totalPaid = custPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
       const dues = Math.max(0, totalBilled - totalPaid);
+      const calculatedAdvance = Math.max(0, totalPaid - totalBilled);
 
       return {
         id: cust.id,
@@ -953,10 +952,10 @@ export class ApiService {
         mobile: cust.mobile,
         email: cust.email,
         customer_code: cust.customer_code,
-        advance_balance: Number(cust.advance_balance || 0),
+        advance_balance: Number(cust.advance_balance !== undefined && cust.advance_balance !== null ? cust.advance_balance : calculatedAdvance.toFixed(2)),
         loyalty_points: Number(cust.loyalty_points || 0),
         total_billed: Number(totalBilled.toFixed(2)),
-        total_paid: Number((totalPaid + totalUnallocatedPayments).toFixed(2)),
+        total_paid: Number(totalPaid.toFixed(2)),
         balance_due: Number(dues.toFixed(2)),
         created_at: cust.created_at
       };
@@ -973,6 +972,7 @@ export class ApiService {
     upi_paid: number;
     advance_used: number;
     points_to_redeem: number;
+    payment_method?: PaymentMethod | string;
     items: {
       product_id?: string | null;
       product_name: string;
@@ -1010,6 +1010,22 @@ export class ApiService {
     const totalDirectPaid = directCashPaid + directUpiPaid;
     const totalTendered = totalDirectPaid + advanceUsed;
 
+    // Determine primary payment method
+    let primaryPaymentMethod: PaymentMethod = 'Cash';
+    if (directUpiPaid > 0 && directCashPaid === 0) {
+      primaryPaymentMethod = 'UPI';
+    } else if (directCashPaid > 0 && directUpiPaid === 0) {
+      primaryPaymentMethod = 'Cash';
+    } else if (directCashPaid > 0 && directUpiPaid > 0) {
+      primaryPaymentMethod = 'Split Payment';
+    } else if (advanceUsed > 0 && directCashPaid === 0 && directUpiPaid === 0) {
+      primaryPaymentMethod = 'Advance Used';
+    } else if (totalDirectPaid === 0 && advanceUsed === 0) {
+      primaryPaymentMethod = (billData.payment_method as PaymentMethod) || 'Pay Later';
+    } else if (billData.payment_method) {
+      primaryPaymentMethod = billData.payment_method as PaymentMethod;
+    }
+
     // Verify customer if provided
     let verifiedCustomer: Customer | null = null;
     if (billData.customer_id) {
@@ -1046,9 +1062,28 @@ export class ApiService {
         const allocate = Math.min(due, availablePayment);
         const newPaidTotal = Number((Number(oldBill.paid_total || 0) + allocate).toFixed(2));
 
+        const oldCash = Number(oldBill.cash_paid || 0);
+        const oldUpi = Number(oldBill.upi_paid || 0);
+        let updatedCash = oldCash;
+        let updatedUpi = oldUpi;
+        const allocMethod = (directUpiPaid > 0 && directCashPaid === 0) ? 'UPI' : (directCashPaid > 0 && directUpiPaid === 0) ? 'Cash' : primaryPaymentMethod;
+
+        if (allocMethod === 'UPI') updatedUpi += allocate;
+        else if (allocMethod === 'Cash') updatedCash += allocate;
+
+        let updatedMethod = oldBill.payment_method;
+        if (updatedUpi > 0 && updatedCash === 0) updatedMethod = 'UPI';
+        else if (updatedCash > 0 && updatedUpi === 0) updatedMethod = 'Cash';
+        else if (updatedCash > 0 && updatedUpi > 0) updatedMethod = 'Split Payment';
+
         let updateOldBillQ = supabase
           .from('bills')
-          .update({ paid_total: newPaidTotal })
+          .update({ 
+            paid_total: newPaidTotal,
+            cash_paid: updatedCash,
+            upi_paid: updatedUpi,
+            payment_method: updatedMethod
+          })
           .eq('id', oldBill.id);
 
         if (userId) updateOldBillQ = updateOldBillQ.eq('user_id', userId);
@@ -1060,7 +1095,7 @@ export class ApiService {
           customer_id: billData.customer_id,
           bill_id: oldBill.id,
           amount: allocate,
-          payment_method: 'Auto-Allocation',
+          payment_method: allocMethod,
           status: 'COMPLETED',
           notes: `Payment auto-cleared against outstanding Bill ${oldBill.bill_number}`,
           ...(userId ? { user_id: userId } : {})
@@ -1078,11 +1113,6 @@ export class ApiService {
     } else if (totalTendered > grandTotal) {
       advanceEarned = Number((totalTendered - grandTotal).toFixed(2));
     }
-
-    let primaryPaymentMethod: PaymentMethod = 'Cash';
-    if (directUpiPaid > 0 && directCashPaid === 0) primaryPaymentMethod = 'UPI';
-    else if (advanceUsed > 0 && directCashPaid === 0 && directUpiPaid === 0) primaryPaymentMethod = 'Advance Used';
-    else if (directCashPaid > 0 && directUpiPaid > 0) primaryPaymentMethod = 'Split Payment';
 
     const bill_number = await this.getNextSequence('BILL');
 
@@ -1220,24 +1250,44 @@ export class ApiService {
   }
 
 
-  public static formatBillRow(row: any): Bill {
-    if (!row) return row;
-    const cust = Array.isArray(row.customers) ? row.customers[0] : row.customers;
-    const rawItems = row.items || row.bill_items || [];
-    const formattedItems = rawItems.map((it: any) => ({
-      ...it,
+  public static formatBillRow(row: Record<string, unknown> | null | undefined): Bill {
+    if (!row) return row as unknown as Bill;
+    const custRaw = row.customers;
+    const cust = Array.isArray(custRaw) ? custRaw[0] : (custRaw as Record<string, unknown> | undefined);
+    const rawItems = (row.items || row.bill_items || []) as Array<Record<string, unknown>>;
+    const formattedItems: BillItem[] = rawItems.map((it) => ({
+      id: it.id as string | undefined,
+      user_id: it.user_id as string | null | undefined,
+      bill_id: it.bill_id as string | undefined,
+      product_id: (it.product_id as string | null | undefined) ?? null,
+      product_name: String(it.product_name || ''),
       price: Number(it.price || 0),
       quantity: Number(it.quantity || 0),
-      total: Number(it.total || 0)
+      total: Number(it.total || 0),
+      created_at: it.created_at as string | undefined
     }));
 
+    const cash = Number(row.cash_paid || 0);
+    const upi = Number(row.upi_paid || 0);
+    const adv = Number(row.advance_used || 0);
+    const paid = Number(row.paid_total || 0);
+
+    let resolvedPaymentMethod = row.payment_method as string | undefined;
+    if (!resolvedPaymentMethod || resolvedPaymentMethod === 'Cash' || resolvedPaymentMethod === 'Auto-Allocation') {
+      if (upi > 0 && cash === 0) resolvedPaymentMethod = 'UPI';
+      else if (cash > 0 && upi === 0) resolvedPaymentMethod = 'Cash';
+      else if (cash > 0 && upi > 0) resolvedPaymentMethod = 'Split Payment';
+      else if (adv > 0 && cash === 0 && upi === 0) resolvedPaymentMethod = 'Advance Used';
+      else if (paid <= 0.01 && (!resolvedPaymentMethod || resolvedPaymentMethod === 'Cash' || resolvedPaymentMethod === 'Auto-Allocation')) resolvedPaymentMethod = 'Pay Later';
+    }
+
     return {
-      ...row,
-      customer_name: row.customer_name || cust?.name || (row.customer_id ? 'Customer' : 'Walk-in Customer'),
-      customer_mobile: row.customer_mobile || cust?.mobile || null,
-      customer_email: row.customer_email || cust?.email || null,
-      items: formattedItems,
-      bill_items: formattedItems
+      ...(row as unknown as Bill),
+      customer_name: (row.customer_name as string | undefined) || (cust?.name as string | undefined) || ((row.customer_id as string | undefined) ? 'Customer' : 'Walk-in Customer'),
+      customer_mobile: (row.customer_mobile as string | null | undefined) ?? (cust?.mobile as string | null | undefined) ?? null,
+      customer_email: (row.customer_email as string | null | undefined) ?? (cust?.email as string | null | undefined) ?? null,
+      payment_method: resolvedPaymentMethod || 'Cash',
+      items: formattedItems
     };
   }
 
@@ -2086,7 +2136,27 @@ export class ApiService {
         const newPaidTotal = Number((currentPaid + allocate).toFixed(2));
         const isNowFullyPaid = newPaidTotal >= grandTotal - 0.01;
 
-        const updateData: { paid_total: number; loyalty_points_earned?: number } = { paid_total: newPaidTotal };
+        const currentCash = Number(bill.cash_paid || 0);
+        const currentUpi = Number(bill.upi_paid || 0);
+        let newCash = currentCash;
+        let newUpi = currentUpi;
+        if (payment.payment_method === 'UPI') {
+          newUpi += allocate;
+        } else if (payment.payment_method === 'Cash') {
+          newCash += allocate;
+        }
+
+        let newMethod = bill.payment_method;
+        if (newUpi > 0 && newCash === 0) newMethod = 'UPI';
+        else if (newCash > 0 && newUpi === 0) newMethod = 'Cash';
+        else if (newCash > 0 && newUpi > 0) newMethod = 'Split Payment';
+
+        const updateData: { paid_total: number; cash_paid: number; upi_paid: number; payment_method: string; loyalty_points_earned?: number } = {
+          paid_total: newPaidTotal,
+          cash_paid: newCash,
+          upi_paid: newUpi,
+          payment_method: newMethod
+        };
 
         if (isNowFullyPaid && Number(bill.loyalty_points_earned || 0) === 0) {
           const pointsEarned = await this.calculateLoyaltyPointsEarned(grandTotal);
@@ -2113,7 +2183,7 @@ export class ApiService {
       }
     } 
     // 2. FIFO Auto-Allocation across outstanding customer bills
-    else {
+    if (payment.customer_id && unallocatedAmount > 0) {
       let billsQuery = supabase
         .from('bills')
         .select('*')
@@ -2123,7 +2193,8 @@ export class ApiService {
 
       const { data: bills } = await billsQuery.order('created_at', { ascending: true });
 
-      const unpaidBills = (bills || []).filter(b => Number(b.paid_total || 0) < Number(b.grand_total || 0));
+      const unpaidBills = (bills || [])
+        .filter(b => (!payment.bill_id || b.id !== payment.bill_id) && Number(b.paid_total || 0) < Number(b.grand_total || 0));
 
       for (const b of unpaidBills) {
         if (unallocatedAmount <= 0) break;
@@ -2136,7 +2207,27 @@ export class ApiService {
         const newPaidTotal = Number((currentPaid + allocate).toFixed(2));
         const isNowFullyPaid = newPaidTotal >= grandTotal - 0.01;
 
-        const updateData: { paid_total: number; loyalty_points_earned?: number } = { paid_total: newPaidTotal };
+        const currentCash = Number(b.cash_paid || 0);
+        const currentUpi = Number(b.upi_paid || 0);
+        let newCash = currentCash;
+        let newUpi = currentUpi;
+        if (payment.payment_method === 'UPI') {
+          newUpi += allocate;
+        } else if (payment.payment_method === 'Cash') {
+          newCash += allocate;
+        }
+
+        let newMethod = b.payment_method;
+        if (newUpi > 0 && newCash === 0) newMethod = 'UPI';
+        else if (newCash > 0 && newUpi === 0) newMethod = 'Cash';
+        else if (newCash > 0 && newUpi > 0) newMethod = 'Split Payment';
+
+        const updateData: { paid_total: number; cash_paid: number; upi_paid: number; payment_method: string; loyalty_points_earned?: number } = {
+          paid_total: newPaidTotal,
+          cash_paid: newCash,
+          upi_paid: newUpi,
+          payment_method: newMethod
+        };
 
         if (isNowFullyPaid && Number(b.loyalty_points_earned || 0) === 0) {
           const pointsEarned = await this.calculateLoyaltyPointsEarned(grandTotal);
@@ -2159,29 +2250,31 @@ export class ApiService {
         if (userId) updateBillQ = updateBillQ.eq('user_id', userId);
         await updateBillQ;
 
-        let updatePayQ = supabase.from('payments').update({ bill_id: b.id }).eq('id', data.id);
-        if (userId) updatePayQ = updatePayQ.eq('user_id', userId);
-        await updatePayQ;
-
         unallocatedAmount -= allocate;
       }
     }
 
-    // 3. Excess payment turns into Advance Balance
-    if (unallocatedAmount > 0) {
-      let custQuery = supabase.from('customers').select('advance_balance').eq('id', payment.customer_id);
-      if (userId) custQuery = custQuery.eq('user_id', userId);
-      const { data: cust } = await custQuery.maybeSingle();
-
-      if (cust) {
-        const currentAdvance = Number(cust.advance_balance || 0);
-        let updateCustQ = supabase.from('customers').update({
-          advance_balance: currentAdvance + unallocatedAmount
-        }).eq('id', payment.customer_id);
-
-        if (userId) updateCustQ = updateCustQ.eq('user_id', userId);
-        await updateCustQ;
+    // 3. Excess payment turns into Advance Balance (synced with customer ledger)
+    if (payment.customer_id) {
+      let custBillsQ = supabase.from('bills').select('grand_total').eq('customer_id', payment.customer_id);
+      let custPayQ = supabase.from('payments').select('amount, status').eq('customer_id', payment.customer_id);
+      if (userId) {
+        custBillsQ = custBillsQ.eq('user_id', userId);
+        custPayQ = custPayQ.eq('user_id', userId);
       }
+      const [{ data: cBills }, { data: cPays }] = await Promise.all([custBillsQ, custPayQ]);
+      const totalBilled = (cBills || []).reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
+      const totalPaid = (cPays || [])
+        .filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED')
+        .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+      const calculatedAdvance = Math.max(0, Number((totalPaid - totalBilled).toFixed(2)));
+
+      let updateCustQ = supabase.from('customers').update({
+        advance_balance: calculatedAdvance
+      }).eq('id', payment.customer_id);
+
+      if (userId) updateCustQ = updateCustQ.eq('user_id', userId);
+      await updateCustQ;
     }
 
     await this.logAudit({
@@ -2195,16 +2288,18 @@ export class ApiService {
   }
 
 
-  public static formatPaymentRow(row: any): Payment {
-    if (!row) return row;
-    const cust = Array.isArray(row.customers) ? row.customers[0] : row.customers;
-    const bill = Array.isArray(row.bills) ? row.bills[0] : row.bills;
+  public static formatPaymentRow(row: Record<string, unknown> | null | undefined): Payment {
+    if (!row) return row as unknown as Payment;
+    const custRaw = row.customers;
+    const cust = Array.isArray(custRaw) ? custRaw[0] : (custRaw as Record<string, unknown> | undefined);
+    const billRaw = row.bills;
+    const bill = Array.isArray(billRaw) ? billRaw[0] : (billRaw as Record<string, unknown> | undefined);
     return {
-      ...row,
-      payment_number: row.payment_number || 'PAY-N/A',
-      customer_name: row.customer_name || cust?.name || (row.customer_id ? 'Customer' : 'Walk-in Customer'),
-      customer_mobile: row.customer_mobile || cust?.mobile || null,
-      bill_number: row.bill_number || bill?.bill_number || null,
+      ...(row as unknown as Payment),
+      payment_number: (row.payment_number as string | undefined) || 'PAY-N/A',
+      customer_name: (row.customer_name as string | undefined) || (cust?.name as string | undefined) || ((row.customer_id as string | undefined) ? 'Customer' : 'Walk-in Customer'),
+      customer_mobile: (row.customer_mobile as string | null | undefined) ?? (cust?.mobile as string | null | undefined) ?? null,
+      bill_number: (row.bill_number as string | null | undefined) ?? (bill?.bill_number as string | null | undefined) ?? null,
       amount: Number(row.amount || 0)
     };
   }
@@ -2265,7 +2360,9 @@ export class ApiService {
 
     const totalPaidToReverse = Number(bill.paid_total || 0);
 
-    // Check payment timestamps for 48-hour limit
+    // Check payment timestamps for reversal limit (default 72 hours)
+    const windowHours = Number(settings.security?.payment_reversal_window_hours) || 72;
+
     let activePayQuery = supabase
       .from('payments')
       .select('created_at')
@@ -2280,10 +2377,10 @@ export class ApiService {
       : new Date(bill.created_at).getTime();
 
     const elapsedHours = (Date.now() - latestPaymentTime) / (1000 * 60 * 60);
-    const isPast48Hours = elapsedHours > 48;
+    const isPastLimit = elapsedHours > windowHours;
 
-    if (isPast48Hours && !overridePast48Hours) {
-      throw new Error('Payment was recorded more than 48 hours ago. Super Admin 48-Hour Override confirmation is required.');
+    if (isPastLimit && !overridePast48Hours) {
+      throw new Error(`Payment was recorded more than ${windowHours} hours ago. Super Admin ${windowHours}-Hour Override confirmation is required.`);
     }
 
     // 1. Soft-delete / reverse all payments attached to this bill
@@ -2291,7 +2388,7 @@ export class ApiService {
       .from('payments')
       .update({
         status: 'REVERSED',
-        cancellation_reason: isPast48Hours ? `[48H Override] ${reason}` : reason,
+        cancellation_reason: isPastLimit ? `[${windowHours}H Override] ${reason}` : reason,
         cancelled_at: new Date().toISOString(),
         cancelled_by: userName
       })
@@ -2343,9 +2440,10 @@ export class ApiService {
         upi_paid: 0,
         advance_used: 0,
         advance_earned: 0,
+        payment_method: 'Pay Later',
         edited_at: new Date().toISOString(),
         edited_by: userName,
-        edit_reason: isPast48Hours ? `Payment Reversal (48H Override): ${reason}` : `Payment Reversal: ${reason}`
+        edit_reason: isPastLimit ? `Payment Reversal (${windowHours}H Override): ${reason}` : `Payment Reversal: ${reason}`
       })
       .eq('id', billId);
 
@@ -2361,10 +2459,10 @@ export class ApiService {
 
     await this.logAudit({
       user_name: userName,
-      action: isPast48Hours ? 'REVERSE_BILL_PAYMENT_OVERRIDE_48H' : 'REVERSE_BILL_PAYMENT',
+      action: isPastLimit ? `REVERSE_BILL_PAYMENT_OVERRIDE_${windowHours}H` : 'REVERSE_BILL_PAYMENT',
       entity: `Bill ${bill.bill_number}`,
       previous_value: `Paid Total: ₹${totalPaidToReverse}`,
-      new_value: `Payment cleared to ₹0 and marked REVERSED.${isPast48Hours ? ' [SUPER ADMIN 48H OVERRIDE]' : ''} Reason: ${reason}`
+      new_value: `Payment cleared to ₹0 and marked REVERSED.${isPastLimit ? ` [SUPER ADMIN ${windowHours}H OVERRIDE]` : ''} Reason: ${reason}`
     });
 
     return { success: true, reversedAmount: totalPaidToReverse };
@@ -2405,12 +2503,13 @@ export class ApiService {
       throw new Error('This payment has already been cancelled or reversed.');
     }
 
+    const windowHours = Number(settings.security?.payment_reversal_window_hours) || 72;
     const paymentTime = new Date(payment.created_at).getTime();
     const elapsedHours = (Date.now() - paymentTime) / (1000 * 60 * 60);
-    const isPast48Hours = elapsedHours > 48;
+    const isPastLimit = elapsedHours > windowHours;
 
-    if (isPast48Hours && !overridePast48Hours) {
-      throw new Error('Payment was recorded more than 48 hours ago. Super Admin 48-Hour Override confirmation is required.');
+    if (isPastLimit && !overridePast48Hours) {
+      throw new Error(`Payment was recorded more than ${windowHours} hours ago. Super Admin ${windowHours}-Hour Override confirmation is required.`);
     }
 
     const amount = Number(payment.amount || 0);
@@ -2433,7 +2532,28 @@ export class ApiService {
         const currentPaid = Number(bill.paid_total || 0);
         const newPaid = Math.max(0, currentPaid - amount);
 
-        const updateData: { paid_total: number; loyalty_points_earned?: number } = { paid_total: newPaid };
+        const currentCash = Number(bill.cash_paid || 0);
+        const currentUpi = Number(bill.upi_paid || 0);
+        let newCash = currentCash;
+        let newUpi = currentUpi;
+        if (payment.payment_method === 'UPI') {
+          newUpi = Math.max(0, newUpi - amount);
+        } else if (payment.payment_method === 'Cash') {
+          newCash = Math.max(0, newCash - amount);
+        }
+
+        let newMethod = bill.payment_method;
+        if (newPaid <= 0.01) newMethod = 'Pay Later';
+        else if (newUpi > 0 && newCash === 0) newMethod = 'UPI';
+        else if (newCash > 0 && newUpi === 0) newMethod = 'Cash';
+        else if (newCash > 0 && newUpi > 0) newMethod = 'Split Payment';
+
+        const updateData: { paid_total: number; cash_paid: number; upi_paid: number; payment_method: string; loyalty_points_earned?: number } = {
+          paid_total: newPaid,
+          cash_paid: newCash,
+          upi_paid: newUpi,
+          payment_method: newMethod
+        };
 
         if (newPaid < grandTotal - 0.01 && Number(bill.loyalty_points_earned || 0) > 0) {
           await this.reverseLoyaltyPointsForBill(bill.id, userName);
@@ -2474,7 +2594,7 @@ export class ApiService {
       .from('payments')
       .update({
         status: 'CANCELLED',
-        cancellation_reason: isPast48Hours ? `[48H Override] ${reason}` : reason,
+        cancellation_reason: isPastLimit ? `[${windowHours}H Override] ${reason}` : reason,
         cancelled_at: new Date().toISOString(),
         cancelled_by: userName
       })
@@ -2486,10 +2606,10 @@ export class ApiService {
 
     await this.logAudit({
       user_name: userName,
-      action: isPast48Hours ? 'CANCEL_PAYMENT_OVERRIDE_48H' : 'CANCEL_PAYMENT',
+      action: isPastLimit ? `CANCEL_PAYMENT_OVERRIDE_${windowHours}H` : 'CANCEL_PAYMENT',
       entity: `Payment ${payment.payment_number || paymentId}`,
       previous_value: `Amount: ₹${amount}, Customer ID: ${payment.customer_id}`,
-      new_value: `Payment cancelled/soft-deleted.${isPast48Hours ? ' [SUPER ADMIN 48H OVERRIDE]' : ''} Reason: ${reason}`
+      new_value: `Payment cancelled/soft-deleted.${isPastLimit ? ` [SUPER ADMIN ${windowHours}H OVERRIDE]` : ''} Reason: ${reason}`
     });
   }
 
@@ -2504,8 +2624,8 @@ export class ApiService {
     const userId = await this.getUserId();
 
     let custQ = supabase.from('customers').select('id, name, advance_balance');
-    let billsQ = supabase.from('bills').select('id, customer_id, grand_total, advance_used, advance_earned');
-    let payQ = supabase.from('payments').select('customer_id, bill_id, amount, status');
+    let billsQ = supabase.from('bills').select('id, customer_id, grand_total, paid_total');
+    let payQ = supabase.from('payments').select('id, customer_id, bill_id, amount, status');
 
     if (userId) {
       custQ = custQ.eq('user_id', userId);
@@ -2537,27 +2657,15 @@ export class ApiService {
       totalAdvanceBefore += storedAdvance;
 
       const custBills = billList.filter(b => b.customer_id === cust.id);
+      const custPayments = payList.filter(
+        p => p.customer_id === cust.id && p.status !== 'CANCELLED' && p.status !== 'REVERSED'
+      );
 
-      // 1. Unallocated standalone payments (no bill_id)
-      const custUnallocatedPayments = payList
-        .filter(p => p.customer_id === cust.id && !p.bill_id && p.status !== 'CANCELLED' && p.status !== 'REVERSED')
-        .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+      const custTotalBilled = custBills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
+      const custTotalPaid = custPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
-      // 2. Excess payments linked to bills (payment amount > bill grand_total)
-      const excessFromBills = custBills.reduce((sum, b) => {
-        const billPays = payList.filter(p => p.bill_id === b.id && p.status !== 'CANCELLED' && p.status !== 'REVERSED');
-        const billPaySum = billPays.reduce((s, p) => s + Number(p.amount || 0), 0);
-        return sum + Math.max(0, billPaySum - Number(b.grand_total || 0));
-      }, 0);
-
-      // 3. Advance earned on bills (if any stored on bill record)
-      const custAdvanceEarned = custBills.reduce((sum, b) => sum + Number(b.advance_earned || 0), 0);
-
-      // 4. Advance used across bills
-      const custAdvanceUsed = custBills.reduce((sum, b) => sum + Number(b.advance_used || 0), 0);
-
-      const totalAdvanceEarned = custUnallocatedPayments + excessFromBills + custAdvanceEarned;
-      const calculatedAdvance = Math.max(0, Number((totalAdvanceEarned - custAdvanceUsed).toFixed(2)));
+      // In standard ledger accounting, customer advance is any excess paid over total billed
+      const calculatedAdvance = Math.max(0, Number((custTotalPaid - custTotalBilled).toFixed(2)));
       totalAdvanceAfter += calculatedAdvance;
 
       if (Math.abs(calculatedAdvance - storedAdvance) > 0.001) {
