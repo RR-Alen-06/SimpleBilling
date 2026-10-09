@@ -940,12 +940,10 @@ export class ApiService {
       );
 
       const totalBilled = custBills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
-      const totalPaid = custBills.reduce((sum, b) => sum + Number(b.paid_total || 0), 0);
-      const totalUnallocatedPayments = custPayments
-        .filter(p => !p.bill_id)
-        .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+      const totalPaid = custPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
       const dues = Math.max(0, totalBilled - totalPaid);
+      const calculatedAdvance = Math.max(0, totalPaid - totalBilled);
 
       return {
         id: cust.id,
@@ -954,10 +952,10 @@ export class ApiService {
         mobile: cust.mobile,
         email: cust.email,
         customer_code: cust.customer_code,
-        advance_balance: Number(cust.advance_balance || 0),
+        advance_balance: Number(cust.advance_balance !== undefined && cust.advance_balance !== null ? cust.advance_balance : calculatedAdvance.toFixed(2)),
         loyalty_points: Number(cust.loyalty_points || 0),
         total_billed: Number(totalBilled.toFixed(2)),
-        total_paid: Number((totalPaid + totalUnallocatedPayments).toFixed(2)),
+        total_paid: Number(totalPaid.toFixed(2)),
         balance_due: Number(dues.toFixed(2)),
         created_at: cust.created_at
       };
@@ -1252,15 +1250,21 @@ export class ApiService {
   }
 
 
-  public static formatBillRow(row: any): Bill {
-    if (!row) return row;
-    const cust = Array.isArray(row.customers) ? row.customers[0] : row.customers;
-    const rawItems = row.items || row.bill_items || [];
-    const formattedItems = rawItems.map((it: any) => ({
-      ...it,
+  public static formatBillRow(row: Record<string, unknown> | null | undefined): Bill {
+    if (!row) return row as unknown as Bill;
+    const custRaw = row.customers;
+    const cust = Array.isArray(custRaw) ? custRaw[0] : (custRaw as Record<string, unknown> | undefined);
+    const rawItems = (row.items || row.bill_items || []) as Array<Record<string, unknown>>;
+    const formattedItems: BillItem[] = rawItems.map((it) => ({
+      id: it.id as string | undefined,
+      user_id: it.user_id as string | null | undefined,
+      bill_id: it.bill_id as string | undefined,
+      product_id: (it.product_id as string | null | undefined) ?? null,
+      product_name: String(it.product_name || ''),
       price: Number(it.price || 0),
       quantity: Number(it.quantity || 0),
-      total: Number(it.total || 0)
+      total: Number(it.total || 0),
+      created_at: it.created_at as string | undefined
     }));
 
     const cash = Number(row.cash_paid || 0);
@@ -1268,7 +1272,7 @@ export class ApiService {
     const adv = Number(row.advance_used || 0);
     const paid = Number(row.paid_total || 0);
 
-    let resolvedPaymentMethod = row.payment_method;
+    let resolvedPaymentMethod = row.payment_method as string | undefined;
     if (!resolvedPaymentMethod || resolvedPaymentMethod === 'Cash' || resolvedPaymentMethod === 'Auto-Allocation') {
       if (upi > 0 && cash === 0) resolvedPaymentMethod = 'UPI';
       else if (cash > 0 && upi === 0) resolvedPaymentMethod = 'Cash';
@@ -1278,13 +1282,12 @@ export class ApiService {
     }
 
     return {
-      ...row,
-      customer_name: row.customer_name || cust?.name || (row.customer_id ? 'Customer' : 'Walk-in Customer'),
-      customer_mobile: row.customer_mobile || cust?.mobile || null,
-      customer_email: row.customer_email || cust?.email || null,
+      ...(row as unknown as Bill),
+      customer_name: (row.customer_name as string | undefined) || (cust?.name as string | undefined) || ((row.customer_id as string | undefined) ? 'Customer' : 'Walk-in Customer'),
+      customer_mobile: (row.customer_mobile as string | null | undefined) ?? (cust?.mobile as string | null | undefined) ?? null,
+      customer_email: (row.customer_email as string | null | undefined) ?? (cust?.email as string | null | undefined) ?? null,
       payment_method: resolvedPaymentMethod || 'Cash',
-      items: formattedItems,
-      bill_items: formattedItems
+      items: formattedItems
     };
   }
 
@@ -2180,7 +2183,7 @@ export class ApiService {
       }
     } 
     // 2. FIFO Auto-Allocation across outstanding customer bills
-    else {
+    if (payment.customer_id && unallocatedAmount > 0) {
       let billsQuery = supabase
         .from('bills')
         .select('*')
@@ -2190,7 +2193,8 @@ export class ApiService {
 
       const { data: bills } = await billsQuery.order('created_at', { ascending: true });
 
-      const unpaidBills = (bills || []).filter(b => Number(b.paid_total || 0) < Number(b.grand_total || 0));
+      const unpaidBills = (bills || [])
+        .filter(b => (!payment.bill_id || b.id !== payment.bill_id) && Number(b.paid_total || 0) < Number(b.grand_total || 0));
 
       for (const b of unpaidBills) {
         if (unallocatedAmount <= 0) break;
@@ -2246,29 +2250,31 @@ export class ApiService {
         if (userId) updateBillQ = updateBillQ.eq('user_id', userId);
         await updateBillQ;
 
-        let updatePayQ = supabase.from('payments').update({ bill_id: b.id }).eq('id', data.id);
-        if (userId) updatePayQ = updatePayQ.eq('user_id', userId);
-        await updatePayQ;
-
         unallocatedAmount -= allocate;
       }
     }
 
-    // 3. Excess payment turns into Advance Balance
-    if (unallocatedAmount > 0) {
-      let custQuery = supabase.from('customers').select('advance_balance').eq('id', payment.customer_id);
-      if (userId) custQuery = custQuery.eq('user_id', userId);
-      const { data: cust } = await custQuery.maybeSingle();
-
-      if (cust) {
-        const currentAdvance = Number(cust.advance_balance || 0);
-        let updateCustQ = supabase.from('customers').update({
-          advance_balance: currentAdvance + unallocatedAmount
-        }).eq('id', payment.customer_id);
-
-        if (userId) updateCustQ = updateCustQ.eq('user_id', userId);
-        await updateCustQ;
+    // 3. Excess payment turns into Advance Balance (synced with customer ledger)
+    if (payment.customer_id) {
+      let custBillsQ = supabase.from('bills').select('grand_total').eq('customer_id', payment.customer_id);
+      let custPayQ = supabase.from('payments').select('amount, status').eq('customer_id', payment.customer_id);
+      if (userId) {
+        custBillsQ = custBillsQ.eq('user_id', userId);
+        custPayQ = custPayQ.eq('user_id', userId);
       }
+      const [{ data: cBills }, { data: cPays }] = await Promise.all([custBillsQ, custPayQ]);
+      const totalBilled = (cBills || []).reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
+      const totalPaid = (cPays || [])
+        .filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED')
+        .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+      const calculatedAdvance = Math.max(0, Number((totalPaid - totalBilled).toFixed(2)));
+
+      let updateCustQ = supabase.from('customers').update({
+        advance_balance: calculatedAdvance
+      }).eq('id', payment.customer_id);
+
+      if (userId) updateCustQ = updateCustQ.eq('user_id', userId);
+      await updateCustQ;
     }
 
     await this.logAudit({
@@ -2282,16 +2288,18 @@ export class ApiService {
   }
 
 
-  public static formatPaymentRow(row: any): Payment {
-    if (!row) return row;
-    const cust = Array.isArray(row.customers) ? row.customers[0] : row.customers;
-    const bill = Array.isArray(row.bills) ? row.bills[0] : row.bills;
+  public static formatPaymentRow(row: Record<string, unknown> | null | undefined): Payment {
+    if (!row) return row as unknown as Payment;
+    const custRaw = row.customers;
+    const cust = Array.isArray(custRaw) ? custRaw[0] : (custRaw as Record<string, unknown> | undefined);
+    const billRaw = row.bills;
+    const bill = Array.isArray(billRaw) ? billRaw[0] : (billRaw as Record<string, unknown> | undefined);
     return {
-      ...row,
-      payment_number: row.payment_number || 'PAY-N/A',
-      customer_name: row.customer_name || cust?.name || (row.customer_id ? 'Customer' : 'Walk-in Customer'),
-      customer_mobile: row.customer_mobile || cust?.mobile || null,
-      bill_number: row.bill_number || bill?.bill_number || null,
+      ...(row as unknown as Payment),
+      payment_number: (row.payment_number as string | undefined) || 'PAY-N/A',
+      customer_name: (row.customer_name as string | undefined) || (cust?.name as string | undefined) || ((row.customer_id as string | undefined) ? 'Customer' : 'Walk-in Customer'),
+      customer_mobile: (row.customer_mobile as string | null | undefined) ?? (cust?.mobile as string | null | undefined) ?? null,
+      bill_number: (row.bill_number as string | null | undefined) ?? (bill?.bill_number as string | null | undefined) ?? null,
       amount: Number(row.amount || 0)
     };
   }
@@ -2616,8 +2624,8 @@ export class ApiService {
     const userId = await this.getUserId();
 
     let custQ = supabase.from('customers').select('id, name, advance_balance');
-    let billsQ = supabase.from('bills').select('id, customer_id, grand_total, advance_used, advance_earned');
-    let payQ = supabase.from('payments').select('customer_id, bill_id, amount, status');
+    let billsQ = supabase.from('bills').select('id, customer_id, grand_total, paid_total');
+    let payQ = supabase.from('payments').select('id, customer_id, bill_id, amount, status');
 
     if (userId) {
       custQ = custQ.eq('user_id', userId);
@@ -2649,27 +2657,15 @@ export class ApiService {
       totalAdvanceBefore += storedAdvance;
 
       const custBills = billList.filter(b => b.customer_id === cust.id);
+      const custPayments = payList.filter(
+        p => p.customer_id === cust.id && p.status !== 'CANCELLED' && p.status !== 'REVERSED'
+      );
 
-      // 1. Unallocated standalone payments (no bill_id)
-      const custUnallocatedPayments = payList
-        .filter(p => p.customer_id === cust.id && !p.bill_id && p.status !== 'CANCELLED' && p.status !== 'REVERSED')
-        .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+      const custTotalBilled = custBills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
+      const custTotalPaid = custPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
-      // 2. Excess payments linked to bills (payment amount > bill grand_total)
-      const excessFromBills = custBills.reduce((sum, b) => {
-        const billPays = payList.filter(p => p.bill_id === b.id && p.status !== 'CANCELLED' && p.status !== 'REVERSED');
-        const billPaySum = billPays.reduce((s, p) => s + Number(p.amount || 0), 0);
-        return sum + Math.max(0, billPaySum - Number(b.grand_total || 0));
-      }, 0);
-
-      // 3. Advance earned on bills (if any stored on bill record)
-      const custAdvanceEarned = custBills.reduce((sum, b) => sum + Number(b.advance_earned || 0), 0);
-
-      // 4. Advance used across bills
-      const custAdvanceUsed = custBills.reduce((sum, b) => sum + Number(b.advance_used || 0), 0);
-
-      const totalAdvanceEarned = custUnallocatedPayments + excessFromBills + custAdvanceEarned;
-      const calculatedAdvance = Math.max(0, Number((totalAdvanceEarned - custAdvanceUsed).toFixed(2)));
+      // In standard ledger accounting, customer advance is any excess paid over total billed
+      const calculatedAdvance = Math.max(0, Number((custTotalPaid - custTotalBilled).toFixed(2)));
       totalAdvanceAfter += calculatedAdvance;
 
       if (Math.abs(calculatedAdvance - storedAdvance) > 0.001) {

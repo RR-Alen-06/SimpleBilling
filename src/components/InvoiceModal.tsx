@@ -97,12 +97,12 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
   const billingConfig = activeSettings.billing;
   const waConfig = activeSettings.whatsapp;
 
-  const rawCust = (bill as any).customers;
-  const custObj = Array.isArray(rawCust) ? rawCust[0] : rawCust;
+  const rawCust = (bill as unknown as Record<string, unknown>).customers;
+  const custObj = (Array.isArray(rawCust) ? rawCust[0] : rawCust) as { name?: string; mobile?: string; email?: string } | undefined;
   const customerName = bill.customer_name || custObj?.name || (bill.customer_id ? 'Customer' : 'Walk-in Customer');
   const customerMobile = bill.customer_mobile || custObj?.mobile || null;
   const customerEmail = propEmail || bill.customer_email || custObj?.email || undefined;
-  const billItems: BillItem[] = (bill.items && bill.items.length > 0) ? bill.items : ((bill as any).bill_items || []);
+  const billItems: BillItem[] = (bill.items && bill.items.length > 0) ? bill.items : (((bill as unknown as Record<string, unknown>).bill_items as BillItem[]) || []);
 
   const formattedDate = bill.created_at 
     ? new Date(bill.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })
