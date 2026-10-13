@@ -32,6 +32,7 @@ interface CartItem {
   quantity: number;
   price: number;
   total: number;
+  isDecimal?: boolean;
 }
 
 export default function BillingPage() {
@@ -49,8 +50,9 @@ export default function BillingPage() {
   const [customItemQty, setCustomItemQty] = useState<number | ''>(1);
   const [customItemPrice, setCustomItemPrice] = useState<number | ''>(2.00);
 
-  // Catalog search
+  // Catalog search & quick add quantity
   const [productSearch, setProductSearch] = useState('');
+  const [catalogQty, setCatalogQty] = useState<number | ''>(1);
 
   // Discount (Flat vs Percentage) & Rounding
   const [discountType, setDiscountType] = useState<'FLAT' | 'PERCENTAGE'>('FLAT');
@@ -229,10 +231,13 @@ export default function BillingPage() {
 
   // Add catalog product
   const handleAddProductToCart = (product: Product) => {
+    const qtyToAdd = Number(catalogQty) > 0 ? Number(catalogQty) : 1;
+    const isDecimalInput = !Number.isInteger(qtyToAdd);
     const existingIdx = cart.findIndex(c => c.product_id === product.id);
     if (existingIdx >= 0) {
       const updated = [...cart];
-      updated[existingIdx].quantity += 1;
+      updated[existingIdx].quantity += qtyToAdd;
+      if (isDecimalInput) updated[existingIdx].isDecimal = true;
       updated[existingIdx].total = updated[existingIdx].quantity * updated[existingIdx].price;
       setCart(updated);
     } else {
@@ -241,12 +246,15 @@ export default function BillingPage() {
         {
           product_id: product.id,
           product_name: product.name,
-          quantity: 1,
+          quantity: qtyToAdd,
           price: product.price,
-          total: product.price
+          total: qtyToAdd * product.price,
+          isDecimal: isDecimalInput
         }
       ]);
     }
+    // Reset quick catalog quantity back to 1
+    setCatalogQty(1);
   };
 
   // Add custom item (e.g., Xerox Xerox pages)
@@ -262,19 +270,36 @@ export default function BillingPage() {
         product_name: customItemName.trim(),
         quantity: qty,
         price,
-        total: qty * price
+        total: qty * price,
+        isDecimal: !Number.isInteger(qty)
       }
     ]);
   };
 
   const handleUpdateItemQty = (index: number, newQty: number) => {
-    if (newQty <= 0) {
+    if (isNaN(newQty) || newQty <= 0) {
       handleRemoveItem(index);
       return;
     }
     const updated = [...cart];
     updated[index].quantity = newQty;
+    if (!Number.isInteger(newQty)) {
+      updated[index].isDecimal = true;
+    }
     updated[index].total = newQty * updated[index].price;
+    setCart(updated);
+  };
+
+  const handleToggleItemDecimal = (index: number) => {
+    const updated = [...cart];
+    const currentlyDecimal = !!updated[index].isDecimal;
+    updated[index].isDecimal = !currentlyDecimal;
+    // If switching off decimal, round quantity to nearest integer (min 1)
+    if (currentlyDecimal) {
+      const rounded = Math.max(1, Math.round(updated[index].quantity));
+      updated[index].quantity = rounded;
+      updated[index].total = rounded * updated[index].price;
+    }
     setCart(updated);
   };
 
@@ -332,7 +357,6 @@ export default function BillingPage() {
       const adv = Math.min(selectedCustomer?.advance_balance || 0, roundedTotal);
       setUseAdvance(true);
       setAdvanceUsed(adv > 0 ? adv : '');
-      const remainder = Math.max(0, roundedTotal - adv);
       setCashPaid('');
       setUpiPaid('');
     } else if (mode === 'Split') {
@@ -363,9 +387,6 @@ export default function BillingPage() {
       setUpiPaid('');
     }
   }, [roundedTotal, paymentMode, useAdvance, advanceUsed, selectedCustomer?.advance_balance]);
-
-  const handleQuickPayCash = () => handleSelectPaymentMode('Cash');
-  const handleQuickPayUPI = () => handleSelectPaymentMode('UPI');
 
   // Submit & Create Bill
   const handleCreateBill = async () => {
@@ -656,15 +677,35 @@ export default function BillingPage() {
               <span className="text-xs text-slate-400">{products.length} items</span>
             </div>
 
-            <div className="relative">
-              <Search size={16} className="absolute left-3 top-2.5 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Search products or category..."
-                value={productSearch}
-                onChange={(e) => setProductSearch(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
+            <div className="flex gap-2 items-center">
+              <div className="relative flex-1">
+                <Search size={16} className="absolute left-3 top-2.5 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search products or category..."
+                  value={productSearch}
+                  onChange={(e) => setProductSearch(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div className="flex items-center space-x-1 bg-slate-50 border border-slate-300 rounded-lg px-2 py-1">
+                <span className="text-[10px] font-bold text-slate-500 uppercase">Qty</span>
+                <input
+                  type="number"
+                  min="0.01"
+                  step="any"
+                  value={catalogQty}
+                  onChange={(e) => setCatalogQty(e.target.value === '' ? '' : Number(e.target.value))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && filteredProducts.length > 0) {
+                      e.preventDefault();
+                      handleAddProductToCart(filteredProducts[0]);
+                    }
+                  }}
+                  title="Quantity to add when clicking or pressing Enter on catalog product"
+                  className="w-12 bg-white border border-slate-200 rounded px-1.5 py-1 text-xs font-bold text-center text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
             </div>
 
             <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
@@ -783,17 +824,48 @@ export default function BillingPage() {
 
                     <div className="flex items-center space-x-1">
                       <button
-                        onClick={() => handleUpdateItemQty(idx, item.quantity - 1)}
-                        className="w-5 h-5 bg-slate-100 hover:bg-slate-200 rounded text-slate-700 font-bold"
+                        type="button"
+                        onClick={() => handleUpdateItemQty(idx, item.isDecimal ? Math.max(0, Number((item.quantity - 1).toFixed(2))) : item.quantity - 1)}
+                        className="w-5 h-5 bg-slate-100 hover:bg-slate-200 rounded text-slate-700 font-bold flex items-center justify-center text-xs"
+                        title="Decrease quantity"
                       >
                         -
                       </button>
-                      <span className="w-8 text-center font-bold">{item.quantity}</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step={item.isDecimal ? "any" : "1"}
+                        value={item.quantity}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === '') {
+                            handleUpdateItemQty(idx, 0);
+                          } else {
+                            handleUpdateItemQty(idx, Number(val));
+                          }
+                        }}
+                        className="w-14 bg-slate-50 border border-slate-300 rounded px-1 py-0.5 text-xs font-bold text-center text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500 font-data-mono"
+                        title="Type quantity using keyboard"
+                      />
                       <button
-                        onClick={() => handleUpdateItemQty(idx, item.quantity + 1)}
-                        className="w-5 h-5 bg-slate-100 hover:bg-slate-200 rounded text-slate-700 font-bold"
+                        type="button"
+                        onClick={() => handleUpdateItemQty(idx, item.isDecimal ? Number((item.quantity + 1).toFixed(2)) : item.quantity + 1)}
+                        className="w-5 h-5 bg-slate-100 hover:bg-slate-200 rounded text-slate-700 font-bold flex items-center justify-center text-xs"
+                        title="Increase quantity"
                       >
                         +
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleItemDecimal(idx)}
+                        className={`text-[9px] px-1 py-0.5 rounded font-mono font-bold transition ml-0.5 ${
+                          item.isDecimal
+                            ? 'bg-blue-100 text-blue-700 border border-blue-300'
+                            : 'bg-slate-100 text-slate-400 hover:text-slate-600 border border-slate-200'
+                        }`}
+                        title={item.isDecimal ? "Decimal mode enabled (.00). Click for whole number mode." : "Click to allow decimal quantity (e.g. 1.5)"}
+                      >
+                        {item.isDecimal ? '.00' : '#'}
                       </button>
                     </div>
 
