@@ -6,6 +6,7 @@ export interface DateFilterButtonConfig {
 }
 
 export const DATE_FILTER_BUTTONS: DateFilterButtonConfig[] = [
+  { id: 'current_session', label: 'Current Session' },
   { id: 'today', label: 'Today' },
   { id: 'yesterday', label: 'Yesterday' },
   { id: 'weekly', label: 'This Week' },
@@ -18,6 +19,7 @@ export const DATE_FILTER_BUTTONS: DateFilterButtonConfig[] = [
 ];
 
 export const REPORTS_DATE_FILTER_BUTTONS: DateFilterButtonConfig[] = [
+  { id: 'current_session', label: 'Current Session' },
   { id: 'today', label: 'Today' },
   { id: 'yesterday', label: 'Yesterday' },
   { id: 'weekly', label: 'This Week' },
@@ -28,6 +30,7 @@ export const REPORTS_DATE_FILTER_BUTTONS: DateFilterButtonConfig[] = [
 ];
 
 export const EXPENSES_DATE_FILTER_BUTTONS: DateFilterButtonConfig[] = [
+  { id: 'current_session', label: 'Current Session' },
   { id: 'all_time', label: 'All Time' },
   { id: 'today', label: 'Today' },
   { id: 'weekly', label: 'This Week' },
@@ -36,3 +39,14 @@ export const EXPENSES_DATE_FILTER_BUTTONS: DateFilterButtonConfig[] = [
   { id: 'financial_year', label: 'Financial Year' },
   { id: 'custom', label: 'Custom' },
 ];
+
+export const ACCOUNTING_DATE_FILTER_BUTTONS: DateFilterButtonConfig[] = [
+  { id: 'current_session', label: 'Current Session' },
+  { id: 'today', label: 'Today' },
+  { id: 'yesterday', label: 'Yesterday' },
+  { id: 'weekly', label: 'This Week' },
+  { id: 'monthly', label: 'This Month' },
+  { id: 'all_time', label: 'All Time' },
+  { id: 'custom', label: 'Custom' },
+];
+

@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ApiService } from '@/lib/services/api';
-import { DashboardStats, Bill, DateFilterOption, AllSettings } from '@/lib/types';
+import { DashboardStats, Bill, DateFilterOption, AllSettings, CurrentSessionStatus } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { InvoiceModal } from '@/components/InvoiceModal';
 import { 
@@ -20,10 +20,13 @@ import {
   Eye, 
   Package, 
   Filter,
-
   Smartphone,
   Wallet,
-  CheckCircle2
+  CheckCircle2,
+  Lock,
+  BookOpen,
+  Clock,
+  ArrowRightLeft
 } from 'lucide-react';
 
 const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444'];
@@ -58,25 +61,28 @@ export default function DashboardPage() {
   });
   const [recentBills, setRecentBills] = useState<Bill[]>([]);
   const [settings, setSettings] = useState<AllSettings | null>(null);
+  const [sessionStatus, setSessionStatus] = useState<CurrentSessionStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedBill, setSelectedBill] = useState<Bill | null>(null);
 
-  // Date Filter State
-  const [dateFilter, setDateFilter] = useState<DateFilterOption>('today');
+  // Date Filter State - defaults to current_session as requested
+  const [dateFilter, setDateFilter] = useState<DateFilterOption>('current_session');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
 
   const loadDashboardData = async () => {
     setLoading(true);
     try {
-      const [data, bills, settingsData] = await Promise.all([
+      const [data, bills, settingsData, currentSession] = await Promise.all([
         ApiService.getDashboardStats(dateFilter, { from: customFrom, to: customTo }),
         ApiService.getBills(),
-        ApiService.getSettings()
+        ApiService.getSettings(),
+        ApiService.getCurrentSessionStatus()
       ]);
       setStats(data);
       setRecentBills(bills.slice(0, 8));
       setSettings(settingsData);
+      setSessionStatus(currentSession);
     } catch (err) {
       console.error('Failed to load dashboard data:', err);
     } finally {
@@ -117,6 +123,13 @@ export default function DashboardPage() {
             <span>Create Bill</span>
           </Link>
           <Link
+            href="/accounting"
+            className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs sm:text-sm font-bold px-4 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5"
+          >
+            <BookOpen size={16} />
+            <span>Accounting</span>
+          </Link>
+          <Link
             href="/products"
             className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs sm:text-sm font-semibold px-3.5 py-2.5 rounded-lg border border-slate-200 transition flex items-center space-x-1.5"
           >
@@ -133,6 +146,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
+
       {/* DATE FILTER TOOLBAR */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
         <div className="flex items-center space-x-2 text-xs font-bold text-slate-700 uppercase tracking-wider">
@@ -142,6 +156,7 @@ export default function DashboardPage() {
 
         <div className="flex flex-wrap gap-1.5">
           {[
+            { label: 'Current Session', value: 'current_session' },
             { label: 'Today', value: 'today' },
             { label: 'Yesterday', value: 'yesterday' },
             { label: 'Weekly', value: 'weekly' },
@@ -154,7 +169,7 @@ export default function DashboardPage() {
             <button
               key={item.value}
               onClick={() => setDateFilter(item.value as DateFilterOption)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
                 dateFilter === item.value
                   ? 'bg-blue-600 text-white shadow'
                   : 'bg-slate-100 text-slate-700 hover:bg-slate-200'

@@ -19,7 +19,8 @@ import {
   Database,
   QrCode,
   LogOut,
-  ShieldCheck
+  ShieldCheck,
+  BookOpen
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase/client';
 
@@ -36,6 +37,7 @@ export function Navigation() {
     { label: 'Manage Bills', href: '/bills', icon: FileText },
     { label: 'Payments', href: '/payments', icon: CreditCard },
     { label: 'Expenses', href: '/expenses', icon: DollarSign },
+    { label: 'Accounting', href: '/accounting', icon: BookOpen },
     { label: 'Reports', href: '/reports', icon: BarChart3 },
     { label: 'Audit Log', href: '/audit', icon: ShieldCheck },
     { label: 'Settings', href: '/settings', icon: SettingsIcon },
