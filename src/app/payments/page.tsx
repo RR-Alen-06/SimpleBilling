@@ -19,7 +19,6 @@ import {
   Clock, 
   History,
   Eye,
-  RotateCcw,
   Trash2,
   RefreshCw,
   X,
@@ -95,8 +94,8 @@ function PaymentsContent() {
     setDeletingPayment(payment);
     setDeleteReason('Accidental payment entry / payment not received');
     setDeletePin('');
-    setOverride48h(false);
     const reversalWindowHours = Number(settings?.security?.payment_reversal_window_hours) || 72;
+    // eslint-disable-next-line react-hooks/purity
     setIsDeletionPastLimit((Date.now() - new Date(payment.created_at).getTime()) > reversalWindowHours * 3600 * 1000);
     setErrorMsg('');
     setSuccessMsg('');
@@ -157,13 +156,11 @@ function PaymentsContent() {
   };
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadData();
   }, []);
 
   useEffect(() => {
     if (initialCustomerId) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedCustomerId(initialCustomerId);
     }
   }, [initialCustomerId]);
