@@ -120,6 +120,7 @@ export default function ReportsPage() {
   const totalPaid = bills.reduce((sum, b) => sum + Math.min(Number(b.grand_total || 0), Number(b.paid_total || 0)), 0);
   const cashTotal = bills.reduce((sum, b) => sum + Number(b.cash_paid || 0), 0);
   const upiTotal = bills.reduce((sum, b) => sum + Number(b.upi_paid || 0), 0);
+  const advanceUsedTotal = bills.reduce((sum, b) => sum + Number(b.advance_used || 0), 0);
   const totalTax = bills.reduce((sum, b) => sum + Number(b.gst_amount || 0), 0);
   const totalExpenses = periodExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
   const netProfit = totalSales - totalExpenses;
@@ -302,11 +303,11 @@ export default function ReportsPage() {
 
     // 2. Sales Invoices Register
     lines.push(`"--- 2. SALES INVOICES REGISTER (${bills.length} Records) ---"`);
-    lines.push('"Bill Number","Date Time","Customer Name","Mobile","Payment Mode","Grand Total (INR)","Paid Total (INR)","Pending Balance (INR)","Status"');
+    lines.push('"Bill Number","Date Time","Customer Name","Mobile","Payment Mode","Grand Total (INR)","Cash Paid (INR)","UPI Paid (INR)","Advance Used (INR)","Paid Total (INR)","Pending Balance (INR)","Status"');
     bills.forEach(b => {
       const isPaid = Number(b.paid_total || 0) >= Number(b.grand_total || 0) - 0.01;
       const pendingAmt = Math.max(0, Number(b.grand_total || 0) - Number(b.paid_total || 0));
-      lines.push(`"${b.bill_number}","${new Date(b.created_at).toLocaleString('en-IN')}","${(b.customer_name || 'Walk-in').replace(/"/g, '""')}","${b.customer_mobile || ''}","${b.payment_method || 'Cash'}","${Number(b.grand_total || 0).toFixed(2)}","${Number(b.paid_total || 0).toFixed(2)}","${pendingAmt.toFixed(2)}","${isPaid ? 'Paid' : 'Pending'}"`);
+      lines.push(`"${b.bill_number}","${new Date(b.created_at).toLocaleString('en-IN')}","${(b.customer_name || 'Walk-in').replace(/"/g, '""')}","${b.customer_mobile || ''}","${b.payment_method || 'Cash'}","${Number(b.grand_total || 0).toFixed(2)}","${Number(b.cash_paid || 0).toFixed(2)}","${Number(b.upi_paid || 0).toFixed(2)}","${Number(b.advance_used || 0).toFixed(2)}","${Number(b.paid_total || 0).toFixed(2)}","${pendingAmt.toFixed(2)}","${isPaid ? 'Paid' : 'Pending'}"`);
     });
     lines.push('');
 
@@ -348,7 +349,7 @@ export default function ReportsPage() {
   const _handleExportTabCSV = () => {
     const filterLabel = dateFilter.replace('_', '-');
     if (activeTab === 'sales') {
-      const headers = ['Bill Number', 'Date Time', 'Customer', 'Customer Mobile', 'Payment Method', 'Cash (INR)', 'UPI (INR)', 'Grand Total (INR)', 'Paid Total (INR)', 'Status'];
+      const headers = ['Bill Number', 'Date Time', 'Customer', 'Customer Mobile', 'Payment Method', 'Cash (INR)', 'UPI (INR)', 'Advance Used (INR)', 'Grand Total (INR)', 'Paid Total (INR)', 'Status'];
       const rows = bills.map(b => [
         b.bill_number,
         new Date(b.created_at).toLocaleString('en-IN'),
@@ -357,6 +358,7 @@ export default function ReportsPage() {
         b.payment_method || 'Cash',
         b.cash_paid || 0,
         b.upi_paid || 0,
+        b.advance_used || 0,
         b.grand_total,
         b.paid_total,
         Number(b.paid_total) >= Number(b.grand_total) ? 'Paid' : 'Pending'
@@ -530,7 +532,7 @@ export default function ReportsPage() {
       </div>
 
       {/* METRIC CARDS STRIP */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8 gap-3">
         {/* Total Sales */}
         <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-1">
           <div className="text-slate-500 text-[11px] font-bold uppercase tracking-wider flex items-center space-x-1">
@@ -581,6 +583,16 @@ export default function ReportsPage() {
           </div>
           <div className="text-base sm:text-lg font-extrabold text-indigo-700">₹{upiTotal.toFixed(2)}</div>
           <div className="text-[10px] text-slate-400 font-medium">Digital collections</div>
+        </div>
+
+        {/* Advance Utilized */}
+        <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-1">
+          <div className="text-teal-700 text-[11px] font-bold uppercase tracking-wider flex items-center space-x-1">
+            <Wallet size={13} className="text-teal-600" />
+            <span>Advance Used</span>
+          </div>
+          <div className="text-base sm:text-lg font-extrabold text-teal-700">₹{advanceUsedTotal.toFixed(2)}</div>
+          <div className="text-[10px] text-slate-400 font-medium">Non-cash credit applied</div>
         </div>
 
         {/* Period Pending */}
@@ -690,6 +702,7 @@ export default function ReportsPage() {
                       <th className="py-2.5 px-4">Payment</th>
                       <th className="py-2.5 px-4 text-right">Cash</th>
                       <th className="py-2.5 px-4 text-right">UPI</th>
+                      <th className="py-2.5 px-4 text-right">Advance</th>
                       <th className="py-2.5 px-4 text-right">Total (₹)</th>
                       <th className="py-2.5 px-4 text-center">Status</th>
                     </tr>
@@ -710,6 +723,9 @@ export default function ReportsPage() {
                           </td>
                           <td className="py-3 px-4 text-right text-xs font-mono text-indigo-700 font-semibold">
                             ₹{Number(b.upi_paid || 0).toFixed(2)}
+                          </td>
+                          <td className="py-3 px-4 text-right text-xs font-mono text-teal-700 font-semibold">
+                            {Number(b.advance_used || 0) > 0 ? `₹${Number(b.advance_used).toFixed(2)}` : '-'}
                           </td>
                           <td className="py-3 px-4 text-right font-extrabold text-slate-900">
                             ₹{Number(b.grand_total).toFixed(2)}

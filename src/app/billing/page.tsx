@@ -60,7 +60,7 @@ export default function BillingPage() {
   const [roundingMethod, setRoundingMethod] = useState<RoundingMethod>('None');
 
   // Split Payment & Advance Amounts
-  const [paymentMode, setPaymentMode] = useState<BillingPaymentMode>('Cash');
+  const [paymentMode, setPaymentMode] = useState<BillingPaymentMode>('Pay Later');
   const [cashPaid, setCashPaid] = useState<number | ''>('');
   const [upiPaid, setUpiPaid] = useState<number | ''>('');
   const [useAdvance, setUseAdvance] = useState<boolean>(false);
@@ -461,6 +461,7 @@ export default function BillingPage() {
       setAdvanceUsed('');
       setPointsToRedeem(0);
       setSelectedCustomerId('');
+      setPaymentMode('Pay Later');
 
       await fetchInitialData();
     } catch (err: unknown) {
@@ -1316,11 +1317,25 @@ export default function BillingPage() {
                 <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs space-y-2">
                   <div className="flex justify-between items-center text-amber-900 font-bold">
                     <span>Credit / Pay Later:</span>
-                    <span className="text-base font-extrabold font-mono">₹{roundedTotal.toFixed(2)}</span>
+                    <span className="text-base font-extrabold font-mono">
+                      ₹{Math.max(0, roundedTotal - (useAdvance ? Number(advanceUsed || 0) : 0)).toFixed(2)}
+                    </span>
                   </div>
-                  <p className="text-[11px] text-amber-800">
-                    No payment collected upfront. The full amount of <strong>₹{roundedTotal.toFixed(2)}</strong> will be tracked on the customer&apos;s ledger.
-                  </p>
+                  {useAdvance && Number(advanceUsed || 0) > 0 ? (
+                    <div className="text-[11px] text-amber-800 space-y-0.5">
+                      <div className="flex justify-between text-teal-900 font-medium bg-teal-100/70 px-2 py-1 rounded">
+                        <span>Paid from Advance:</span>
+                        <span className="font-bold font-mono">₹{Number(advanceUsed || 0).toFixed(2)}</span>
+                      </div>
+                      <p className="pt-1">
+                        Remaining balance of <strong>₹{Math.max(0, roundedTotal - Number(advanceUsed || 0)).toFixed(2)}</strong> will be tracked as Pay Later due on the customer&apos;s ledger.
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-amber-800">
+                      No payment collected upfront. The full amount of <strong>₹{roundedTotal.toFixed(2)}</strong> will be tracked on the customer&apos;s ledger.
+                    </p>
+                  )}
                   {!selectedCustomerId && (
                     <div className="bg-rose-100 text-rose-800 p-2 rounded text-[11px] font-bold border border-rose-200">
                       ⚠️ Customer is required for Pay Later. Please select or add a customer above.

@@ -189,6 +189,7 @@ export default function CustomersPage() {
                   <th className="px-6 py-3.5">Mobile / Email</th>
                   <th className="px-6 py-3.5 text-right">Total Billed</th>
                   <th className="px-6 py-3.5 text-right">Total Paid</th>
+                  <th className="px-6 py-3.5 text-right">Advance Balance</th>
                   <th className="px-6 py-3.5 text-right">Balance Due</th>
                   <th className="px-6 py-3.5 text-center w-40">Actions</th>
                 </tr>
@@ -215,6 +216,15 @@ export default function CustomersPage() {
                     </td>
                     <td className="px-6 py-4 text-right font-data-mono font-semibold text-emerald-700">
                       ₹{cust.total_paid.toFixed(2)}
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      {cust.advance_balance > 0 ? (
+                        <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-data-mono font-bold bg-teal-50 text-teal-700 border border-teal-200">
+                          ₹{cust.advance_balance.toFixed(2)}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 font-data-mono text-xs">₹0.00</span>
+                      )}
                     </td>
                     <td className="px-6 py-4 text-right">
                       <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-data-mono font-bold ${

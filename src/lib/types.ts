@@ -168,6 +168,7 @@ export interface CustomerLedgerEntry {
   advance_used: number;
   loyalty_points: number;
   running_balance: number;
+  bill_id?: string;
   items?: {
     product_name: string;
     quantity: number;
@@ -481,6 +482,7 @@ export interface CurrentSessionStatus {
   bills_count: number;
   expenses_count: number;
   transfers_count: number;
+  current_advance_utilized?: number;
   pending_dues_total?: number;
   unpaid_bills_count?: number;
 }
@@ -504,6 +506,7 @@ export interface ReconciliationCalculation {
   opening_upi: number;
   cash_inflow: number;
   upi_inflow: number;
+  advance_utilized?: number;
   cash_outflow: number;
   upi_outflow: number;
   transfers_cash_to_upi: number;

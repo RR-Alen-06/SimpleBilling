@@ -843,7 +843,13 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                       3. Balance Summary
                     </p>
                     <div className="flex justify-between items-center text-slate-700">
-                      <span>Remaining Balance:</span>
+                      <span>Current Bill Due:</span>
+                      <span className="font-semibold text-slate-800">
+                        ₹{Math.max(0, summary.current_bill_amount - summary.total_paid).toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center text-slate-700">
+                      <span>Net Account Balance:</span>
                       <span className={`font-extrabold ${isPending ? 'text-amber-700' : 'text-emerald-700'}`}>
                         ₹{summary.remaining_balance.toFixed(2)}
                       </span>
