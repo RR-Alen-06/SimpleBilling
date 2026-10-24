@@ -27,7 +27,12 @@ import {
   CustomerStatementBillItem,
   CustomerStatementDateGroup,
   CustomItemAnalytics,
-  ShopSettings
+  ShopSettings,
+  InternalTransfer,
+  AccountingClosing,
+  CurrentSessionStatus,
+  ReconciliationCalculation,
+  UnpaidSessionBill
 } from '../types';
 
 export const DEFAULT_SETTINGS: AllSettings = {
@@ -1383,7 +1388,19 @@ export class ApiService {
       query = query.eq('user_id', userId);
     }
 
-    const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
+    let startDate: Date | undefined;
+    let endDate: Date | undefined;
+
+    if (filter === 'current_session') {
+      const latestClosing = await this.getLatestAccountingClosing();
+      if (latestClosing?.to_date) {
+        startDate = new Date(latestClosing.to_date);
+      }
+    } else {
+      const bounds = this.getDateRangeBounds(filter, customRange);
+      startDate = bounds.startDate;
+      endDate = bounds.endDate;
+    }
 
     if (startDate) {
       query = query.gte('created_at', startDate.toISOString());
@@ -2305,6 +2322,68 @@ export class ApiService {
   }
 
 
+  static async settleBillDue(payment: {
+    bill_id: string;
+    customer_id?: string | null;
+    amount: number;
+    payment_method: 'Cash' | 'UPI';
+    notes?: string;
+  }, userName = 'Admin'): Promise<void> {
+    if (payment.customer_id) {
+      await this.recordCustomerPayment({
+        customer_id: payment.customer_id,
+        bill_id: payment.bill_id,
+        amount: payment.amount,
+        payment_method: payment.payment_method,
+        notes: payment.notes
+      }, userName);
+    } else {
+      const userId = await this.getUserId();
+      const payment_number = await this.getNextSequence('PAYMENT');
+      const paymentPayload = {
+        payment_number,
+        customer_id: null,
+        bill_id: payment.bill_id,
+        amount: payment.amount,
+        payment_method: payment.payment_method,
+        status: 'COMPLETED',
+        notes: payment.notes || null,
+        ...(userId ? { user_id: userId } : {})
+      };
+
+      if (isSupabaseConfigured) {
+        await supabase.from('payments').insert([paymentPayload]);
+
+        let billQuery = supabase.from('bills').select('*').eq('id', payment.bill_id);
+        if (userId) billQuery = billQuery.eq('user_id', userId);
+        const { data: bill } = await billQuery.maybeSingle();
+
+        if (bill) {
+          const currentPaid = Number(bill.paid_total || 0);
+          const newPaidTotal = Number((currentPaid + payment.amount).toFixed(2));
+          const currentCash = Number(bill.cash_paid || 0);
+          const currentUpi = Number(bill.upi_paid || 0);
+          const newCash = payment.payment_method === 'Cash' ? currentCash + payment.amount : currentCash;
+          const newUpi = payment.payment_method === 'UPI' ? currentUpi + payment.amount : currentUpi;
+
+          let newMethod = bill.payment_method;
+          if (newUpi > 0 && newCash === 0) newMethod = 'UPI';
+          else if (newCash > 0 && newUpi === 0) newMethod = 'Cash';
+          else if (newCash > 0 && newUpi > 0) newMethod = 'Split Payment';
+
+          let updateQ = supabase.from('bills').update({
+            paid_total: newPaidTotal,
+            cash_paid: newCash,
+            upi_paid: newUpi,
+            payment_method: newMethod
+          }).eq('id', payment.bill_id);
+          if (userId) updateQ = updateQ.eq('user_id', userId);
+          await updateQ;
+        }
+      }
+    }
+  }
+
   static async getPayments(): Promise<Payment[]> {
     if (!isSupabaseConfigured) return [];
     const userId = await this.getUserId();
@@ -2712,7 +2791,40 @@ export class ApiService {
 
     const { data, error } = await query.order('created_at', { ascending: false });
     if (error) return [];
-    return data || [];
+
+    return (data || []).map((exp: Record<string, unknown>) => {
+      let cash = exp.cash_amount !== undefined && exp.cash_amount !== null ? Number(exp.cash_amount) : undefined;
+      let upi = exp.upi_amount !== undefined && exp.upi_amount !== null ? Number(exp.upi_amount) : undefined;
+
+      if (cash === undefined || isNaN(cash)) {
+        if (exp.payment_mode === 'Cash') cash = Number(exp.amount || 0);
+        else if (exp.payment_mode === 'UPI') cash = 0;
+        else if (typeof exp.notes === 'string' && exp.notes.includes('[Split:')) {
+          const match = exp.notes.match(/Cash\s*₹?\s*(\d+(?:\.\d+)?)/i);
+          cash = match ? Number(match[1]) : 0;
+        } else {
+          cash = 0;
+        }
+      }
+
+      if (upi === undefined || isNaN(upi)) {
+        if (exp.payment_mode === 'UPI') upi = Number(exp.amount || 0);
+        else if (exp.payment_mode === 'Cash') upi = 0;
+        else if (typeof exp.notes === 'string' && exp.notes.includes('[Split:')) {
+          const match = exp.notes.match(/UPI\s*₹?\s*(\d+(?:\.\d+)?)/i);
+          upi = match ? Number(match[1]) : 0;
+        } else {
+          upi = 0;
+        }
+      }
+
+      return {
+        ...(exp as unknown as Expense),
+        amount: Number(exp.amount || 0),
+        cash_amount: cash,
+        upi_amount: upi
+      };
+    });
   }
 
 
@@ -2721,27 +2833,65 @@ export class ApiService {
     amount: number; 
     category: string;
     payment_mode?: string;
+    cash_amount?: number;
+    upi_amount?: number;
     notes?: string;
   }, userName = 'Admin'): Promise<Expense> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
     const expense_number = await this.getNextSequence('EXPENSE');
 
-    const payload = {
+    const totalAmt = Number(expense.amount || 0);
+    const mode = expense.payment_mode || 'Cash';
+    let cashAmt = 0;
+    let upiAmt = 0;
+
+    if (mode === 'Split') {
+      cashAmt = Number(expense.cash_amount || 0);
+      upiAmt = Number(expense.upi_amount || 0);
+    } else if (mode === 'Cash') {
+      cashAmt = totalAmt;
+      upiAmt = 0;
+    } else if (mode === 'UPI') {
+      cashAmt = 0;
+      upiAmt = totalAmt;
+    } else {
+      cashAmt = Number(expense.cash_amount || 0);
+      upiAmt = Number(expense.upi_amount || 0);
+    }
+
+    let noteText = expense.notes || '';
+    if (mode === 'Split' && !noteText.includes('[Split:')) {
+      const splitBadge = `[Split: Cash ₹${cashAmt}, UPI ₹${upiAmt}]`;
+      noteText = noteText ? `${noteText} ${splitBadge}` : splitBadge;
+    }
+
+    const payload: Record<string, unknown> = {
       title: expense.title,
-      amount: expense.amount,
+      amount: totalAmt,
       category: expense.category,
-      payment_mode: expense.payment_mode || 'Cash',
-      notes: expense.notes || null,
+      payment_mode: mode,
+      notes: noteText || null,
       expense_number,
+      cash_amount: cashAmt,
+      upi_amount: upiAmt,
       ...(userId ? { user_id: userId } : {})
     };
 
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('expenses')
       .insert([payload])
       .select()
       .maybeSingle();
+
+    if (error && (error.message?.includes('column "cash_amount"') || error.code === '42703')) {
+      // Fallback if DB columns not yet added to postgrest cache
+      delete payload.cash_amount;
+      delete payload.upi_amount;
+      const retry = await supabase.from('expenses').insert([payload]).select().maybeSingle();
+      data = retry.data;
+      error = retry.error;
+    }
 
     if (error) throw new Error(error.message);
     if (!data) throw new Error('Failed to create expense');
@@ -2753,20 +2903,34 @@ export class ApiService {
       new_value: JSON.stringify(data)
     });
 
-    return data;
+    return {
+      ...data,
+      amount: totalAmt,
+      cash_amount: cashAmt,
+      upi_amount: upiAmt
+    };
   }
 
 
-  static async deleteExpense(id: string, userName = 'Admin'): Promise<void> {
+  static async deleteExpense(id: string, adminPin?: string, userName = 'Admin'): Promise<void> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
 
     // Verify existence & ownership
-    let checkQ = supabase.from('expenses').select('id').eq('id', id);
+    let checkQ = supabase.from('expenses').select('*').eq('id', id);
     if (userId) checkQ = checkQ.eq('user_id', userId);
     const { data: existing } = await checkQ.maybeSingle();
     if (!existing) {
       throw new Error('Expense not found');
+    }
+
+    // Check if expense falls into a closed accounting session
+    const isClosed = await this.isDateInClosedSession(existing.created_at);
+    if (isClosed.isClosed) {
+      const settings = await this.getSettings();
+      if (!adminPin || (settings.security.super_admin_pin && settings.security.super_admin_pin !== adminPin)) {
+        throw new Error('This expense is inside a locked closed accounting period. Valid Super Admin PIN required to delete.');
+      }
     }
 
     let delQ = supabase.from('expenses').delete().eq('id', id);
@@ -2854,7 +3018,19 @@ export class ApiService {
 
 
   static async getDashboardStats(filter: DateFilterOption = 'today', customRange?: { from: string; to: string }): Promise<DashboardStats> {
-    const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
+    let startDate: Date | undefined;
+    let endDate: Date | undefined;
+
+    if (filter === 'current_session') {
+      const latestClosing = await this.getLatestAccountingClosing();
+      if (latestClosing?.to_date) {
+        startDate = new Date(latestClosing.to_date);
+      }
+    } else {
+      const bounds = this.getDateRangeBounds(filter, customRange);
+      startDate = bounds.startDate;
+      endDate = bounds.endDate;
+    }
 
     if (!isSupabaseConfigured) {
       const emptySummary: PaymentSummary = {
@@ -3771,4 +3947,589 @@ _(Points will be credited upon bill settlement)_`;
       }
     };
   }
+
+  // =========================================================================
+  // INTERNAL TRANSFERS (CONTRA VOUCHERS: CASH <-> UPI CONVERSIONS)
+  // =========================================================================
+
+  private static getLocalTransfers(): InternalTransfer[] {
+    if (typeof window === 'undefined') return [];
+    try {
+      const raw = window.localStorage.getItem('sb_internal_transfers');
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private static setLocalTransfers(transfers: InternalTransfer[]): void {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem('sb_internal_transfers', JSON.stringify(transfers));
+    } catch {}
+  }
+
+  private static hasInternalTransfersTable: boolean | null = typeof window !== 'undefined' && window.sessionStorage?.getItem('sb_table_internal_transfers') === 'false' ? false : null;
+  private static hasAccountingClosingsTable: boolean | null = typeof window !== 'undefined' && window.sessionStorage?.getItem('sb_table_accounting_closings') === 'false' ? false : null;
+  private static inFlightTransfersPromise: Promise<InternalTransfer[]> | null = null;
+  private static inFlightClosingsPromise: Promise<AccountingClosing[]> | null = null;
+
+  static resetAccountingTablesCache(): void {
+    this.hasInternalTransfersTable = null;
+    this.hasAccountingClosingsTable = null;
+    if (typeof window !== 'undefined') {
+      try {
+        window.sessionStorage?.removeItem('sb_table_internal_transfers');
+        window.sessionStorage?.removeItem('sb_table_accounting_closings');
+      } catch {}
+    }
+  }
+
+  static isAccountingUsingLocalStorage(): boolean {
+    return this.hasAccountingClosingsTable === false || this.hasInternalTransfersTable === false;
+  }
+
+  static async getInternalTransfers(): Promise<InternalTransfer[]> {
+    if (!isSupabaseConfigured || this.hasInternalTransfersTable === false) return this.getLocalTransfers();
+    if (this.inFlightTransfersPromise) return this.inFlightTransfersPromise;
+
+    this.inFlightTransfersPromise = (async () => {
+      try {
+        const userId = await this.getUserId();
+        let query = supabase.from('internal_transfers').select('*');
+        if (userId) query = query.eq('user_id', userId);
+        const { data, error } = await query.order('created_at', { ascending: false });
+
+        if (error) {
+          if (error.code === 'PGRST205' || error.message?.includes('schema cache') || error.code === '42P01') {
+            this.hasInternalTransfersTable = false;
+            if (typeof window !== 'undefined') {
+              try { window.sessionStorage?.setItem('sb_table_internal_transfers', 'false'); } catch {}
+            }
+          }
+          return this.getLocalTransfers();
+        }
+        this.hasInternalTransfersTable = true;
+        if (typeof window !== 'undefined') {
+          try { window.sessionStorage?.removeItem('sb_table_internal_transfers'); } catch {}
+        }
+        return data || [];
+      } catch {
+        return this.getLocalTransfers();
+      } finally {
+        this.inFlightTransfersPromise = null;
+      }
+    })();
+
+    return this.inFlightTransfersPromise;
+  }
+
+  static async createInternalTransfer(transfer: {
+    direction: 'CASH_TO_UPI' | 'UPI_TO_CASH';
+    amount: number;
+    reason: string;
+    reference_no?: string;
+    notes?: string;
+    created_at?: string;
+  }, userName = 'Admin'): Promise<InternalTransfer> {
+    const userId = await this.getUserId();
+    const transfer_number = await this.getNextSequence('TRANS');
+    const record: InternalTransfer = {
+      id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `trans_${Date.now()}`,
+      user_id: userId,
+      transfer_number,
+      direction: transfer.direction,
+      amount: Number(transfer.amount),
+      reason: transfer.reason,
+      reference_no: transfer.reference_no || null,
+      notes: transfer.notes || null,
+      created_at: transfer.created_at || new Date().toISOString()
+    };
+
+    if (isSupabaseConfigured && this.hasInternalTransfersTable !== false) {
+      try {
+        const { data, error } = await supabase
+          .from('internal_transfers')
+          .insert([record])
+          .select()
+          .maybeSingle();
+
+        if (!error && data) {
+          await this.logAudit({
+            user_name: userName,
+            action: 'CREATE_TRANSFER',
+            entity: `Transfer ${transfer.direction} ₹${transfer.amount}`,
+            new_value: JSON.stringify(data)
+          });
+          return data;
+        } else if (error && (error.code === 'PGRST205' || error.message?.includes('schema cache'))) {
+          this.hasInternalTransfersTable = false;
+          if (typeof window !== 'undefined') {
+            try { window.sessionStorage?.setItem('sb_table_internal_transfers', 'false'); } catch {}
+          }
+        }
+      } catch (err) {
+        console.warn('Supabase internal_transfers fallback to local:', err);
+      }
+    }
+
+    // Local storage fallback
+    const local = this.getLocalTransfers();
+    const updated = [record, ...local];
+    this.setLocalTransfers(updated);
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'CREATE_TRANSFER',
+      entity: `Transfer ${transfer.direction} ₹${transfer.amount}`,
+      new_value: JSON.stringify(record)
+    });
+
+    return record;
+  }
+
+  static async deleteInternalTransfer(id: string, adminPin?: string, userName = 'Admin'): Promise<void> {
+    const settings = await this.getSettings();
+    if (adminPin && settings.security.super_admin_pin && settings.security.super_admin_pin !== adminPin) {
+      throw new Error('Invalid Super Admin Security PIN. Delete rejected.');
+    }
+
+    const userId = await this.getUserId();
+    if (isSupabaseConfigured && this.hasInternalTransfersTable !== false) {
+      try {
+        let query = supabase.from('internal_transfers').delete().eq('id', id);
+        if (userId) query = query.eq('user_id', userId);
+        await query;
+      } catch {}
+    }
+
+    const local = this.getLocalTransfers();
+    this.setLocalTransfers(local.filter(t => t.id !== id));
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'DELETE_TRANSFER',
+      entity: `Transfer ${id}`
+    });
+  }
+
+  // =========================================================================
+  // ACCOUNTING CLOSINGS (PERIOD CLOSING & AUDIT RECONCILIATION)
+  // =========================================================================
+
+  private static getLocalClosings(): AccountingClosing[] {
+    if (typeof window === 'undefined') return [];
+    try {
+      const raw = window.localStorage.getItem('sb_accounting_closings');
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private static setLocalClosings(closings: AccountingClosing[]): void {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem('sb_accounting_closings', JSON.stringify(closings));
+    } catch {}
+  }
+
+  static async getAccountingClosings(): Promise<AccountingClosing[]> {
+    if (!isSupabaseConfigured || this.hasAccountingClosingsTable === false) return this.getLocalClosings();
+    if (this.inFlightClosingsPromise) return this.inFlightClosingsPromise;
+
+    this.inFlightClosingsPromise = (async () => {
+      try {
+        const userId = await this.getUserId();
+        let query = supabase.from('accounting_closings').select('*');
+        if (userId) query = query.eq('user_id', userId);
+        const { data, error } = await query.order('to_date', { ascending: false });
+
+        if (error) {
+          if (error.code === 'PGRST205' || error.message?.includes('schema cache') || error.code === '42P01') {
+            this.hasAccountingClosingsTable = false;
+            if (typeof window !== 'undefined') {
+              try { window.sessionStorage?.setItem('sb_table_accounting_closings', 'false'); } catch {}
+            }
+          }
+          return this.getLocalClosings();
+        }
+        this.hasAccountingClosingsTable = true;
+        if (typeof window !== 'undefined') {
+          try { window.sessionStorage?.removeItem('sb_table_accounting_closings'); } catch {}
+        }
+        return data || [];
+      } catch {
+        return this.getLocalClosings();
+      } finally {
+        this.inFlightClosingsPromise = null;
+      }
+    })();
+
+    return this.inFlightClosingsPromise;
+  }
+
+  static async getLatestAccountingClosing(): Promise<AccountingClosing | null> {
+    const closings = await this.getAccountingClosings();
+    if (!closings || closings.length === 0) return null;
+    return closings[0];
+  }
+
+  static async createAccountingClosing(
+    closingData: Omit<AccountingClosing, 'id' | 'closing_number' | 'closed_at'>,
+    adminPin: string,
+    userName = 'Admin'
+  ): Promise<AccountingClosing> {
+    const settings = await this.getSettings();
+    if (settings.security.super_admin_pin && settings.security.super_admin_pin !== adminPin) {
+      throw new Error('Invalid Super Admin Security PIN. Closing rejected.');
+    }
+
+    // Strict Zero-Dues Enforcement: Ensure all session bills are completed without pending dues
+    const reconCheck = await this.calculateReconciliationForRange(closingData.from_date, closingData.to_date);
+    if (reconCheck.pending_session_dues > 0.01) {
+      throw new Error(
+        `Cannot close accounting session: ${reconCheck.unpaid_bills.length} bills in this period have outstanding dues totaling ₹${reconCheck.pending_session_dues.toFixed(2)}. All session dues must be fully completed before closing.`
+      );
+    }
+
+    const userId = await this.getUserId();
+    const closing_number = await this.getNextSequence('CLOSE');
+    const record: AccountingClosing = {
+      ...closingData,
+      id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `close_${Date.now()}`,
+      user_id: userId,
+      closing_number,
+      closed_at: new Date().toISOString(),
+      closed_by: closingData.closed_by || userName,
+      status: 'CLOSED',
+      is_locked: true
+    };
+
+    if (isSupabaseConfigured && this.hasAccountingClosingsTable !== false) {
+      try {
+        const { data, error } = await supabase
+          .from('accounting_closings')
+          .insert([record])
+          .select()
+          .maybeSingle();
+
+        if (!error && data) {
+          await this.logAudit({
+            user_name: userName,
+            action: 'CLOSE_ACCOUNTING_PERIOD',
+            entity: `Session ${closing_number} (${closingData.from_date.slice(0, 10)} to ${closingData.to_date.slice(0, 10)})`,
+            new_value: JSON.stringify(data)
+          });
+          return data;
+        } else if (error && (error.code === 'PGRST205' || error.message?.includes('schema cache'))) {
+          this.hasAccountingClosingsTable = false;
+          if (typeof window !== 'undefined') {
+            try { window.sessionStorage?.setItem('sb_table_accounting_closings', 'false'); } catch {}
+          }
+        }
+      } catch (err) {
+        console.warn('Supabase accounting_closings fallback to local:', err);
+      }
+    }
+
+    // Local storage fallback
+    const local = this.getLocalClosings();
+    const updated = [record, ...local];
+    this.setLocalClosings(updated);
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'CLOSE_ACCOUNTING_PERIOD',
+      entity: `Session ${closing_number} (${closingData.from_date.slice(0, 10)} to ${closingData.to_date.slice(0, 10)})`,
+      new_value: JSON.stringify(record)
+    });
+
+    return record;
+  }
+
+  static async updateAccountingClosing(
+    id: string,
+    updates: Partial<AccountingClosing>,
+    adminPin: string,
+    userName = 'Admin'
+  ): Promise<AccountingClosing> {
+    const settings = await this.getSettings();
+    if (settings.security.super_admin_pin && settings.security.super_admin_pin !== adminPin) {
+      throw new Error('Invalid Super Admin Security PIN. Audit update rejected.');
+    }
+
+    const userId = await this.getUserId();
+    const auditUpdates = {
+      ...updates,
+      last_audited_at: new Date().toISOString(),
+      last_audited_by: userName
+    };
+
+    if (isSupabaseConfigured && this.hasAccountingClosingsTable !== false) {
+      try {
+        let query = supabase.from('accounting_closings').update(auditUpdates).eq('id', id);
+        if (userId) query = query.eq('user_id', userId);
+        const { data, error } = await query.select().maybeSingle();
+        if (!error && data) {
+          await this.logAudit({
+            user_name: userName,
+            action: 'AUDIT_ACCOUNTING_PERIOD',
+            entity: `Session ${data.closing_number || id}`,
+            new_value: JSON.stringify(data)
+          });
+          return data;
+        }
+      } catch {}
+    }
+
+    const local = this.getLocalClosings();
+    const index = local.findIndex(c => c.id === id);
+    if (index === -1) throw new Error('Closing record not found');
+
+    const updatedObj: AccountingClosing = { ...local[index], ...auditUpdates };
+    local[index] = updatedObj;
+    this.setLocalClosings(local);
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'AUDIT_ACCOUNTING_PERIOD',
+      entity: `Session ${updatedObj.closing_number || id}`,
+      new_value: JSON.stringify(updatedObj)
+    });
+
+    return updatedObj;
+  }
+
+  static async deleteAccountingClosing(id: string, adminPin: string, userName = 'Admin'): Promise<void> {
+    const settings = await this.getSettings();
+    if (settings.security.super_admin_pin && settings.security.super_admin_pin !== adminPin) {
+      throw new Error('Invalid Super Admin Security PIN. Reopen session rejected.');
+    }
+
+    const userId = await this.getUserId();
+    if (isSupabaseConfigured) {
+      try {
+        let query = supabase.from('accounting_closings').delete().eq('id', id);
+        if (userId) query = query.eq('user_id', userId);
+        await query;
+      } catch {}
+    }
+
+    const local = this.getLocalClosings();
+    this.setLocalClosings(local.filter(c => c.id !== id));
+
+    await this.logAudit({
+      user_name: userName,
+      action: 'REOPEN_ACCOUNTING_PERIOD',
+      entity: `Reopened session ${id}`
+    });
+  }
+
+  // =========================================================================
+  // CURRENT ACTIVE SESSION & RECONCILIATION ENGINE
+  // =========================================================================
+
+  static async isDateInClosedSession(dateStr: string): Promise<{ isClosed: boolean; session?: AccountingClosing }> {
+    const closings = await this.getAccountingClosings();
+    const d = new Date(dateStr).getTime();
+    for (const c of closings) {
+      const from = new Date(c.from_date).getTime();
+      const to = new Date(c.to_date).getTime();
+      if (d >= from && d <= to) {
+        return { isClosed: true, session: c };
+      }
+    }
+    return { isClosed: false };
+  }
+
+  static async getCurrentSessionStatus(): Promise<CurrentSessionStatus> {
+    const latestClosing = await this.getLatestAccountingClosing();
+    const session_start_date = latestClosing?.to_date || '2000-01-01T00:00:00.000Z';
+    const opening_cash = latestClosing ? Number(latestClosing.actual_cash !== undefined ? latestClosing.actual_cash : (latestClosing.expected_cash || 0)) : 0;
+    const opening_upi = latestClosing ? Number(latestClosing.actual_upi !== undefined ? latestClosing.actual_upi : (latestClosing.expected_upi || 0)) : 0;
+
+    const [allBills, allPayments, allExpenses, allTransfers] = await Promise.all([
+      this.getBills(),
+      this.getPayments(),
+      this.getExpenses(),
+      this.getInternalTransfers()
+    ]);
+
+    const sessionStartMs = new Date(session_start_date).getTime();
+
+    const bills = allBills.filter(b => new Date(b.created_at).getTime() > sessionStartMs);
+    const payments = allPayments.filter(p => new Date(p.created_at).getTime() > sessionStartMs && p.status !== 'CANCELLED' && p.status !== 'REVERSED');
+    const expenses = allExpenses.filter(e => new Date(e.created_at).getTime() > sessionStartMs);
+    const transfers = allTransfers.filter(t => new Date(t.created_at).getTime() > sessionStartMs);
+
+    const current_sales = bills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
+
+    let current_cash_inflow = 0;
+    let current_upi_inflow = 0;
+
+    if (payments.length > 0) {
+      payments.forEach(p => {
+        const amt = Number(p.amount || 0);
+        if (p.payment_method === 'Cash') current_cash_inflow += amt;
+        else if (p.payment_method === 'UPI') current_upi_inflow += amt;
+      });
+    } else {
+      bills.forEach(b => {
+        current_cash_inflow += Number(b.cash_paid || 0);
+        current_upi_inflow += Number(b.upi_paid || 0);
+      });
+    }
+
+    const current_cash_outflow = expenses.reduce((sum, e) => sum + Number(e.cash_amount !== undefined ? e.cash_amount : (e.payment_mode === 'Cash' ? e.amount : 0)), 0);
+    const current_upi_outflow = expenses.reduce((sum, e) => sum + Number(e.upi_amount !== undefined ? e.upi_amount : (e.payment_mode === 'UPI' ? e.amount : 0)), 0);
+
+    let current_transfers_cash_to_upi = 0;
+    let current_transfers_upi_to_cash = 0;
+
+    transfers.forEach(t => {
+      const amt = Number(t.amount || 0);
+      if (t.direction === 'CASH_TO_UPI') current_transfers_cash_to_upi += amt;
+      else if (t.direction === 'UPI_TO_CASH') current_transfers_upi_to_cash += amt;
+    });
+
+    const expected_cash_in_hand = opening_cash + current_cash_inflow - current_cash_outflow - current_transfers_cash_to_upi + current_transfers_upi_to_cash;
+    const expected_upi_in_hand = opening_upi + current_upi_inflow - current_upi_outflow + current_transfers_cash_to_upi - current_transfers_upi_to_cash;
+
+    return {
+      last_closed_session: latestClosing,
+      session_start_date,
+      opening_cash: Number(opening_cash.toFixed(2)),
+      opening_upi: Number(opening_upi.toFixed(2)),
+      current_sales: Number(current_sales.toFixed(2)),
+      current_cash_inflow: Number(current_cash_inflow.toFixed(2)),
+      current_upi_inflow: Number(current_upi_inflow.toFixed(2)),
+      current_cash_outflow: Number(current_cash_outflow.toFixed(2)),
+      current_upi_outflow: Number(current_upi_outflow.toFixed(2)),
+      current_transfers_cash_to_upi: Number(current_transfers_cash_to_upi.toFixed(2)),
+      current_transfers_upi_to_cash: Number(current_transfers_upi_to_cash.toFixed(2)),
+      expected_cash_in_hand: Number(expected_cash_in_hand.toFixed(2)),
+      expected_upi_in_hand: Number(expected_upi_in_hand.toFixed(2)),
+      bills_count: bills.length,
+      expenses_count: expenses.length,
+      transfers_count: transfers.length
+    };
+  }
+
+  static async calculateReconciliationForRange(fromDate: string, toDate: string): Promise<ReconciliationCalculation> {
+    const fromMs = new Date(fromDate).getTime();
+    const toMs = new Date(toDate).getTime();
+
+    const closings = await this.getAccountingClosings();
+    // Prior closing ending at or before fromDate
+    const priorClosing = closings.find(c => new Date(c.to_date).getTime() <= fromMs);
+    const opening_cash = priorClosing ? Number(priorClosing.actual_cash !== undefined ? priorClosing.actual_cash : (priorClosing.expected_cash || 0)) : 0;
+    const opening_upi = priorClosing ? Number(priorClosing.actual_upi !== undefined ? priorClosing.actual_upi : (priorClosing.expected_upi || 0)) : 0;
+
+    const [allBills, allPayments, allExpenses, allTransfers] = await Promise.all([
+      this.getBills(),
+      this.getPayments(),
+      this.getExpenses(),
+      this.getInternalTransfers()
+    ]);
+
+    const rangeBills = allBills.filter(b => {
+      const t = new Date(b.created_at).getTime();
+      return t >= fromMs && t <= toMs;
+    });
+
+    const rangePayments = allPayments.filter(p => {
+      const t = new Date(p.created_at).getTime();
+      return t >= fromMs && t <= toMs && p.status !== 'CANCELLED' && p.status !== 'REVERSED';
+    });
+
+    const rangeExpenses = allExpenses.filter(e => {
+      const t = new Date(e.created_at).getTime();
+      return t >= fromMs && t <= toMs;
+    });
+
+    const rangeTransfers = allTransfers.filter(t => {
+      const ms = new Date(t.created_at).getTime();
+      return ms >= fromMs && ms <= toMs;
+    });
+
+    const total_sales = rangeBills.reduce((s, b) => s + Number(b.grand_total || 0), 0);
+
+    let cash_inflow = 0;
+    let upi_inflow = 0;
+
+    if (rangePayments.length > 0) {
+      rangePayments.forEach(p => {
+        const amt = Number(p.amount || 0);
+        if (p.payment_method === 'Cash') cash_inflow += amt;
+        else if (p.payment_method === 'UPI') upi_inflow += amt;
+      });
+    } else {
+      rangeBills.forEach(b => {
+        cash_inflow += Number(b.cash_paid || 0);
+        upi_inflow += Number(b.upi_paid || 0);
+      });
+    }
+
+    const cash_outflow = rangeExpenses.reduce((s, e) => s + Number(e.cash_amount !== undefined ? e.cash_amount : (e.payment_mode === 'Cash' ? e.amount : 0)), 0);
+    const upi_outflow = rangeExpenses.reduce((s, e) => s + Number(e.upi_amount !== undefined ? e.upi_amount : (e.payment_mode === 'UPI' ? e.amount : 0)), 0);
+
+    let transfers_cash_to_upi = 0;
+    let transfers_upi_to_cash = 0;
+
+    rangeTransfers.forEach(t => {
+      const amt = Number(t.amount || 0);
+      if (t.direction === 'CASH_TO_UPI') transfers_cash_to_upi += amt;
+      else if (t.direction === 'UPI_TO_CASH') transfers_upi_to_cash += amt;
+    });
+
+    const expected_cash = opening_cash + cash_inflow - cash_outflow - transfers_cash_to_upi + transfers_upi_to_cash;
+    const expected_upi = opening_upi + upi_inflow - upi_outflow + transfers_cash_to_upi - transfers_upi_to_cash;
+
+    // Scan for all pending dues on bills created in this session
+    const unpaid_bills: UnpaidSessionBill[] = [];
+    let pending_session_dues = 0;
+
+    rangeBills.forEach(b => {
+      const grandTotal = Number(b.grand_total || 0);
+      const paidTotal = Number(b.paid_total !== undefined ? b.paid_total : ((b.cash_paid || 0) + (b.upi_paid || 0) + (b.advance_used || 0)));
+      const due = Math.max(0, Number((grandTotal - paidTotal).toFixed(2)));
+      if (due > 0.01) {
+        pending_session_dues += due;
+        unpaid_bills.push({
+          id: b.id,
+          bill_number: b.bill_number,
+          customer_id: b.customer_id,
+          customer_name: b.customer_name || 'Counter Customer',
+          customer_mobile: b.customer_mobile,
+          grand_total: grandTotal,
+          paid_total: paidTotal,
+          due_amount: due,
+          created_at: b.created_at
+        });
+      }
+    });
+
+    return {
+      from_date: fromDate,
+      to_date: toDate,
+      opening_cash: Number(opening_cash.toFixed(2)),
+      opening_upi: Number(opening_upi.toFixed(2)),
+      cash_inflow: Number(cash_inflow.toFixed(2)),
+      upi_inflow: Number(upi_inflow.toFixed(2)),
+      cash_outflow: Number(cash_outflow.toFixed(2)),
+      upi_outflow: Number(upi_outflow.toFixed(2)),
+      transfers_cash_to_upi: Number(transfers_cash_to_upi.toFixed(2)),
+      transfers_upi_to_cash: Number(transfers_upi_to_cash.toFixed(2)),
+      expected_cash: Number(expected_cash.toFixed(2)),
+      expected_upi: Number(expected_upi.toFixed(2)),
+      bills_count: rangeBills.length,
+      expenses_count: rangeExpenses.length,
+      transfers_count: rangeTransfers.length,
+      total_sales: Number(total_sales.toFixed(2)),
+      pending_session_dues: Number(pending_session_dues.toFixed(2)),
+      unpaid_bills
+    };
+  }
 }
+

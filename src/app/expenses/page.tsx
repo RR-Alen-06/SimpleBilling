@@ -39,7 +39,8 @@ import {
   Home,
   Package,
   Wrench,
-  Users
+  Users,
+  ShieldCheck
 } from 'lucide-react';
 
 const DEFAULT_CATEGORIES = [
@@ -53,7 +54,7 @@ const DEFAULT_CATEGORIES = [
   'Other Expense'
 ];
 
-const PAYMENT_MODES: ExpensePaymentMode[] = ['Cash', 'UPI', 'Bank Transfer', 'Card', 'Cheque', 'Other'];
+const PAYMENT_MODES: (ExpensePaymentMode | 'Split')[] = ['Cash', 'UPI', 'Split', 'Bank Transfer', 'Card', 'Cheque', 'Other'];
 
 const CHART_COLORS = [
   '#3B82F6', // Blue
@@ -91,7 +92,9 @@ export default function ExpensesPage() {
   const [title, setTitle] = useState('');
   const [amount, setAmount] = useState<number | ''>('');
   const [category, setCategory] = useState<string>('Shop Expense');
-  const [paymentMode, setPaymentMode] = useState<ExpensePaymentMode>('Cash');
+  const [paymentMode, setPaymentMode] = useState<ExpensePaymentMode | 'Split'>('Cash');
+  const [cashAmount, setCashAmount] = useState<number | ''>('');
+  const [upiAmount, setUpiAmount] = useState<number | ''>('');
   const [notes, setNotes] = useState('');
 
   // Category Manager Modal state
@@ -100,6 +103,8 @@ export default function ExpensesPage() {
 
   // Delete modal state
   const [deletingExpense, setDeletingExpense] = useState<Expense | null>(null);
+  const [isDeletingInClosedSession, setIsDeletingInClosedSession] = useState(false);
+  const [deleteAdminPin, setDeleteAdminPin] = useState('');
 
   // Feedback
   const [errorMsg, setErrorMsg] = useState('');
@@ -139,6 +144,8 @@ export default function ExpensesPage() {
     setAmount('');
     setCategory(categories[0] || 'Shop Expense');
     setPaymentMode('Cash');
+    setCashAmount('');
+    setUpiAmount('');
     setNotes('');
     setErrorMsg('');
     setShowAddModal(true);
@@ -160,6 +167,22 @@ export default function ExpensesPage() {
       return;
     }
 
+    let cAmt = 0;
+    let uAmt = 0;
+
+    if (paymentMode === 'Split') {
+      cAmt = Number(cashAmount || 0);
+      uAmt = Number(upiAmount || 0);
+      if (cAmt <= 0 && uAmt <= 0) {
+        setErrorMsg('Please enter Cash and/or UPI amounts for split payment.');
+        return;
+      }
+      if (Math.abs(cAmt + uAmt - amt) > 0.01) {
+        setErrorMsg(`Split sum (Cash ₹${cAmt} + UPI ₹${uAmt} = ₹${cAmt + uAmt}) must equal total amount (₹${amt}).`);
+        return;
+      }
+    }
+
     setSubmitting(true);
     try {
       await ApiService.addExpense({
@@ -167,6 +190,8 @@ export default function ExpensesPage() {
         amount: amt,
         category,
         payment_mode: paymentMode,
+        cash_amount: paymentMode === 'Split' ? cAmt : (paymentMode === 'Cash' ? amt : 0),
+        upi_amount: paymentMode === 'Split' ? uAmt : (paymentMode === 'UPI' ? amt : 0),
         notes: notes.trim() || undefined
       });
       setSuccessMsg('Expense recorded successfully.');
@@ -179,12 +204,24 @@ export default function ExpensesPage() {
     }
   };
 
+  const handlePromptDelete = async (exp: Expense) => {
+    setDeletingExpense(exp);
+    setDeleteAdminPin('');
+    try {
+      const check = await ApiService.isDateInClosedSession(exp.created_at);
+      setIsDeletingInClosedSession(check.isClosed);
+    } catch {
+      setIsDeletingInClosedSession(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!deletingExpense) return;
     try {
-      await ApiService.deleteExpense(deletingExpense.id);
+      await ApiService.deleteExpense(deletingExpense.id, deleteAdminPin);
       setSuccessMsg('Expense record removed.');
       setDeletingExpense(null);
+      setDeleteAdminPin('');
       loadData();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to delete expense');
@@ -674,22 +711,33 @@ export default function ExpensesPage() {
                       </span>
                     </td>
                     <td className="px-6 py-4">
-                      <span className={`inline-block px-2.5 py-0.5 rounded-md text-xs font-semibold ${
-                        exp.payment_mode === 'Cash' 
-                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
-                          : exp.payment_mode === 'UPI' 
-                            ? 'bg-blue-50 text-blue-700 border border-blue-200' 
-                            : 'bg-slate-100 text-slate-700 border border-slate-200'
-                      }`}>
-                        {exp.payment_mode || 'Cash'}
-                      </span>
+                      {exp.payment_mode === 'Split' ? (
+                        <div className="flex flex-col gap-0.5">
+                          <span className="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200 w-fit">
+                            Split Payment
+                          </span>
+                          <span className="text-[11px] font-mono text-slate-500">
+                            Cash: ₹{Number(exp.cash_amount ?? 0).toFixed(0)} | UPI: ₹{Number(exp.upi_amount ?? 0).toFixed(0)}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className={`inline-block px-2.5 py-0.5 rounded-md text-xs font-semibold ${
+                          exp.payment_mode === 'Cash' 
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
+                            : exp.payment_mode === 'UPI' 
+                              ? 'bg-blue-50 text-blue-700 border border-blue-200' 
+                              : 'bg-slate-100 text-slate-700 border border-slate-200'
+                        }`}>
+                          {exp.payment_mode || 'Cash'}
+                        </span>
+                      )}
                     </td>
                     <td className="px-6 py-4 text-right font-data-mono font-bold text-rose-600 text-base">
                       ₹{Number(exp.amount).toFixed(2)}
                     </td>
                     <td className="px-6 py-4 text-center">
                       <button
-                        onClick={() => setDeletingExpense(exp)}
+                        onClick={() => handlePromptDelete(exp)}
                         className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition mx-auto cursor-pointer"
                         title="Delete Expense"
                       >
@@ -751,11 +799,18 @@ export default function ExpensesPage() {
                   <label className="block text-xs font-semibold text-slate-700 mb-1">Payment Mode</label>
                   <select
                     value={paymentMode}
-                    onChange={(e) => setPaymentMode(e.target.value as ExpensePaymentMode)}
+                    onChange={(e) => {
+                      const mode = e.target.value as ExpensePaymentMode | 'Split';
+                      setPaymentMode(mode);
+                      if (mode === 'Split' && amount && !cashAmount && !upiAmount) {
+                        setCashAmount(Number(amount));
+                        setUpiAmount(0);
+                      }
+                    }}
                     className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-rose-500 cursor-pointer"
                   >
                     {PAYMENT_MODES.map(pm => (
-                      <option key={pm} value={pm}>{pm}</option>
+                      <option key={pm} value={pm}>{pm === 'Split' ? 'Split (Cash + UPI)' : pm}</option>
                     ))}
                   </select>
                 </div>
@@ -763,7 +818,7 @@ export default function ExpensesPage() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Amount (₹) *
+                  Total Amount (₹) *
                 </label>
                 <input
                   type="number"
@@ -772,10 +827,81 @@ export default function ExpensesPage() {
                   step="1"
                   placeholder="0.00"
                   value={amount}
-                  onChange={(e) => setAmount(e.target.value === '' ? '' : Number(e.target.value))}
+                  onChange={(e) => {
+                    const val = e.target.value === '' ? '' : Number(e.target.value);
+                    setAmount(val);
+                    if (paymentMode === 'Split' && typeof val === 'number') {
+                      if (typeof cashAmount === 'number' && cashAmount <= val) {
+                        setUpiAmount(val - cashAmount);
+                      } else {
+                        setCashAmount(val);
+                        setUpiAmount(0);
+                      }
+                    }
+                  }}
                   className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-base font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-rose-500"
                 />
               </div>
+
+              {/* SPLIT PAYMENT BREAKDOWN */}
+              {paymentMode === 'Split' && (
+                <div className="p-3 bg-amber-50/90 border border-amber-200 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-amber-900">Split Cash & UPI Breakdown</span>
+                    <span className="text-[11px] font-mono font-bold text-amber-700">
+                      Total: ₹{Number(amount || 0)}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">Cash Amount (₹)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        placeholder="0"
+                        value={cashAmount}
+                        onChange={(e) => {
+                          const c = e.target.value === '' ? '' : Number(e.target.value);
+                          setCashAmount(c);
+                          if (amount !== '' && typeof c === 'number' && c <= Number(amount)) {
+                            setUpiAmount(Number(amount) - c);
+                          }
+                        }}
+                        className="w-full bg-white border border-amber-300 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-0.5">UPI Amount (₹)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        placeholder="0"
+                        value={upiAmount}
+                        onChange={(e) => {
+                          const u = e.target.value === '' ? '' : Number(e.target.value);
+                          setUpiAmount(u);
+                          if (amount !== '' && typeof u === 'number' && u <= Number(amount)) {
+                            setCashAmount(Number(amount) - u);
+                          }
+                        }}
+                        className="w-full bg-white border border-amber-300 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                    </div>
+                  </div>
+                  {amount !== '' && (
+                    <div className="text-[11px] text-amber-800 flex justify-between font-mono pt-1 border-t border-amber-200">
+                      <span>Sum: ₹{Number(cashAmount || 0) + Number(upiAmount || 0)}</span>
+                      <span className={Math.abs(Number(cashAmount || 0) + Number(upiAmount || 0) - Number(amount)) < 0.01 ? 'text-emerald-700 font-bold' : 'text-rose-600 font-bold'}>
+                        {Math.abs(Number(cashAmount || 0) + Number(upiAmount || 0) - Number(amount)) < 0.01
+                          ? '✓ Balanced'
+                          : `Difference: ₹${(Number(amount) - (Number(cashAmount || 0) + Number(upiAmount || 0))).toFixed(0)}`}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
@@ -887,6 +1013,25 @@ export default function ExpensesPage() {
             <p className="text-sm text-slate-600">
               Are you sure you want to remove <span className="font-bold text-slate-900">&quot;{deletingExpense.title}&quot;</span> (₹{Number(deletingExpense.amount).toFixed(2)})?
             </p>
+
+            {isDeletingInClosedSession && (
+              <div className="p-3 bg-amber-50 border border-amber-300 rounded-lg text-left space-y-2">
+                <p className="text-xs font-bold text-amber-900 flex items-center gap-1.5">
+                  <ShieldCheck size={16} className="text-amber-700" />
+                  <span>Closed Session Locked: Super Admin PIN Required</span>
+                </p>
+                <p className="text-[11px] text-amber-800 leading-relaxed">
+                  This expense belongs to a closed accounting session. Enter your Super Admin Security PIN to confirm deletion.
+                </p>
+                <input
+                  type="password"
+                  placeholder="Enter Security PIN (e.g. 1234)"
+                  value={deleteAdminPin}
+                  onChange={(e) => setDeleteAdminPin(e.target.value)}
+                  className="w-full bg-white border border-amber-300 rounded-md px-3 py-1.5 text-xs font-mono tracking-widest focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+            )}
             <div className="flex justify-center space-x-3 pt-2">
               <button
                 onClick={() => setDeletingExpense(null)}

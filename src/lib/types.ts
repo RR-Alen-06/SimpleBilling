@@ -15,6 +15,7 @@ export type DateFilterOption =
   | 'yearly' 
   | 'financial_year' 
   | 'specific_date' 
+  | 'current_session'
   | 'custom';
 
 export interface SequenceConfig {
@@ -148,8 +149,10 @@ export interface Expense {
   expense_number?: string | null;
   title: string;
   amount: number;
+  cash_amount?: number;
+  upi_amount?: number;
   category: ExpenseCategory;
-  payment_mode?: ExpensePaymentMode | string;
+  payment_mode?: ExpensePaymentMode | 'Split' | string;
   notes?: string | null;
   created_at: string;
 }
@@ -418,4 +421,101 @@ export interface CustomerStatementData {
     advance_balance: number;
   };
 }
+
+export interface InternalTransfer {
+  id: string;
+  user_id?: string | null;
+  transfer_number?: string | null;
+  direction: 'CASH_TO_UPI' | 'UPI_TO_CASH';
+  amount: number;
+  reason: string;
+  reference_no?: string | null;
+  notes?: string | null;
+  created_at: string;
+}
+
+export interface AccountingClosing {
+  id: string;
+  user_id?: string | null;
+  closing_number?: string | null;
+  from_date: string;
+  to_date: string;
+  opening_cash: number;
+  opening_upi: number;
+  cash_inflow: number;
+  upi_inflow: number;
+  cash_outflow: number;
+  upi_outflow: number;
+  transfers_cash_to_upi: number;
+  transfers_upi_to_cash: number;
+  expected_cash: number;
+  expected_upi: number;
+  actual_cash: number;
+  actual_upi: number;
+  cash_difference: number;
+  upi_difference: number;
+  discrepancy_note?: string | null;
+  status: 'CLOSED';
+  is_locked: boolean;
+  closed_by: string;
+  closed_at: string;
+  last_audited_at?: string | null;
+  last_audited_by?: string | null;
+  audit_notes?: string | null;
+}
+
+export interface CurrentSessionStatus {
+  last_closed_session: AccountingClosing | null;
+  session_start_date: string;
+  opening_cash: number;
+  opening_upi: number;
+  current_sales: number;
+  current_cash_inflow: number;
+  current_upi_inflow: number;
+  current_cash_outflow: number;
+  current_upi_outflow: number;
+  current_transfers_cash_to_upi: number;
+  current_transfers_upi_to_cash: number;
+  expected_cash_in_hand: number;
+  expected_upi_in_hand: number;
+  bills_count: number;
+  expenses_count: number;
+  transfers_count: number;
+  pending_dues_total?: number;
+  unpaid_bills_count?: number;
+}
+
+export interface UnpaidSessionBill {
+  id: string;
+  bill_number: string;
+  customer_id?: string | null;
+  customer_name?: string;
+  customer_mobile?: string | null;
+  grand_total: number;
+  paid_total: number;
+  due_amount: number;
+  created_at: string;
+}
+
+export interface ReconciliationCalculation {
+  from_date: string;
+  to_date: string;
+  opening_cash: number;
+  opening_upi: number;
+  cash_inflow: number;
+  upi_inflow: number;
+  cash_outflow: number;
+  upi_outflow: number;
+  transfers_cash_to_upi: number;
+  transfers_upi_to_cash: number;
+  expected_cash: number;
+  expected_upi: number;
+  total_sales: number;
+  bills_count: number;
+  expenses_count: number;
+  transfers_count: number;
+  pending_session_dues: number;
+  unpaid_bills: UnpaidSessionBill[];
+}
+
 

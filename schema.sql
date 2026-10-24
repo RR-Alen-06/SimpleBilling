@@ -159,8 +159,9 @@ CREATE TABLE IF NOT EXISTS public.expenses (
     notes TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
 ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS payment_mode TEXT DEFAULT 'Cash';
+ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS cash_amount NUMERIC(10, 2) DEFAULT 0.00;
+ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS upi_amount NUMERIC(10, 2) DEFAULT 0.00;
 ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS notes TEXT;
 ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS expense_number TEXT;
 ALTER TABLE public.expenses DROP CONSTRAINT IF EXISTS expenses_category_check;
@@ -234,6 +235,55 @@ CREATE TABLE IF NOT EXISTS public.loyalty_redemption_rules (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE public.loyalty_redemption_rules ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+
+-- 12. INTERNAL TRANSFERS (CONTRA VOUCHERS: CASH <-> UPI CONVERSIONS)
+CREATE TABLE IF NOT EXISTS public.internal_transfers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
+    transfer_number TEXT,
+    direction TEXT NOT NULL CHECK (direction IN ('CASH_TO_UPI', 'UPI_TO_CASH')),
+    amount NUMERIC(10, 2) NOT NULL CHECK (amount > 0),
+    reason TEXT NOT NULL,
+    reference_no TEXT,
+    notes TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE public.internal_transfers ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.internal_transfers ADD COLUMN IF NOT EXISTS transfer_number TEXT;
+
+-- 13. ACCOUNTING CLOSINGS (PERIOD CLOSING & VERIFIED CROSS-CHECK SNAPSHOTS)
+CREATE TABLE IF NOT EXISTS public.accounting_closings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid(),
+    closing_number TEXT,
+    from_date TIMESTAMPTZ NOT NULL,
+    to_date TIMESTAMPTZ NOT NULL,
+    opening_cash NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    opening_upi NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    cash_inflow NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    upi_inflow NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    cash_outflow NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    upi_outflow NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    transfers_cash_to_upi NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    transfers_upi_to_cash NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    expected_cash NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    expected_upi NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    actual_cash NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    actual_upi NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    cash_difference NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    upi_difference NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    discrepancy_note TEXT,
+    status TEXT NOT NULL DEFAULT 'CLOSED',
+    is_locked BOOLEAN NOT NULL DEFAULT true,
+    closed_by TEXT NOT NULL DEFAULT 'Admin',
+    closed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_audited_at TIMESTAMPTZ,
+    last_audited_by TEXT,
+    audit_notes TEXT
+);
+ALTER TABLE public.accounting_closings ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE DEFAULT auth.uid();
+ALTER TABLE public.accounting_closings ADD COLUMN IF NOT EXISTS closing_number TEXT;
+
 
 -- =========================================================================
 -- ZERO-DATA-LOSS BACKFILL BLOCK
@@ -309,6 +359,8 @@ ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.loyalty_transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.loyalty_rules ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.loyalty_redemption_rules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.internal_transfers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.accounting_closings ENABLE ROW LEVEL SECURITY;
 
 -- Drop previous policies to ensure clean idempotency
 DROP POLICY IF EXISTS "Allow full access to sequences" ON public.sequences;
@@ -323,6 +375,8 @@ DROP POLICY IF EXISTS "Allow full access to audit_logs" ON public.audit_logs;
 DROP POLICY IF EXISTS "Allow full access to loyalty_transactions" ON public.loyalty_transactions;
 DROP POLICY IF EXISTS "Allow full access to loyalty_rules" ON public.loyalty_rules;
 DROP POLICY IF EXISTS "Allow full access to loyalty_redemption_rules" ON public.loyalty_redemption_rules;
+DROP POLICY IF EXISTS "Allow full access to internal_transfers" ON public.internal_transfers;
+DROP POLICY IF EXISTS "Allow full access to accounting_closings" ON public.accounting_closings;
 
 DROP POLICY IF EXISTS "Allow all access to sequences" ON public.sequences;
 DROP POLICY IF EXISTS "Allow all access to customers" ON public.customers;
@@ -336,6 +390,8 @@ DROP POLICY IF EXISTS "Allow all access to audit_logs" ON public.audit_logs;
 DROP POLICY IF EXISTS "Allow all access to loyalty_transactions" ON public.loyalty_transactions;
 DROP POLICY IF EXISTS "Allow all access to loyalty_rules" ON public.loyalty_rules;
 DROP POLICY IF EXISTS "Allow all access to loyalty_redemption_rules" ON public.loyalty_redemption_rules;
+DROP POLICY IF EXISTS "Allow all access to internal_transfers" ON public.internal_transfers;
+DROP POLICY IF EXISTS "Allow all access to accounting_closings" ON public.accounting_closings;
 
 DROP POLICY IF EXISTS "User data isolation on sequences" ON public.sequences;
 DROP POLICY IF EXISTS "User data isolation on customers" ON public.customers;
@@ -349,6 +405,8 @@ DROP POLICY IF EXISTS "User data isolation on audit_logs" ON public.audit_logs;
 DROP POLICY IF EXISTS "User data isolation on loyalty_transactions" ON public.loyalty_transactions;
 DROP POLICY IF EXISTS "User data isolation on loyalty_rules" ON public.loyalty_rules;
 DROP POLICY IF EXISTS "User data isolation on loyalty_redemption_rules" ON public.loyalty_redemption_rules;
+DROP POLICY IF EXISTS "User data isolation on internal_transfers" ON public.internal_transfers;
+DROP POLICY IF EXISTS "User data isolation on accounting_closings" ON public.accounting_closings;
 
 DROP POLICY IF EXISTS "Tenant isolation on sequences" ON public.sequences;
 DROP POLICY IF EXISTS "Tenant isolation on customers" ON public.customers;
@@ -361,6 +419,8 @@ DROP POLICY IF EXISTS "Tenant isolation on settings" ON public.settings;
 DROP POLICY IF EXISTS "Tenant isolation on loyalty_transactions" ON public.loyalty_transactions;
 DROP POLICY IF EXISTS "Tenant isolation on loyalty_rules" ON public.loyalty_rules;
 DROP POLICY IF EXISTS "Tenant isolation on loyalty_redemption_rules" ON public.loyalty_redemption_rules;
+DROP POLICY IF EXISTS "Tenant isolation on internal_transfers" ON public.internal_transfers;
+DROP POLICY IF EXISTS "Tenant isolation on accounting_closings" ON public.accounting_closings;
 DROP POLICY IF EXISTS "Tenant insert on audit_logs" ON public.audit_logs;
 DROP POLICY IF EXISTS "Tenant select on audit_logs" ON public.audit_logs;
 
@@ -376,6 +436,8 @@ CREATE POLICY "Tenant isolation on settings" ON public.settings FOR ALL TO authe
 CREATE POLICY "Tenant isolation on loyalty_transactions" ON public.loyalty_transactions FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "Tenant isolation on loyalty_rules" ON public.loyalty_rules FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "Tenant isolation on loyalty_redemption_rules" ON public.loyalty_redemption_rules FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Tenant isolation on internal_transfers" ON public.internal_transfers FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Tenant isolation on accounting_closings" ON public.accounting_closings FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 -- Immutable Audit Log Policies (Append-only & read-only for tenant, disallow update/delete)
 CREATE POLICY "Tenant insert on audit_logs" ON public.audit_logs FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
@@ -383,3 +445,4 @@ CREATE POLICY "Tenant select on audit_logs" ON public.audit_logs FOR SELECT TO a
 
 -- RELOAD SUPABASE POSTGREST SCHEMA CACHE INSTANTLY
 NOTIFY pgrst, 'reload schema';
+
