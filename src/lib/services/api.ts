@@ -261,11 +261,15 @@ export class ApiService {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
 
+    const pointsRequired = Number(rule.points_required);
+    const discountAmount = Number(rule.discount_amount);
+    const enabled = typeof rule.enabled === 'boolean' ? rule.enabled : true;
+
     // Prevent duplicate points_required rules
     let checkQuery = supabase
       .from('loyalty_redemption_rules')
       .select('id, points_required')
-      .eq('points_required', rule.points_required);
+      .eq('points_required', pointsRequired);
 
     if (userId) {
       checkQuery = checkQuery.eq('user_id', userId);
@@ -274,11 +278,14 @@ export class ApiService {
     const { data: existing } = await checkQuery.maybeSingle();
 
     if (existing) {
-      throw new Error(`A redemption rule for ${rule.points_required} Points already exists. Please edit the existing rule.`);
+      throw new Error(`A redemption rule for ${pointsRequired} Points already exists. Please edit the existing rule.`);
     }
 
+    // Explicit allowlist: only permit points_required, discount_amount, enabled; drop everything else
     const payload = {
-      ...rule,
+      points_required: pointsRequired,
+      discount_amount: discountAmount,
+      enabled,
       ...(userId ? { user_id: userId } : {})
     };
 
@@ -289,7 +296,7 @@ export class ApiService {
     await this.logAudit({
       user_name: userName,
       action: 'ADD_LOYALTY_REDEMPTION_RULE',
-      entity: `Redemption Rule (${rule.points_required} pts = ₹${rule.discount_amount})`,
+      entity: `Redemption Rule (${pointsRequired} pts = ₹${discountAmount})`,
       new_value: JSON.stringify(data)
     });
 
@@ -297,19 +304,32 @@ export class ApiService {
   }
 
 
-  static async updateLoyaltyRedemptionRule(id: string, rule: Partial<Omit<LoyaltyRedemptionRule, 'id' | 'created_at'>>, userName = 'Super Admin'): Promise<LoyaltyRedemptionRule> {
+  static async updateLoyaltyRedemptionRule(id: string, rule: Partial<Omit<LoyaltyRedemptionRule, 'id' | 'created_at'>>, userName = 'Super Admin'): Promise<LoyaltyRedemptionRule | null> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
+    if (!userId) return null;
 
-    let query = supabase.from('loyalty_redemption_rules').update(rule).eq('id', id);
-    if (userId) {
-      query = query.eq('user_id', userId);
+    // Explicit allowlist: only permit points_required, discount_amount, enabled; drop all else (role, permissions, id, user_id, status)
+    const allowedUpdates: Record<string, unknown> = {};
+    if (rule.points_required !== undefined) allowedUpdates.points_required = Number(rule.points_required);
+    if (rule.discount_amount !== undefined) allowedUpdates.discount_amount = Number(rule.discount_amount);
+    if (rule.enabled !== undefined) allowedUpdates.enabled = Boolean(rule.enabled);
+
+    if (Object.keys(allowedUpdates).length === 0) {
+      return this.getLoyaltyRedemptionRules().then(rules => rules.find(r => r.id === id) || null);
     }
 
-    const { data, error } = await query.select().maybeSingle();
+    const { data, error } = await supabase
+      .from('loyalty_redemption_rules')
+      .update(allowedUpdates)
+      .eq('id', id)
+      .eq('user_id', userId)
+      .select()
+      .maybeSingle();
+
     if (error) throw new Error(error.message);
     if (!data) {
-      throw new Error('Loyalty redemption rule not found');
+      return null;
     }
 
     await this.logAudit({
@@ -323,25 +343,29 @@ export class ApiService {
   }
 
 
-  static async deleteLoyaltyRedemptionRule(id: string, userName = 'Super Admin'): Promise<void> {
+  static async deleteLoyaltyRedemptionRule(id: string, userName = 'Super Admin'): Promise<boolean> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
+    if (!userId) return false;
 
     // Verify existence & ownership
-    let checkQuery = supabase.from('loyalty_redemption_rules').select('id').eq('id', id);
-    if (userId) {
-      checkQuery = checkQuery.eq('user_id', userId);
-    }
-    const { data: existing } = await checkQuery.maybeSingle();
+    const { data: existing } = await supabase
+      .from('loyalty_redemption_rules')
+      .select('id')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .maybeSingle();
+
     if (!existing) {
-      throw new Error('Loyalty redemption rule not found');
+      return false;
     }
 
-    let delQuery = supabase.from('loyalty_redemption_rules').delete().eq('id', id);
-    if (userId) {
-      delQuery = delQuery.eq('user_id', userId);
-    }
-    const { error } = await delQuery;
+    const { error } = await supabase
+      .from('loyalty_redemption_rules')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', userId);
+
     if (error) throw new Error(error.message);
 
     await this.logAudit({
@@ -349,6 +373,8 @@ export class ApiService {
       action: 'DELETE_LOYALTY_REDEMPTION_RULE',
       entity: `Redemption Rule ID ${id}`
     });
+
+    return true;
   }
 
   static calculateLoyaltyDiscount(pointsToRedeem: number, loyaltySettings: LoyaltySettings, activeRedemptionRules: LoyaltyRedemptionRule[] = []): number {
@@ -455,10 +481,13 @@ export class ApiService {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
 
+    const ruleName = String(rule.rule_name || '').trim();
+    if (!ruleName) throw new Error('Rule name is required');
+
     let checkQuery = supabase
       .from('loyalty_rules')
       .select('id, rule_name')
-      .ilike('rule_name', rule.rule_name.trim());
+      .ilike('rule_name', ruleName);
 
     if (userId) {
       checkQuery = checkQuery.eq('user_id', userId);
@@ -467,11 +496,17 @@ export class ApiService {
     const { data: existing } = await checkQuery.maybeSingle();
 
     if (existing) {
-      throw new Error(`A loyalty rule with the name "${rule.rule_name}" already exists.`);
+      throw new Error(`A loyalty rule with the name "${ruleName}" already exists.`);
     }
 
+    // Explicit allowlist: only permit rule_name, min_bill_amount, max_bill_amount, points_earned, enabled, sort_order; drop all else
     const payload = {
-      ...rule,
+      rule_name: ruleName,
+      min_bill_amount: Number(rule.min_bill_amount || 0),
+      max_bill_amount: rule.max_bill_amount !== undefined && rule.max_bill_amount !== null ? Number(rule.max_bill_amount) : null,
+      points_earned: Number(rule.points_earned || 0),
+      enabled: typeof rule.enabled === 'boolean' ? rule.enabled : true,
+      sort_order: Number(rule.sort_order || 0),
       ...(userId ? { user_id: userId } : {})
     };
 
@@ -482,7 +517,7 @@ export class ApiService {
     await this.logAudit({
       user_name: userName,
       action: 'ADD_LOYALTY_RULE',
-      entity: `Loyalty Rule (${rule.rule_name})`,
+      entity: `Loyalty Rule (${ruleName})`,
       new_value: JSON.stringify(data)
     });
 
@@ -490,19 +525,35 @@ export class ApiService {
   }
 
 
-  static async updateLoyaltyRule(id: string, rule: Partial<Omit<LoyaltyRule, 'id' | 'created_at'>>, userName = 'Super Admin'): Promise<LoyaltyRule> {
+  static async updateLoyaltyRule(id: string, rule: Partial<Omit<LoyaltyRule, 'id' | 'created_at'>>, userName = 'Super Admin'): Promise<LoyaltyRule | null> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
+    if (!userId) return null;
 
-    let query = supabase.from('loyalty_rules').update(rule).eq('id', id);
-    if (userId) {
-      query = query.eq('user_id', userId);
+    // Explicit allowlist: only permit rule_name, min_bill_amount, max_bill_amount, points_earned, enabled, sort_order; drop all else (role, permissions, id, user_id, status)
+    const allowedUpdates: Record<string, unknown> = {};
+    if (rule.rule_name !== undefined) allowedUpdates.rule_name = String(rule.rule_name).trim();
+    if (rule.min_bill_amount !== undefined) allowedUpdates.min_bill_amount = Number(rule.min_bill_amount);
+    if (rule.max_bill_amount !== undefined) allowedUpdates.max_bill_amount = rule.max_bill_amount !== null ? Number(rule.max_bill_amount) : null;
+    if (rule.points_earned !== undefined) allowedUpdates.points_earned = Number(rule.points_earned);
+    if (rule.enabled !== undefined) allowedUpdates.enabled = Boolean(rule.enabled);
+    if (rule.sort_order !== undefined) allowedUpdates.sort_order = Number(rule.sort_order);
+
+    if (Object.keys(allowedUpdates).length === 0) {
+      return this.getLoyaltyRules().then(rules => rules.find(r => r.id === id) || null);
     }
 
-    const { data, error } = await query.select().maybeSingle();
+    const { data, error } = await supabase
+      .from('loyalty_rules')
+      .update(allowedUpdates)
+      .eq('id', id)
+      .eq('user_id', userId)
+      .select()
+      .maybeSingle();
+
     if (error) throw new Error(error.message);
     if (!data) {
-      throw new Error('Loyalty rule not found');
+      return null;
     }
 
     await this.logAudit({
@@ -516,25 +567,29 @@ export class ApiService {
   }
 
 
-  static async deleteLoyaltyRule(id: string, userName = 'Super Admin'): Promise<void> {
+  static async deleteLoyaltyRule(id: string, userName = 'Super Admin'): Promise<boolean> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
+    if (!userId) return false;
 
     // Verify existence & ownership
-    let checkQuery = supabase.from('loyalty_rules').select('id').eq('id', id);
-    if (userId) {
-      checkQuery = checkQuery.eq('user_id', userId);
-    }
-    const { data: existing } = await checkQuery.maybeSingle();
+    const { data: existing } = await supabase
+      .from('loyalty_rules')
+      .select('id')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .maybeSingle();
+
     if (!existing) {
-      throw new Error('Loyalty rule not found');
+      return false;
     }
 
-    let delQuery = supabase.from('loyalty_rules').delete().eq('id', id);
-    if (userId) {
-      delQuery = delQuery.eq('user_id', userId);
-    }
-    const { error } = await delQuery;
+    const { error } = await supabase
+      .from('loyalty_rules')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', userId);
+
     if (error) throw new Error(error.message);
 
     await this.logAudit({
@@ -542,6 +597,8 @@ export class ApiService {
       action: 'DELETE_LOYALTY_RULE',
       entity: `Rule ID ${id}`
     });
+
+    return true;
   }
 
   static async calculateLoyaltyPointsEarned(billAmount: number): Promise<number> {
@@ -651,10 +708,30 @@ export class ApiService {
     if (!isSupabaseConfigured) return;
     const userId = await this.getUserId();
     
+    // Explicit allowlist of settings categories
+    const allowedKeys: (keyof AllSettings)[] = ['shop', 'billing', 'loyalty', 'whatsapp', 'security', 'app', 'expenses'];
+    if (!allowedKeys.includes(key)) {
+      throw new Error(`Unauthorized settings category: ${String(key)}`);
+    }
+
+    // Sanitize settings payload: drop any injected role, permissions, id, user_id, status, credits, price
+    let sanitizedValue = value;
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      const copy = { ...(value as Record<string, unknown>) };
+      delete copy.role;
+      delete copy.permissions;
+      delete copy.id;
+      delete copy.user_id;
+      delete copy.status;
+      delete copy.credits;
+      delete copy.price;
+      sanitizedValue = copy;
+    }
+
     const prev = await this.getSettings();
     const { error } = await supabase.from('settings').upsert({
       key,
-      value,
+      value: sanitizedValue,
       ...(userId ? { user_id: userId } : {}),
       updated_at: new Date().toISOString()
     });
@@ -725,16 +802,15 @@ export class ApiService {
     if (!isSupabaseConfigured) return null;
     try {
       const userId = await this.getUserId();
-      let query = supabase
+      if (!userId) return null;
+
+      const { data, error } = await supabase
         .from('products')
         .select('*')
-        .eq('id', id);
+        .eq('id', id)
+        .eq('user_id', userId)
+        .maybeSingle();
 
-      if (userId) {
-        query = query.eq('user_id', userId);
-      }
-
-      const { data, error } = await query.maybeSingle();
       if (error || !data) return null;
       return data;
     } catch {
@@ -748,8 +824,14 @@ export class ApiService {
     const userId = await this.getUserId();
     const product_code = await this.getNextSequence('PRODUCT');
 
+    const name = String(product.name || '').trim();
+    if (!name) throw new Error('Product name is required');
+
+    // Explicit allowlist: only allow name, category, price; drop all else (role, permissions, id, user_id, status, credits)
     const payload = {
-      ...product,
+      name,
+      category: String(product.category || 'General').trim(),
+      price: Math.max(0, Number(product.price || 0)),
       product_code,
       ...(userId ? { user_id: userId } : {})
     };
@@ -774,26 +856,32 @@ export class ApiService {
   }
 
 
-  static async updateProduct(id: string, product: Partial<Omit<Product, 'id' | 'created_at'>>, userName = 'Admin'): Promise<Product> {
+  static async updateProduct(id: string, product: Partial<Omit<Product, 'id' | 'created_at'>>, userName = 'Admin'): Promise<Product | null> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
+    if (!userId) return null;
 
-    let query = supabase
-      .from('products')
-      .update(product)
-      .eq('id', id);
+    // Explicit allowlist: only allow name, category, price; drop all else (role, permissions, id, user_id, status, credits, product_code, created_at)
+    const allowedUpdates: Record<string, unknown> = {};
+    if (product.name !== undefined) allowedUpdates.name = String(product.name).trim();
+    if (product.category !== undefined) allowedUpdates.category = String(product.category).trim();
+    if (product.price !== undefined) allowedUpdates.price = Math.max(0, Number(product.price));
 
-    if (userId) {
-      query = query.eq('user_id', userId);
+    if (Object.keys(allowedUpdates).length === 0) {
+      return this.getProductById(id);
     }
 
-    const { data, error } = await query
+    const { data, error } = await supabase
+      .from('products')
+      .update(allowedUpdates)
+      .eq('id', id)
+      .eq('user_id', userId)
       .select()
       .maybeSingle();
 
     if (error) throw new Error(error.message);
     if (!data) {
-      throw new Error('Product not found');
+      return null;
     }
 
     await this.logAudit({
@@ -807,22 +895,23 @@ export class ApiService {
   }
 
 
-  static async deleteProduct(id: string, userName = 'Admin'): Promise<void> {
+  static async deleteProduct(id: string, userName = 'Admin'): Promise<boolean> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
+    if (!userId) return false;
 
     // Verify existence & ownership
     const existing = await this.getProductById(id);
     if (!existing) {
-      throw new Error('Product not found');
+      return false;
     }
 
-    let delQuery = supabase.from('products').delete().eq('id', id);
-    if (userId) {
-      delQuery = delQuery.eq('user_id', userId);
-    }
+    const { error } = await supabase
+      .from('products')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', userId);
 
-    const { error } = await delQuery;
     if (error) throw new Error(error.message);
 
     await this.logAudit({
@@ -830,6 +919,8 @@ export class ApiService {
       action: 'DELETE_PRODUCT',
       entity: `Product ID ${id}`
     });
+
+    return true;
   }
 
 
@@ -885,30 +976,26 @@ export class ApiService {
   }
 
 
-  static async updateCustomer(id: string, customer: { name: string; mobile?: string; email?: string }, userName = 'Admin'): Promise<Customer> {
+  static async updateCustomer(id: string, customer: { name: string; mobile?: string; email?: string }, userName = 'Admin'): Promise<Customer | null> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
+    if (!userId) return null;
 
-    let query = supabase
+    const { data, error } = await supabase
       .from('customers')
       .update({
         name: customer.name,
         mobile: customer.mobile || null,
         email: customer.email || null
       })
-      .eq('id', id);
-
-    if (userId) {
-      query = query.eq('user_id', userId);
-    }
-
-    const { data, error } = await query
+      .eq('id', id)
+      .eq('user_id', userId)
       .select()
       .maybeSingle();
 
     if (error) throw new Error(error.message);
     if (!data) {
-      throw new Error('Customer not found');
+      return null;
     }
 
     await this.logAudit({
@@ -985,21 +1072,80 @@ export class ApiService {
       price: number;
       total: number;
     }[];
-  }, userName = 'Admin'): Promise<Bill> {
+  }, userName = 'Admin'): Promise<Bill | null> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
+    if (!userId) return null;
+
+    // 1. Verify customer if provided and cap credits/points to real DB balances
+    let verifiedCustomer: Customer | null = null;
+    if (billData.customer_id) {
+      const { data: custData, error: custErr } = await supabase
+        .from('customers')
+        .select('*')
+        .eq('id', billData.customer_id)
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (custErr || !custData) {
+        return null;
+      }
+      verifiedCustomer = custData;
+    }
 
     const [settings, activeRedemptionRules] = await Promise.all([
       this.getSettings(),
       this.getLoyaltyRedemptionRules()
     ]);
 
-    // 1. Calculate Loyalty Redemption Discount from active rules
-    const redemptionDiscount = this.calculateLoyaltyDiscount(billData.points_to_redeem, settings.loyalty, activeRedemptionRules);
-    const totalDiscountApplied = billData.discount + redemptionDiscount;
+    // 2. Validate line items & lock catalog prices to prevent price tampering
+    const productIds = billData.items.filter(i => i.product_id).map(i => i.product_id as string);
+    const catalogProductsMap = new Map<string, Product>();
+    if (productIds.length > 0) {
+      const { data: dbProds } = await supabase
+        .from('products')
+        .select('*')
+        .in('id', productIds)
+        .eq('user_id', userId);
 
-    // 2. Calculate Subtotal after discount and optional GST
-    const subtotalAfterDiscount = Math.max(0, billData.total - totalDiscountApplied);
+      if (dbProds) {
+        dbProds.forEach(p => catalogProductsMap.set(p.id, p));
+      }
+    }
+
+    // Explicit allowlist for line items: product_id, product_name, quantity, price, total
+    const sanitizedItems = billData.items.map(item => {
+      const dbProd = item.product_id ? catalogProductsMap.get(item.product_id) : null;
+      // Enforce canonical catalog price if product exists; prevent user from overriding price
+      const unitPrice = dbProd ? Number(dbProd.price) : Math.max(0, Number(item.price || 0));
+      const qty = Math.max(1, Number(item.quantity || 1));
+      const lineTotal = Number((qty * unitPrice).toFixed(2));
+      return {
+        product_id: dbProd ? dbProd.id : null,
+        product_name: dbProd ? dbProd.name : String(item.product_name || 'Item').trim(),
+        quantity: qty,
+        price: unitPrice,
+        total: lineTotal
+      };
+    });
+
+    // Subtotal computed strictly from verified line items
+    const verifiedSubtotal = Number(sanitizedItems.reduce((acc, it) => acc + it.total, 0).toFixed(2));
+
+    // Cap loyalty points and advance balance to what the customer actually owns (prevents credit forgery)
+    const maxRedeemablePoints = verifiedCustomer ? Number(verifiedCustomer.loyalty_points || 0) : 0;
+    const pointsToRedeem = Math.max(0, Math.min(Number(billData.points_to_redeem || 0), maxRedeemablePoints));
+
+    const maxAdvanceAllowed = verifiedCustomer ? Number(verifiedCustomer.advance_balance || 0) : 0;
+    const advanceUsed = Math.max(0, Math.min(Number(billData.advance_used || 0), maxAdvanceAllowed));
+
+    // Calculate Loyalty Redemption Discount from active rules
+    const redemptionDiscount = this.calculateLoyaltyDiscount(pointsToRedeem, settings.loyalty, activeRedemptionRules);
+    const userDiscount = Math.max(0, Number(billData.discount || 0));
+    const totalDiscountApplied = userDiscount + redemptionDiscount;
+
+    // Calculate Subtotal after discount and optional GST
+    const subtotalAfterDiscount = Math.max(0, verifiedSubtotal - totalDiscountApplied);
     let gstAmount = 0;
     if (settings.billing.gst_enabled && Number(settings.billing.gst_rate) > 0) {
       gstAmount = Number(((subtotalAfterDiscount * Number(settings.billing.gst_rate)) / 100).toFixed(2));
@@ -1009,9 +1155,8 @@ export class ApiService {
     const { roundedTotal, roundingAdjustment } = this.calculateRounding(totalBeforeRounding, billData.rounding_method);
     const grandTotal = roundedTotal;
 
-    const directCashPaid = Number(billData.cash_paid || 0);
-    const directUpiPaid = Number(billData.upi_paid || 0);
-    const advanceUsed = Number(billData.advance_used || 0);
+    const directCashPaid = Math.max(0, Number(billData.cash_paid || 0));
+    const directUpiPaid = Math.max(0, Number(billData.upi_paid || 0));
     const totalDirectPaid = directCashPaid + directUpiPaid;
     const totalTendered = totalDirectPaid + advanceUsed;
 
@@ -1029,18 +1174,6 @@ export class ApiService {
       primaryPaymentMethod = (billData.payment_method as PaymentMethod) || 'Pay Later';
     } else if (billData.payment_method) {
       primaryPaymentMethod = billData.payment_method as PaymentMethod;
-    }
-
-    // Verify customer if provided
-    let verifiedCustomer: Customer | null = null;
-    if (billData.customer_id) {
-      let custQuery = supabase.from('customers').select('*').eq('id', billData.customer_id);
-      if (userId) custQuery = custQuery.eq('user_id', userId);
-      const { data: custData, error: custErr } = await custQuery.maybeSingle();
-      if (custErr || !custData) {
-        throw new Error('Customer not found');
-      }
-      verifiedCustomer = custData;
     }
 
     // Auto-allocate payment if paid exceeds grand total or against older bills
@@ -1121,10 +1254,11 @@ export class ApiService {
 
     const bill_number = await this.getNextSequence('BILL');
 
+    // Explicit allowlist: bill payload constructed only with permitted fields; drops user_id override, IDs, status, roles
     const billPayload = {
       bill_number,
       customer_id: billData.customer_id || null,
-      total: billData.total,
+      total: verifiedSubtotal,
       discount: totalDiscountApplied,
       gst_amount: gstAmount,
       rounding_method: billData.rounding_method,
@@ -1137,7 +1271,7 @@ export class ApiService {
       advance_earned: advanceEarned,
       payment_method: primaryPaymentMethod,
       loyalty_points_earned: 0,
-      loyalty_points_redeemed: billData.points_to_redeem || 0,
+      loyalty_points_redeemed: pointsToRedeem,
       ...(userId ? { user_id: userId } : {})
     };
 
@@ -1150,7 +1284,7 @@ export class ApiService {
     if (billErr) throw new Error(billErr.message);
     if (!bill) throw new Error('Failed to create bill');
 
-    const itemsToInsert = billData.items.map(item => ({
+    const itemsToInsert = sanitizedItems.map(item => ({
       bill_id: bill.id,
       product_id: item.product_id || null,
       product_name: item.product_name,
@@ -1297,12 +1431,13 @@ export class ApiService {
   }
 
 
-  static async editBillDiscount(billId: string, newDiscount: number, reason: string, userName = 'Super Admin'): Promise<Bill> {
+  static async editBillDiscount(billId: string, newDiscount: number, reason: string, userName = 'Super Admin'): Promise<Bill | null> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
+    if (!userId) return null;
 
     const bill = await this.getBillById(billId);
-    if (!bill) throw new Error('Bill not found');
+    if (!bill) return null;
 
     const settings = await this.getSettings();
     const subtotalAfterDiscount = Math.max(0, Number(bill.total || 0) - newDiscount);
@@ -1323,7 +1458,7 @@ export class ApiService {
       (bill.rounding_method as RoundingMethod) || 'None'
     );
 
-    let updateQuery = supabase
+    const { data: updatedBill, error } = await supabase
       .from('bills')
       .update({
         discount: newDiscount,
@@ -1334,18 +1469,13 @@ export class ApiService {
         edited_by: userName,
         edit_reason: reason
       })
-      .eq('id', billId);
-
-    if (userId) {
-      updateQuery = updateQuery.eq('user_id', userId);
-    }
-
-    const { data: updatedBill, error } = await updateQuery
+      .eq('id', billId)
+      .eq('user_id', userId)
       .select('*, customers(name, mobile, email)')
       .maybeSingle();
 
     if (error) throw new Error(error.message);
-    if (!updatedBill) throw new Error('Bill not found');
+    if (!updatedBill) return null;
 
     await this.logAudit({
       user_name: userName,
@@ -1421,29 +1551,23 @@ export class ApiService {
   static async getBillById(id: string): Promise<Bill | null> {
     if (!isSupabaseConfigured) return null;
     const userId = await this.getUserId();
+    if (!userId) return null;
 
-    let billQuery = supabase
+    const { data: bill, error: billErr } = await supabase
       .from('bills')
       .select('*, customers(name, mobile, email)')
-      .eq('id', id);
+      .eq('id', id)
+      .eq('user_id', userId)
+      .maybeSingle();
 
-    if (userId) {
-      billQuery = billQuery.eq('user_id', userId);
-    }
-
-    const { data: bill, error: billErr } = await billQuery.maybeSingle();
     if (billErr || !bill) return null;
 
-    let itemsQuery = supabase
+    const { data: items, error: itemsErr } = await supabase
       .from('bill_items')
       .select('*')
-      .eq('bill_id', id);
+      .eq('bill_id', id)
+      .eq('user_id', userId);
 
-    if (userId) {
-      itemsQuery = itemsQuery.eq('user_id', userId);
-    }
-
-    const { data: items, error: itemsErr } = await itemsQuery;
     if (itemsErr) return null;
 
     return this.formatBillRow({
@@ -1466,38 +1590,38 @@ export class ApiService {
       return { customer: null, entries: [], totalBilled: 0, totalPaid: 0, runningBalance: 0, pendingPoints: 0 };
     }
     const userId = await this.getUserId();
-
-    let custQuery = supabase
-      .from('customers')
-      .select('*')
-      .eq('id', customerId);
-
-    if (userId) {
-      custQuery = custQuery.eq('user_id', userId);
+    if (!userId) {
+      return { customer: null, entries: [], totalBilled: 0, totalPaid: 0, runningBalance: 0, pendingPoints: 0 };
     }
 
-    const { data: customer, error: custErr } = await custQuery.maybeSingle();
+    const { data: customer, error: custErr } = await supabase
+      .from('customers')
+      .select('*')
+      .eq('id', customerId)
+      .eq('user_id', userId)
+      .maybeSingle();
+
     if (custErr || !customer) {
       return { customer: null, entries: [], totalBilled: 0, totalPaid: 0, runningBalance: 0, pendingPoints: 0 };
     }
 
-    let billsQuery = supabase
-      .from('bills')
-      .select('*, bill_items(*)')
-      .eq('customer_id', customerId);
+    const [billsRes, paymentsRes] = await Promise.all([
+      supabase
+        .from('bills')
+        .select('*, bill_items(*)')
+        .eq('customer_id', customerId)
+        .eq('user_id', userId)
+        .order('created_at', { ascending: true }),
+      supabase
+        .from('payments')
+        .select('*')
+        .eq('customer_id', customerId)
+        .eq('user_id', userId)
+        .order('created_at', { ascending: true })
+    ]);
 
-    let paymentsQuery = supabase
-      .from('payments')
-      .select('*')
-      .eq('customer_id', customerId);
-
-    if (userId) {
-      billsQuery = billsQuery.eq('user_id', userId);
-      paymentsQuery = paymentsQuery.eq('user_id', userId);
-    }
-
-    const { data: bills } = await billsQuery.order('created_at', { ascending: true });
-    const { data: payments } = await paymentsQuery.order('created_at', { ascending: true });
+    const bills = billsRes.data || [];
+    const payments = paymentsRes.data || [];
 
     let pendingPoints = 0;
     for (const b of (bills || [])) {
@@ -1616,40 +1740,39 @@ export class ApiService {
   static async processBillFullPaymentLoyalty(billId: string): Promise<number> {
     if (!isSupabaseConfigured || !billId) return 0;
     const userId = await this.getUserId();
+    if (!userId) return 0;
 
-    let billQuery = supabase.from('bills').select('*').eq('id', billId);
-    if (userId) {
-      billQuery = billQuery.eq('user_id', userId);
-    }
-    const { data: bill, error } = await billQuery.maybeSingle();
+    const { data: bill, error } = await supabase
+      .from('bills')
+      .select('*')
+      .eq('id', billId)
+      .eq('user_id', userId)
+      .maybeSingle();
+
     if (error || !bill || !bill.customer_id) return 0;
 
     const settings = await this.getSettings();
     if (!settings.loyalty.enabled) return 0;
 
     // Prevent duplicate loyalty awards for the same bill
-    let existingEarnQuery = supabase
+    const { data: existingEarnTx } = await supabase
       .from('loyalty_transactions')
       .select('id')
       .eq('bill_id', billId)
-      .eq('type', 'EARN');
-
-    if (userId) {
-      existingEarnQuery = existingEarnQuery.eq('user_id', userId);
-    }
-
-    const { data: existingEarnTx } = await existingEarnQuery;
+      .eq('type', 'EARN')
+      .eq('user_id', userId);
 
     if (existingEarnTx && existingEarnTx.length > 0) {
       return 0; // Already awarded!
     }
 
     // Determine total payments for this specific bill
-    let paymentsQuery = supabase.from('payments').select('amount, status').eq('bill_id', billId);
-    if (userId) {
-      paymentsQuery = paymentsQuery.eq('user_id', userId);
-    }
-    const { data: billPayments } = await paymentsQuery;
+    const { data: billPayments } = await supabase
+      .from('payments')
+      .select('amount, status')
+      .eq('bill_id', billId)
+      .eq('user_id', userId);
+
     const directPaymentsSum = (billPayments || [])
       .filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED')
       .reduce((sum, p) => sum + Number(p.amount || 0), 0);
@@ -1675,36 +1798,27 @@ export class ApiService {
       type: 'EARN',
       created_at: bill.created_at || new Date().toISOString(),
       notes: `Award Reason: Bill Fully Paid - ${bill.bill_number}`,
-      ...(userId ? { user_id: userId } : {})
+      user_id: userId
     }]);
 
     // Update bill record
-    let updateBillQuery = supabase.from('bills').update({
+    await supabase.from('bills').update({
       loyalty_points_earned: pointsEarned
-    }).eq('id', billId);
-
-    if (userId) {
-      updateBillQuery = updateBillQuery.eq('user_id', userId);
-    }
-    await updateBillQuery;
+    }).eq('id', billId).eq('user_id', userId);
 
     // Update customer loyalty points balance
-    let custQuery = supabase.from('customers').select('loyalty_points').eq('id', bill.customer_id);
-    if (userId) {
-      custQuery = custQuery.eq('user_id', userId);
-    }
-    const { data: cust } = await custQuery.maybeSingle();
+    const { data: cust } = await supabase
+      .from('customers')
+      .select('loyalty_points')
+      .eq('id', bill.customer_id)
+      .eq('user_id', userId)
+      .maybeSingle();
 
     if (cust) {
       const currentPoints = Number(cust.loyalty_points || 0);
-      let updateCustQuery = supabase.from('customers').update({
+      await supabase.from('customers').update({
         loyalty_points: currentPoints + pointsEarned
-      }).eq('id', bill.customer_id);
-
-      if (userId) {
-        updateCustQuery = updateCustQuery.eq('user_id', userId);
-      }
-      await updateCustQuery;
+      }).eq('id', bill.customer_id).eq('user_id', userId);
     }
 
     return pointsEarned;
@@ -1714,25 +1828,23 @@ export class ApiService {
   static async reverseLoyaltyPointsForBill(billId: string, userName = 'Admin'): Promise<number> {
     if (!isSupabaseConfigured || !billId) return 0;
     const userId = await this.getUserId();
+    if (!userId) return 0;
 
-    let billQuery = supabase.from('bills').select('*').eq('id', billId);
-    if (userId) {
-      billQuery = billQuery.eq('user_id', userId);
-    }
-    const { data: bill } = await billQuery.maybeSingle();
+    const { data: bill } = await supabase
+      .from('bills')
+      .select('*')
+      .eq('id', billId)
+      .eq('user_id', userId)
+      .maybeSingle();
+
     if (!bill || !bill.customer_id) return 0;
 
-    let earnTxQuery = supabase
+    const { data: earnTxs } = await supabase
       .from('loyalty_transactions')
       .select('*')
       .eq('bill_id', billId)
-      .eq('type', 'EARN');
-
-    if (userId) {
-      earnTxQuery = earnTxQuery.eq('user_id', userId);
-    }
-
-    const { data: earnTxs } = await earnTxQuery;
+      .eq('type', 'EARN')
+      .eq('user_id', userId);
 
     if (!earnTxs || earnTxs.length === 0) return 0;
 
@@ -1750,25 +1862,21 @@ export class ApiService {
         points: -totalPointsToReverse,
         type: 'ADJUST',
         notes: `Loyalty Reversal: Bill Cancelled/Refunded (${bill.bill_number})`,
-        ...(userId ? { user_id: userId } : {})
+        user_id: userId
       }]);
 
-      let custQuery = supabase.from('customers').select('loyalty_points').eq('id', bill.customer_id);
-      if (userId) {
-        custQuery = custQuery.eq('user_id', userId);
-      }
-      const { data: cust } = await custQuery.maybeSingle();
+      const { data: cust } = await supabase
+        .from('customers')
+        .select('loyalty_points')
+        .eq('id', bill.customer_id)
+        .eq('user_id', userId)
+        .maybeSingle();
 
       if (cust) {
         const currentPoints = Number(cust.loyalty_points || 0);
-        let updateCustQuery = supabase.from('customers').update({
+        await supabase.from('customers').update({
           loyalty_points: Math.max(0, currentPoints - totalPointsToReverse)
-        }).eq('id', bill.customer_id);
-
-        if (userId) {
-          updateCustQuery = updateCustQuery.eq('user_id', userId);
-        }
-        await updateCustQuery;
+        }).eq('id', bill.customer_id).eq('user_id', userId);
       }
 
       await this.logAudit({
@@ -2088,29 +2196,34 @@ export class ApiService {
     payment_method: string;
     bill_id?: string;
     notes?: string;
-  }, userName = 'Admin'): Promise<Payment> {
+  }, userName = 'Admin'): Promise<Payment | null> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
+    if (!userId) return null;
 
     // Verify customer exists and belongs to tenant
-    let custCheck = supabase.from('customers').select('*').eq('id', payment.customer_id);
-    if (userId) {
-      custCheck = custCheck.eq('user_id', userId);
-    }
-    const { data: custRecord, error: custErr } = await custCheck.maybeSingle();
+    const { data: custRecord, error: custErr } = await supabase
+      .from('customers')
+      .select('*')
+      .eq('id', payment.customer_id)
+      .eq('user_id', userId)
+      .maybeSingle();
+
     if (custErr || !custRecord) {
-      throw new Error('Customer not found');
+      return null;
     }
 
     // Verify bill if specified
     if (payment.bill_id) {
-      let billCheck = supabase.from('bills').select('*').eq('id', payment.bill_id);
-      if (userId) {
-        billCheck = billCheck.eq('user_id', userId);
-      }
-      const { data: billRecord, error: billErr } = await billCheck.maybeSingle();
+      const { data: billRecord, error: billErr } = await supabase
+        .from('bills')
+        .select('*')
+        .eq('id', payment.bill_id)
+        .eq('user_id', userId)
+        .maybeSingle();
+
       if (billErr || !billRecord) {
-        throw new Error('Bill not found');
+        return null;
       }
     }
 
@@ -2124,7 +2237,7 @@ export class ApiService {
       payment_method: payment.payment_method || 'Cash',
       status: 'COMPLETED',
       notes: payment.notes || null,
-      ...(userId ? { user_id: userId } : {})
+      user_id: userId
     };
 
     const { data, error } = await supabase
@@ -2140,9 +2253,12 @@ export class ApiService {
 
     // 1. Direct Bill Allocation
     if (payment.bill_id) {
-      let billQuery = supabase.from('bills').select('*').eq('id', payment.bill_id);
-      if (userId) billQuery = billQuery.eq('user_id', userId);
-      const { data: bill } = await billQuery.maybeSingle();
+      const { data: bill } = await supabase
+        .from('bills')
+        .select('*')
+        .eq('id', payment.bill_id)
+        .eq('user_id', userId)
+        .maybeSingle();
 
       if (bill) {
         const grandTotal = Number(bill.grand_total || 0);
@@ -2186,29 +2302,29 @@ export class ApiService {
               points: pointsEarned,
               type: 'EARN',
               notes: `Award Reason: Bill Fully Paid - ${bill.bill_number}`,
-              ...(userId ? { user_id: userId } : {})
+              user_id: userId
             }]);
             updateData.loyalty_points_earned = pointsEarned;
           }
         }
 
-        let updateBillQ = supabase.from('bills').update(updateData).eq('id', payment.bill_id);
-        if (userId) updateBillQ = updateBillQ.eq('user_id', userId);
-        await updateBillQ;
+        await supabase
+          .from('bills')
+          .update(updateData)
+          .eq('id', payment.bill_id)
+          .eq('user_id', userId);
 
         unallocatedAmount = Math.max(0, unallocatedAmount - allocate);
       }
     } 
     // 2. FIFO Auto-Allocation across outstanding customer bills
     if (payment.customer_id && unallocatedAmount > 0) {
-      let billsQuery = supabase
+      const { data: bills } = await supabase
         .from('bills')
         .select('*')
-        .eq('customer_id', payment.customer_id);
-
-      if (userId) billsQuery = billsQuery.eq('user_id', userId);
-
-      const { data: bills } = await billsQuery.order('created_at', { ascending: true });
+        .eq('customer_id', payment.customer_id)
+        .eq('user_id', userId)
+        .order('created_at', { ascending: true });
 
       const unpaidBills = (bills || [])
         .filter(b => (!payment.bill_id || b.id !== payment.bill_id) && Number(b.paid_total || 0) < Number(b.grand_total || 0));
@@ -2257,15 +2373,17 @@ export class ApiService {
               points: pointsEarned,
               type: 'EARN',
               notes: `Award Reason: Bill Fully Paid - ${b.bill_number}`,
-              ...(userId ? { user_id: userId } : {})
+              user_id: userId
             }]);
             updateData.loyalty_points_earned = pointsEarned;
           }
         }
 
-        let updateBillQ = supabase.from('bills').update(updateData).eq('id', b.id);
-        if (userId) updateBillQ = updateBillQ.eq('user_id', userId);
-        await updateBillQ;
+        await supabase
+          .from('bills')
+          .update(updateData)
+          .eq('id', b.id)
+          .eq('user_id', userId);
 
         unallocatedAmount -= allocate;
       }
@@ -2273,25 +2391,21 @@ export class ApiService {
 
     // 3. Excess payment turns into Advance Balance (synced with customer ledger)
     if (payment.customer_id) {
-      let custBillsQ = supabase.from('bills').select('grand_total').eq('customer_id', payment.customer_id);
-      let custPayQ = supabase.from('payments').select('amount, status').eq('customer_id', payment.customer_id);
-      if (userId) {
-        custBillsQ = custBillsQ.eq('user_id', userId);
-        custPayQ = custPayQ.eq('user_id', userId);
-      }
-      const [{ data: cBills }, { data: cPays }] = await Promise.all([custBillsQ, custPayQ]);
+      const [{ data: cBills }, { data: cPays }] = await Promise.all([
+        supabase.from('bills').select('grand_total').eq('customer_id', payment.customer_id).eq('user_id', userId),
+        supabase.from('payments').select('amount, status').eq('customer_id', payment.customer_id).eq('user_id', userId)
+      ]);
       const totalBilled = (cBills || []).reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
       const totalPaid = (cPays || [])
         .filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED')
         .reduce((sum, p) => sum + Number(p.amount || 0), 0);
       const calculatedAdvance = Math.max(0, Number((totalPaid - totalBilled).toFixed(2)));
 
-      let updateCustQ = supabase.from('customers').update({
-        advance_balance: calculatedAdvance
-      }).eq('id', payment.customer_id);
-
-      if (userId) updateCustQ = updateCustQ.eq('user_id', userId);
-      await updateCustQ;
+      await supabase
+        .from('customers')
+        .update({ advance_balance: calculatedAdvance })
+        .eq('id', payment.customer_id)
+        .eq('user_id', userId);
     }
 
     await this.logAudit({
@@ -2339,47 +2453,50 @@ export class ApiService {
       }, userName);
     } else {
       const userId = await this.getUserId();
-      const payment_number = await this.getNextSequence('PAYMENT');
-      const paymentPayload = {
-        payment_number,
-        customer_id: null,
-        bill_id: payment.bill_id,
-        amount: payment.amount,
-        payment_method: payment.payment_method,
-        status: 'COMPLETED',
-        notes: payment.notes || null,
-        ...(userId ? { user_id: userId } : {})
-      };
+      if (!userId) return;
 
       if (isSupabaseConfigured) {
+        const { data: bill } = await supabase
+          .from('bills')
+          .select('*')
+          .eq('id', payment.bill_id)
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        if (!bill) return;
+
+        const payment_number = await this.getNextSequence('PAYMENT');
+        const paymentPayload = {
+          payment_number,
+          customer_id: null,
+          bill_id: payment.bill_id,
+          amount: payment.amount,
+          payment_method: payment.payment_method,
+          status: 'COMPLETED',
+          notes: payment.notes || null,
+          user_id: userId
+        };
+
         await supabase.from('payments').insert([paymentPayload]);
 
-        let billQuery = supabase.from('bills').select('*').eq('id', payment.bill_id);
-        if (userId) billQuery = billQuery.eq('user_id', userId);
-        const { data: bill } = await billQuery.maybeSingle();
+        const currentPaid = Number(bill.paid_total || 0);
+        const newPaidTotal = Number((currentPaid + payment.amount).toFixed(2));
+        const currentCash = Number(bill.cash_paid || 0);
+        const currentUpi = Number(bill.upi_paid || 0);
+        const newCash = payment.payment_method === 'Cash' ? currentCash + payment.amount : currentCash;
+        const newUpi = payment.payment_method === 'UPI' ? currentUpi + payment.amount : currentUpi;
 
-        if (bill) {
-          const currentPaid = Number(bill.paid_total || 0);
-          const newPaidTotal = Number((currentPaid + payment.amount).toFixed(2));
-          const currentCash = Number(bill.cash_paid || 0);
-          const currentUpi = Number(bill.upi_paid || 0);
-          const newCash = payment.payment_method === 'Cash' ? currentCash + payment.amount : currentCash;
-          const newUpi = payment.payment_method === 'UPI' ? currentUpi + payment.amount : currentUpi;
+        let newMethod = bill.payment_method;
+        if (newUpi > 0 && newCash === 0) newMethod = 'UPI';
+        else if (newCash > 0 && newUpi === 0) newMethod = 'Cash';
+        else if (newCash > 0 && newUpi > 0) newMethod = 'Split Payment';
 
-          let newMethod = bill.payment_method;
-          if (newUpi > 0 && newCash === 0) newMethod = 'UPI';
-          else if (newCash > 0 && newUpi === 0) newMethod = 'Cash';
-          else if (newCash > 0 && newUpi > 0) newMethod = 'Split Payment';
-
-          let updateQ = supabase.from('bills').update({
-            paid_total: newPaidTotal,
-            cash_paid: newCash,
-            upi_paid: newUpi,
-            payment_method: newMethod
-          }).eq('id', payment.bill_id);
-          if (userId) updateQ = updateQ.eq('user_id', userId);
-          await updateQ;
-        }
+        await supabase.from('bills').update({
+          paid_total: newPaidTotal,
+          cash_paid: newCash,
+          upi_paid: newUpi,
+          payment_method: newMethod
+        }).eq('id', payment.bill_id).eq('user_id', userId);
       }
     }
   }
@@ -2399,7 +2516,7 @@ export class ApiService {
     const { data, error } = await query.order('created_at', { ascending: false });
 
     if (error) {
-      console.error('Error fetching payments:', error);
+      console.warn('Error fetching payments:', error.message || error.code || JSON.stringify(error));
       return [];
     }
 
@@ -2422,19 +2539,17 @@ export class ApiService {
     }
 
     const userId = await this.getUserId();
+    if (!userId) return { success: false, reversedAmount: 0 };
 
-    let billQuery = supabase
+    const { data: bill, error: billErr } = await supabase
       .from('bills')
       .select('*')
-      .eq('id', billId);
+      .eq('id', billId)
+      .eq('user_id', userId)
+      .maybeSingle();
 
-    if (userId) {
-      billQuery = billQuery.eq('user_id', userId);
-    }
-
-    const { data: bill, error: billErr } = await billQuery.maybeSingle();
     if (billErr || !bill) {
-      throw new Error('Bill not found');
+      return { success: false, reversedAmount: 0 };
     }
 
     const totalPaidToReverse = Number(bill.paid_total || 0);
@@ -2442,14 +2557,13 @@ export class ApiService {
     // Check payment timestamps for reversal limit (default 72 hours)
     const windowHours = Number(settings.security?.payment_reversal_window_hours) || 72;
 
-    let activePayQuery = supabase
+    const { data: attachedPayments } = await supabase
       .from('payments')
       .select('created_at')
       .eq('bill_id', billId)
+      .eq('user_id', userId)
       .neq('status', 'CANCELLED')
       .neq('status', 'REVERSED');
-    if (userId) activePayQuery = activePayQuery.eq('user_id', userId);
-    const { data: attachedPayments } = await activePayQuery;
 
     const latestPaymentTime = (attachedPayments && attachedPayments.length > 0)
       ? Math.max(...attachedPayments.map(p => new Date(p.created_at).getTime()))
@@ -2463,7 +2577,7 @@ export class ApiService {
     }
 
     // 1. Soft-delete / reverse all payments attached to this bill
-    let reversePayQuery = supabase
+    await supabase
       .from('payments')
       .update({
         status: 'REVERSED',
@@ -2471,47 +2585,33 @@ export class ApiService {
         cancelled_at: new Date().toISOString(),
         cancelled_by: userName
       })
-      .eq('bill_id', billId);
-
-    if (userId) {
-      reversePayQuery = reversePayQuery.eq('user_id', userId);
-    }
-
-    await reversePayQuery;
+      .eq('bill_id', billId)
+      .eq('user_id', userId);
 
     // 2. Reverse advance_used and advance_earned
     if (bill.customer_id) {
-      let custQuery = supabase
+      const { data: cust } = await supabase
         .from('customers')
         .select('advance_balance')
-        .eq('id', bill.customer_id);
-
-      if (userId) {
-        custQuery = custQuery.eq('user_id', userId);
-      }
-
-      const { data: cust } = await custQuery.maybeSingle();
+        .eq('id', bill.customer_id)
+        .eq('user_id', userId)
+        .maybeSingle();
 
       if (cust) {
         let currentAdvance = Number(cust.advance_balance || 0);
         currentAdvance += Number(bill.advance_used || 0);
         currentAdvance = Math.max(0, currentAdvance - Number(bill.advance_earned || 0));
 
-        let updateCustQuery = supabase
+        await supabase
           .from('customers')
           .update({ advance_balance: currentAdvance })
-          .eq('id', bill.customer_id);
-
-        if (userId) {
-          updateCustQuery = updateCustQuery.eq('user_id', userId);
-        }
-
-        await updateCustQuery;
+          .eq('id', bill.customer_id)
+          .eq('user_id', userId);
       }
     }
 
     // 3. Reset bill payment fields
-    let updateBillQuery = supabase
+    const { error: updateErr } = await supabase
       .from('bills')
       .update({
         paid_total: 0,
@@ -2524,13 +2624,9 @@ export class ApiService {
         edited_by: userName,
         edit_reason: isPastLimit ? `Payment Reversal (${windowHours}H Override): ${reason}` : `Payment Reversal: ${reason}`
       })
-      .eq('id', billId);
+      .eq('id', billId)
+      .eq('user_id', userId);
 
-    if (userId) {
-      updateBillQuery = updateBillQuery.eq('user_id', userId);
-    }
-
-    const { error: updateErr } = await updateBillQuery;
     if (updateErr) throw new Error(updateErr.message);
 
     // 4. Reverse loyalty points if any were awarded
@@ -2554,7 +2650,7 @@ export class ApiService {
     adminPin: string, 
     userName = 'Super Admin',
     overridePast48Hours = false
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const settings = await this.getSettings();
 
@@ -2563,19 +2659,17 @@ export class ApiService {
     }
 
     const userId = await this.getUserId();
+    if (!userId) return false;
 
-    let payQuery = supabase
+    const { data: payment, error: payErr } = await supabase
       .from('payments')
       .select('*')
-      .eq('id', paymentId);
+      .eq('id', paymentId)
+      .eq('user_id', userId)
+      .maybeSingle();
 
-    if (userId) {
-      payQuery = payQuery.eq('user_id', userId);
-    }
-
-    const { data: payment, error: payErr } = await payQuery.maybeSingle();
     if (payErr || !payment) {
-      throw new Error('Payment not found');
+      return false;
     }
 
     if (payment.status === 'CANCELLED' || payment.status === 'REVERSED') {
@@ -2595,16 +2689,12 @@ export class ApiService {
 
     // If attached to a bill, deduct from bill paid_total
     if (payment.bill_id) {
-      let billQuery = supabase
+      const { data: bill } = await supabase
         .from('bills')
         .select('*')
-        .eq('id', payment.bill_id);
-
-      if (userId) {
-        billQuery = billQuery.eq('user_id', userId);
-      }
-
-      const { data: bill } = await billQuery.maybeSingle();
+        .eq('id', payment.bill_id)
+        .eq('user_id', userId)
+        .maybeSingle();
 
       if (bill) {
         const grandTotal = Number(bill.grand_total || 0);
@@ -2639,37 +2729,33 @@ export class ApiService {
           updateData.loyalty_points_earned = 0;
         }
 
-        let updateBillQ = supabase.from('bills').update(updateData).eq('id', payment.bill_id);
-        if (userId) updateBillQ = updateBillQ.eq('user_id', userId);
-        await updateBillQ;
+        await supabase
+          .from('bills')
+          .update(updateData)
+          .eq('id', payment.bill_id)
+          .eq('user_id', userId);
       }
     } else if (payment.customer_id) {
-      let custQuery = supabase
+      const { data: cust } = await supabase
         .from('customers')
         .select('advance_balance')
-        .eq('id', payment.customer_id);
-
-      if (userId) {
-        custQuery = custQuery.eq('user_id', userId);
-      }
-
-      const { data: cust } = await custQuery.maybeSingle();
+        .eq('id', payment.customer_id)
+        .eq('user_id', userId)
+        .maybeSingle();
 
       if (cust) {
         const currentAdvance = Number(cust.advance_balance || 0);
         const newAdvance = Math.max(0, currentAdvance - amount);
-        let updateCustQ = supabase
+        await supabase
           .from('customers')
           .update({ advance_balance: newAdvance })
-          .eq('id', payment.customer_id);
-
-        if (userId) updateCustQ = updateCustQ.eq('user_id', userId);
-        await updateCustQ;
+          .eq('id', payment.customer_id)
+          .eq('user_id', userId);
       }
     }
 
     // Soft delete payment record by updating status to CANCELLED
-    let cancelPayQ = supabase
+    const { error: cancelErr } = await supabase
       .from('payments')
       .update({
         status: 'CANCELLED',
@@ -2677,10 +2763,9 @@ export class ApiService {
         cancelled_at: new Date().toISOString(),
         cancelled_by: userName
       })
-      .eq('id', paymentId);
+      .eq('id', paymentId)
+      .eq('user_id', userId);
 
-    if (userId) cancelPayQ = cancelPayQ.eq('user_id', userId);
-    const { error: cancelErr } = await cancelPayQ;
     if (cancelErr) throw new Error(cancelErr.message);
 
     await this.logAudit({
@@ -2690,6 +2775,8 @@ export class ApiService {
       previous_value: `Amount: ₹${amount}, Customer ID: ${payment.customer_id}`,
       new_value: `Payment cancelled/soft-deleted.${isPastLimit ? ` [SUPER ADMIN ${windowHours}H OVERRIDE]` : ''} Reason: ${reason}`
     });
+
+    return true;
   }
 
 
@@ -2912,16 +2999,21 @@ export class ApiService {
   }
 
 
-  static async deleteExpense(id: string, adminPin?: string, userName = 'Admin'): Promise<void> {
+  static async deleteExpense(id: string, adminPin?: string, userName = 'Admin'): Promise<boolean> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
+    if (!userId) return false;
 
     // Verify existence & ownership
-    let checkQ = supabase.from('expenses').select('*').eq('id', id);
-    if (userId) checkQ = checkQ.eq('user_id', userId);
-    const { data: existing } = await checkQ.maybeSingle();
+    const { data: existing } = await supabase
+      .from('expenses')
+      .select('*')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .maybeSingle();
+
     if (!existing) {
-      throw new Error('Expense not found');
+      return false;
     }
 
     // Check if expense falls into a closed accounting session
@@ -2933,10 +3025,12 @@ export class ApiService {
       }
     }
 
-    let delQ = supabase.from('expenses').delete().eq('id', id);
-    if (userId) delQ = delQ.eq('user_id', userId);
+    const { error } = await supabase
+      .from('expenses')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', userId);
 
-    const { error } = await delQ;
     if (error) throw new Error(error.message);
 
     await this.logAudit({
@@ -2944,6 +3038,8 @@ export class ApiService {
       action: 'DELETE_EXPENSE',
       entity: `Expense ID ${id}`
     });
+
+    return true;
   }
 
 
@@ -3563,6 +3659,22 @@ _(Points will be credited upon bill settlement)_`;
   ): Promise<ProductSalesAnalytics> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
+    if (!userId) {
+      return {
+        product: {
+          id: productId,
+          name: 'Not Found',
+          price: 0,
+          category: 'Unknown',
+          created_at: new Date().toISOString()
+        },
+        total_quantity_sold: 0,
+        total_revenue: 0,
+        average_selling_rate: 0,
+        orders_count: 0,
+        transactions: []
+      };
+    }
 
     const isCustom = productId.startsWith('custom:');
     let product: Product;
@@ -3601,11 +3713,8 @@ _(Points will be credited upon bill settlement)_`;
 
     let query = supabase
       .from('bill_items')
-      .select('*, bills(id, bill_number, created_at, customer_id, customers(name))');
-
-    if (userId) {
-      query = query.eq('user_id', userId);
-    }
+      .select('*, bills(id, bill_number, created_at, customer_id, customers(name))')
+      .eq('user_id', userId);
 
     if (isCustom) {
       query = query.is('product_id', null).eq('product_name', product.name);
@@ -3787,17 +3896,14 @@ _(Points will be credited upon bill settlement)_`;
   ): Promise<CustomerStatementData | null> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
+    if (!userId) return null;
 
-    let custQuery = supabase
+    const { data: customer, error: custErr } = await supabase
       .from('customers')
       .select('*')
-      .eq('id', customerId);
-
-    if (userId) {
-      custQuery = custQuery.eq('user_id', userId);
-    }
-
-    const { data: customer, error: custErr } = await custQuery.maybeSingle();
+      .eq('id', customerId)
+      .eq('user_id', userId)
+      .maybeSingle();
 
     if (custErr || !customer) {
       return null;
@@ -3805,24 +3911,24 @@ _(Points will be credited upon bill settlement)_`;
 
     const settings = await this.getSettings();
 
-    let billsQuery = supabase
-      .from('bills')
-      .select('*, bill_items(*)')
-      .eq('customer_id', customerId);
+    const [billsRes, paymentsRes] = await Promise.all([
+      supabase
+        .from('bills')
+        .select('*, bill_items(*)')
+        .eq('customer_id', customerId)
+        .eq('user_id', userId)
+        .order('created_at', { ascending: true }),
+      supabase
+        .from('payments')
+        .select('*')
+        .eq('customer_id', customerId)
+        .eq('user_id', userId)
+        .order('created_at', { ascending: true })
+    ]);
 
-    let paymentsQuery = supabase
-      .from('payments')
-      .select('*')
-      .eq('customer_id', customerId);
-
-    if (userId) {
-      billsQuery = billsQuery.eq('user_id', userId);
-      paymentsQuery = paymentsQuery.eq('user_id', userId);
-    }
-
-    const { data: bills } = await billsQuery.order('created_at', { ascending: true });
-    const { data: payments } = await paymentsQuery.order('created_at', { ascending: true });
-    const activePayments = (payments || []).filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
+    const bills = billsRes.data || [];
+    const payments = paymentsRes.data || [];
+    const activePayments = payments.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
 
     let allTimeBilled = 0;
     let allTimePaid = 0;
@@ -4088,18 +4194,31 @@ _(Points will be credited upon bill settlement)_`;
     return record;
   }
 
-  static async deleteInternalTransfer(id: string, adminPin?: string, userName = 'Admin'): Promise<void> {
+  static async deleteInternalTransfer(id: string, adminPin?: string, userName = 'Admin'): Promise<boolean> {
     const settings = await this.getSettings();
     if (adminPin && settings.security.super_admin_pin && settings.security.super_admin_pin !== adminPin) {
       throw new Error('Invalid Super Admin Security PIN. Delete rejected.');
     }
 
     const userId = await this.getUserId();
+    if (!userId) return false;
+
     if (isSupabaseConfigured && this.hasInternalTransfersTable !== false) {
       try {
-        let query = supabase.from('internal_transfers').delete().eq('id', id);
-        if (userId) query = query.eq('user_id', userId);
-        await query;
+        const { data: existing } = await supabase
+          .from('internal_transfers')
+          .select('id')
+          .eq('id', id)
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        if (!existing) return false;
+
+        await supabase
+          .from('internal_transfers')
+          .delete()
+          .eq('id', id)
+          .eq('user_id', userId);
       } catch {}
     }
 
@@ -4111,6 +4230,8 @@ _(Points will be credited upon bill settlement)_`;
       action: 'DELETE_TRANSFER',
       entity: `Transfer ${id}`
     });
+
+    return true;
   }
 
   // =========================================================================
@@ -4195,15 +4316,36 @@ _(Points will be credited upon bill settlement)_`;
 
     const userId = await this.getUserId();
     const closing_number = await this.getNextSequence('CLOSE');
+
+    // Explicit allowlist: map only permitted closing fields; enforce system control over status, is_locked, and timestamps
     const record: AccountingClosing = {
-      ...closingData,
       id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `close_${Date.now()}`,
       user_id: userId,
       closing_number,
-      closed_at: new Date().toISOString(),
-      closed_by: closingData.closed_by || userName,
+      from_date: closingData.from_date,
+      to_date: closingData.to_date,
+      opening_cash: Number(closingData.opening_cash || 0),
+      opening_upi: Number(closingData.opening_upi || 0),
+      cash_inflow: Number(closingData.cash_inflow || 0),
+      upi_inflow: Number(closingData.upi_inflow || 0),
+      cash_outflow: Number(closingData.cash_outflow || 0),
+      upi_outflow: Number(closingData.upi_outflow || 0),
+      transfers_cash_to_upi: Number(closingData.transfers_cash_to_upi || 0),
+      transfers_upi_to_cash: Number(closingData.transfers_upi_to_cash || 0),
+      expected_cash: Number(closingData.expected_cash || 0),
+      expected_upi: Number(closingData.expected_upi || 0),
+      actual_cash: Number(closingData.actual_cash || 0),
+      actual_upi: Number(closingData.actual_upi || 0),
+      cash_difference: Number(closingData.cash_difference || 0),
+      upi_difference: Number(closingData.upi_difference || 0),
+      discrepancy_note: closingData.discrepancy_note ? String(closingData.discrepancy_note).trim() : null,
       status: 'CLOSED',
-      is_locked: true
+      is_locked: true,
+      closed_by: userName,
+      closed_at: new Date().toISOString(),
+      last_audited_at: null,
+      last_audited_by: null,
+      audit_notes: null
     };
 
     if (isSupabaseConfigured && this.hasAccountingClosingsTable !== false) {
@@ -4253,24 +4395,34 @@ _(Points will be credited upon bill settlement)_`;
     updates: Partial<AccountingClosing>,
     adminPin: string,
     userName = 'Admin'
-  ): Promise<AccountingClosing> {
+  ): Promise<AccountingClosing | null> {
     const settings = await this.getSettings();
     if (settings.security.super_admin_pin && settings.security.super_admin_pin !== adminPin) {
       throw new Error('Invalid Super Admin Security PIN. Audit update rejected.');
     }
 
     const userId = await this.getUserId();
-    const auditUpdates = {
-      ...updates,
+    if (!userId) return null;
+
+    // Explicit allowlist: only audit_notes can be updated by user; drop status, is_locked, id, user_id, closing_number, amounts
+    const auditUpdates: Record<string, unknown> = {
       last_audited_at: new Date().toISOString(),
       last_audited_by: userName
     };
+    if (updates.audit_notes !== undefined) {
+      auditUpdates.audit_notes = updates.audit_notes ? String(updates.audit_notes).trim() : null;
+    }
 
     if (isSupabaseConfigured && this.hasAccountingClosingsTable !== false) {
       try {
-        let query = supabase.from('accounting_closings').update(auditUpdates).eq('id', id);
-        if (userId) query = query.eq('user_id', userId);
-        const { data, error } = await query.select().maybeSingle();
+        const { data, error } = await supabase
+          .from('accounting_closings')
+          .update(auditUpdates)
+          .eq('id', id)
+          .eq('user_id', userId)
+          .select()
+          .maybeSingle();
+
         if (!error && data) {
           await this.logAudit({
             user_name: userName,
@@ -4285,7 +4437,7 @@ _(Points will be credited upon bill settlement)_`;
 
     const local = this.getLocalClosings();
     const index = local.findIndex(c => c.id === id);
-    if (index === -1) throw new Error('Closing record not found');
+    if (index === -1) return null;
 
     const updatedObj: AccountingClosing = { ...local[index], ...auditUpdates };
     local[index] = updatedObj;
@@ -4301,18 +4453,31 @@ _(Points will be credited upon bill settlement)_`;
     return updatedObj;
   }
 
-  static async deleteAccountingClosing(id: string, adminPin: string, userName = 'Admin'): Promise<void> {
+  static async deleteAccountingClosing(id: string, adminPin: string, userName = 'Admin'): Promise<boolean> {
     const settings = await this.getSettings();
     if (settings.security.super_admin_pin && settings.security.super_admin_pin !== adminPin) {
       throw new Error('Invalid Super Admin Security PIN. Reopen session rejected.');
     }
 
     const userId = await this.getUserId();
+    if (!userId) return false;
+
     if (isSupabaseConfigured) {
       try {
-        let query = supabase.from('accounting_closings').delete().eq('id', id);
-        if (userId) query = query.eq('user_id', userId);
-        await query;
+        const { data: existing } = await supabase
+          .from('accounting_closings')
+          .select('id')
+          .eq('id', id)
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        if (!existing) return false;
+
+        await supabase
+          .from('accounting_closings')
+          .delete()
+          .eq('id', id)
+          .eq('user_id', userId);
       } catch {}
     }
 
@@ -4324,6 +4489,8 @@ _(Points will be credited upon bill settlement)_`;
       action: 'REOPEN_ACCOUNTING_PERIOD',
       entity: `Reopened session ${id}`
     });
+
+    return true;
   }
 
   // =========================================================================

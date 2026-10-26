@@ -441,6 +441,11 @@ export default function BillingPage() {
         items: cart
       });
 
+      if (!createdBill) {
+        setErrorMsg('Customer record not found or access denied.');
+        return;
+      }
+
       const financialSummary = await ApiService.getBillFinancialSummary(createdBill);
       const billWithSummary = { ...createdBill, financial_summary: financialSummary };
 

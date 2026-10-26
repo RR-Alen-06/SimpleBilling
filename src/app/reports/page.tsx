@@ -62,7 +62,6 @@ export default function ReportsPage() {
   };
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadReportData();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFilter, customFrom, customTo]);
@@ -346,7 +345,7 @@ export default function ReportsPage() {
   };
 
   // Tab-Specific CSV Export
-  const handleExportTabCSV = () => {
+  const _handleExportTabCSV = () => {
     const filterLabel = dateFilter.replace('_', '-');
     if (activeTab === 'sales') {
       const headers = ['Bill Number', 'Date Time', 'Customer', 'Customer Mobile', 'Payment Method', 'Cash (INR)', 'UPI (INR)', 'Grand Total (INR)', 'Paid Total (INR)', 'Status'];
