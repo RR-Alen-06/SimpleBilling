@@ -18,7 +18,8 @@ import {
   FileText,
   ChevronDown,
   ChevronUp,
-  Package
+  Package,
+  Wallet
 } from 'lucide-react';
 
 export default function CustomerLedgerPage({ params }: { params: Promise<{ id: string }> }) {
@@ -113,6 +114,50 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
       isCurrent = false;
     };
   }, [customerId]);
+
+  const [applyingAdvance, setApplyingAdvance] = useState(false);
+
+  const handleApplyAdvance = async () => {
+    const adv = Number(customer?.advance_balance || 0);
+    if (adv <= 0 || runningBalance <= 0) return;
+    if (!window.confirm(`Apply ₹${adv.toFixed(2)} advance credit to unpaid bills (oldest first)?`)) return;
+
+    setErrorMsg('');
+    setSuccessMsg('');
+    setApplyingAdvance(true);
+    try {
+      const result = await ApiService.applyCustomerAdvanceToBills(customerId);
+      if (result.totalApplied > 0) {
+        setSuccessMsg(`Applied ₹${result.totalApplied.toFixed(2)} advance to ${result.billsUpdated.join(', ')}. Remaining advance: ₹${result.remainingAdvance.toFixed(2)}`);
+      } else {
+        setSuccessMsg('No unpaid bills found to apply advance.');
+      }
+      await loadLedgerData();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to apply advance');
+    } finally {
+      setApplyingAdvance(false);
+    }
+  };
+
+  const handleApplyAdvanceToSingleBill = async (billId: string, billNumber: string) => {
+    const adv = Number(customer?.advance_balance || 0);
+    if (adv <= 0) {
+      setErrorMsg('This customer has no available advance credit (₹0.00).');
+      return;
+    }
+    if (!window.confirm(`Allocate customer's available advance credit to ${billNumber}?`)) return;
+
+    setErrorMsg('');
+    setSuccessMsg('');
+    try {
+      const res = await ApiService.applyAdvanceToBill(billId, undefined, 'Admin');
+      setSuccessMsg(`Successfully allocated ₹${res.allocated.toFixed(2)} advance to ${billNumber}. Remaining customer advance: ₹${res.remainingAdvance.toFixed(2)}.`);
+      await loadLedgerData();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to allocate advance');
+    }
+  };
 
   const handleOpenPayment = () => {
     setPaymentAmount(runningBalance > 0 ? runningBalance : '');
@@ -212,6 +257,24 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
                 <p className="text-[11px] text-slate-500 uppercase font-bold tracking-wider">Total Paid</p>
                 <p className="font-data-mono font-bold text-emerald-600">₹{totalPaid.toFixed(2)}</p>
               </div>
+              <div className="text-right bg-teal-50 px-3.5 py-2 rounded-lg border border-teal-200">
+                <p className="text-[11px] text-teal-800 uppercase font-bold tracking-wider">Advance Credit</p>
+                <p className="text-xl font-data-mono font-extrabold text-teal-700">
+                  ₹{Number(customer?.advance_balance || 0).toFixed(2)}
+                </p>
+                {Number(customer?.advance_balance || 0) > 0 && runningBalance > 0 && (
+                  <button
+                    id="apply-advance-btn"
+                    onClick={handleApplyAdvance}
+                    disabled={applyingAdvance}
+                    className="mt-1 ml-auto text-[11px] font-bold bg-teal-600 hover:bg-teal-500 text-white px-2 py-1 rounded transition flex items-center space-x-1 disabled:opacity-50"
+                    title="Allocate advance credit to unpaid bills (oldest first)"
+                  >
+                    <Wallet size={12} />
+                    <span>{applyingAdvance ? 'Applying...' : 'Apply to Dues'}</span>
+                  </button>
+                )}
+              </div>
               <div className="text-right bg-slate-50 px-4 py-2 rounded-lg border border-slate-200">
                 <p className="text-[11px] text-slate-500 uppercase font-bold tracking-wider">Current Balance Due</p>
                 <p className={`text-xl font-data-mono font-extrabold ${runningBalance > 0 ? 'text-amber-600' : 'text-slate-800'}`}>
@@ -226,6 +289,17 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
                 <FileText size={16} />
                 <span>Statement PDF</span>
               </button>
+              {Number(customer?.advance_balance || 0) > 0 && (
+                <button
+                  onClick={handleApplyAdvance}
+                  disabled={applyingAdvance}
+                  className="bg-teal-600 hover:bg-teal-500 text-white font-bold text-sm px-4 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
+                  title="Allocate customer advance balance to unpaid dues"
+                >
+                  <Wallet size={16} />
+                  <span>{applyingAdvance ? 'Allocating...' : `Apply Advance (₹${Number(customer?.advance_balance || 0).toFixed(2)})`}</span>
+                </button>
+              )}
               <button
                 onClick={handleOpenPayment}
                 className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm px-4 py-2.5 rounded-lg shadow transition flex items-center space-x-1.5"
@@ -323,9 +397,11 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
                           <span className={`inline-block px-3 py-0.5 rounded-full text-[11px] font-bold ${
                             entry.type === 'BILL'
                               ? 'bg-blue-50 text-blue-700 border border-blue-100'
+                              : entry.type === 'ADVANCE_USED'
+                              ? 'bg-teal-50 text-teal-800 border border-teal-200'
                               : 'bg-emerald-50 text-emerald-700 border border-emerald-100'
                           }`}>
-                            {entry.type}
+                            {entry.type === 'ADVANCE_USED' ? 'ADVANCE USED' : entry.type}
                           </span>
                         </td>
                         <td className="px-6 py-4 font-data-mono font-bold text-slate-900">{entry.reference_no}</td>
@@ -340,6 +416,16 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
                                 <Package size={12} />
                                 <span>{entry.items!.length} {entry.items!.length === 1 ? 'item' : 'items'}</span>
                                 {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                              </button>
+                            )}
+                            {entry.type === 'BILL' && entry.bill_id && Number(customer?.advance_balance || 0) > 0 && (
+                              <button
+                                onClick={() => handleApplyAdvanceToSingleBill(entry.bill_id!, entry.reference_no)}
+                                className="inline-flex items-center gap-1 text-[11px] font-bold text-teal-700 hover:text-teal-900 bg-teal-50 hover:bg-teal-100 px-2 py-0.5 rounded-md transition border border-teal-200 cursor-pointer shadow-2xs"
+                                title={`Allocate advance credit to ${entry.reference_no}`}
+                              >
+                                <Wallet size={11} />
+                                <span>Apply Advance</span>
                               </button>
                             )}
                           </div>

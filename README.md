@@ -17,6 +17,7 @@ Traditional billing software is rigid when handling dynamic printing jobs (such 
 - 🔒 **Multi-Tenant Security**: Strict Row-Level Security (RLS) policies on Supabase PostgreSQL isolating each shop's data (`auth.uid() = user_id`).
 - 🧾 **Dual-Mode Invoice Printing**: 1-click printing for **80mm Thermal POS Receipts** and **Standard A4 Tax Invoices**, plus PDF generation via `jsPDF`.
 - 👥 **Customer Ledgers & Dues Engine**: FIFO payment allocations, advance deposits, running balance ledgers, and dynamic loyalty point rewards.
+- 💳 **Customer Advance Wallet & Ledger Reconciliation**: 1-click allocation of surplus advance balances to outstanding bills, cash drawer isolation, and automated ledger recalculation.
 - 💰 **Accounting & Expense Tracking**: Expense category breakdown, period P&L synchronization, and Net Profit calculations.
 - 📊 **Business Reports & CSV Export**: Sales analytics, item volume tracking, and 1-click CSV report exports.
 
@@ -133,6 +134,7 @@ SimpleBilling/
 ├── src/
 │   ├── middleware.ts          # Server-side Supabase SSR session validation
 │   ├── app/
+│   │   ├── accounting/        # Cash sessions, drawer reconciliation & P&L ledger
 │   │   ├── audit/             # Immutable audit log viewer
 │   │   ├── billing/           # POS Billing counter with live price calculations
 │   │   ├── bills/             # Invoice management & admin adjustments

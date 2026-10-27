@@ -10,7 +10,8 @@ import {
   AllSettings,
   ExpenseCategory,
   ReconciliationCalculation,
-  UnpaidSessionBill
+  UnpaidSessionBill,
+  Bill
 } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { AccountingStatementGenerator } from '@/lib/services/accountingStatementGenerator';
@@ -51,6 +52,7 @@ interface LedgerRow {
   upiOut: number;
   runningCash?: number;
   runningUpi?: number;
+  isDuplicateVoucher?: boolean;
 }
 
 export default function AccountingPage() {
@@ -158,10 +160,18 @@ export default function AccountingPage() {
       // Reconstruct Day Book / Ledger Rows
       const rows: LedgerRow[] = [];
 
-      // Add Bills
+      // Active payments represent actual cash & UPI money received
+      const activePayments = paymentsData.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
+      const billsMap = new Map<string, Bill>(billsData.map(b => [b.id, b]));
+
+      // Add Bills:
+      // Mark as duplicate voucher if this bill's payment is already represented by a payment voucher in paymentsData,
+      // or if it was paid later via account dues payments (so money inflow is already accounted for under PAY-xxxx).
       billsData.forEach(b => {
         const cashAmt = Number(b.cash_paid || 0);
         const upiAmt = Number(b.upi_paid || 0);
+        const isHandledByPaymentVoucher = activePayments.length > 0;
+
         if (cashAmt > 0 || upiAmt > 0) {
           rows.push({
             id: `bill_${b.id}`,
@@ -173,28 +183,39 @@ export default function AccountingPage() {
             cashIn: cashAmt,
             cashOut: 0,
             upiIn: upiAmt,
-            upiOut: 0
+            upiOut: 0,
+            isDuplicateVoucher: isHandledByPaymentVoucher
           });
         }
       });
 
-      // Add Customer Payments (excluding reversed/cancelled)
-      paymentsData.forEach(p => {
-        if (p.status !== 'CANCELLED' && p.status !== 'REVERSED') {
-          const amt = Number(p.amount || 0);
-          rows.push({
-            id: `pay_${p.id}`,
-            date: p.created_at,
-            type: 'PAYMENT',
-            refNumber: p.payment_number || 'PAY-—',
-            description: `Customer Dues Payment - ${p.customer_name || 'Customer'}`,
-            mode: p.payment_method || 'Cash',
-            cashIn: p.payment_method === 'Cash' ? amt : 0,
-            cashOut: 0,
-            upiIn: p.payment_method === 'UPI' ? amt : 0,
-            upiOut: 0
-          });
+      // Add Customer Payments (each representing an authentic Cash or UPI inflow voucher)
+      activePayments.forEach(p => {
+        const amt = Number(p.amount || 0);
+        const linkedBill = p.bill_id ? billsMap.get(p.bill_id) : null;
+        
+        let desc = p.notes;
+        if (!desc || desc.startsWith('[')) {
+          desc = linkedBill 
+            ? `Bill Payment (${linkedBill.bill_number}) - ${p.customer_name || 'Customer'}`
+            : (p.notes ? `${p.notes} - ${p.customer_name || 'Customer'}` : `Customer Payment - ${p.customer_name || 'Customer'}`);
+        } else if (!desc.includes(p.customer_name || '')) {
+          desc = `${desc} - ${p.customer_name || 'Customer'}`;
         }
+
+        rows.push({
+          id: `pay_${p.id}`,
+          date: p.created_at,
+          type: 'PAYMENT',
+          refNumber: p.payment_number || 'PAY-—',
+          description: desc,
+          mode: p.payment_method || 'Cash',
+          cashIn: p.payment_method === 'Cash' ? amt : 0,
+          cashOut: 0,
+          upiIn: p.payment_method === 'UPI' ? amt : 0,
+          upiOut: 0,
+          isDuplicateVoucher: false
+        });
       });
 
       // Add Expenses
@@ -217,7 +238,8 @@ export default function AccountingPage() {
           cashIn: 0,
           cashOut: cashAmt,
           upiIn: 0,
-          upiOut: upiAmt
+          upiOut: upiAmt,
+          isDuplicateVoucher: false
         });
       });
 
@@ -235,7 +257,8 @@ export default function AccountingPage() {
             cashIn: 0,
             cashOut: amt,
             upiIn: amt,
-            upiOut: 0
+            upiOut: 0,
+            isDuplicateVoucher: false
           });
         } else {
           rows.push({
@@ -248,7 +271,8 @@ export default function AccountingPage() {
             cashIn: amt,
             cashOut: 0,
             upiIn: 0,
-            upiOut: amt
+            upiOut: amt,
+            isDuplicateVoucher: false
           });
         }
       });
@@ -256,14 +280,16 @@ export default function AccountingPage() {
       // Sort rows chronologically descending
       rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-      // Compute running balances chronologically ascending
+      // Compute running balances chronologically ascending (skipping duplicate vouchers to keep true drawer/bank balances)
       const ascending = [...rows].reverse();
       let runningCash = currentStatus.opening_cash;
       let runningUpi = currentStatus.opening_upi;
 
       ascending.forEach(row => {
-        runningCash += row.cashIn - row.cashOut;
-        runningUpi += row.upiIn - row.upiOut;
+        if (!row.isDuplicateVoucher) {
+          runningCash += row.cashIn - row.cashOut;
+          runningUpi += row.upiIn - row.upiOut;
+        }
         row.runningCash = Number(runningCash.toFixed(2));
         row.runningUpi = Number(runningUpi.toFixed(2));
       });
@@ -680,6 +706,11 @@ export default function AccountingPage() {
         if (rowMs < fromMs || rowMs > toMs) return false;
       }
 
+      // In ALL view, hide duplicate vouchers so each checkout collection appears once
+      if (ledgerTypeFilter === 'ALL' && row.isDuplicateVoucher) {
+        return false;
+      }
+
       // Type filter
       if (ledgerTypeFilter !== 'ALL') {
         if (ledgerTypeFilter === 'BILLS' && row.type !== 'BILL') return false;
@@ -793,6 +824,13 @@ export default function AccountingPage() {
                   <span className="text-slate-400 block text-[10px] uppercase font-sans">UPI / Bank Balance</span>
                   <span className="text-cyan-300 font-bold text-sm">₹{sessionStatus.expected_upi_in_hand.toFixed(2)}</span>
                 </div>
+
+                {Number(sessionStatus.current_advance_utilized || 0) > 0 && (
+                  <div className="bg-teal-950/80 px-3 py-1.5 rounded-lg border border-teal-600/50">
+                    <span className="text-teal-300 block text-[10px] uppercase font-sans">Advance Utilized</span>
+                    <span className="text-teal-300 font-bold text-sm">₹{Number(sessionStatus.current_advance_utilized).toFixed(2)}</span>
+                  </div>
+                )}
 
                 <div className="bg-indigo-900/60 px-3 py-1.5 rounded-lg border border-indigo-500/40">
                   <span className="text-indigo-200 block text-[10px] uppercase font-sans">Total Liquid Funds</span>
@@ -1493,6 +1531,18 @@ export default function AccountingPage() {
                   <span>Reconciliation Breakdown</span>
                   <span className="font-mono text-slate-500 text-[11px]">Formula: Opening + Inflow - Outflow ± Transfers = Expected</span>
                 </div>
+
+                {Number(reconcileCalc.advance_utilized || 0) > 0 && (
+                  <div className="m-3 p-2.5 bg-teal-50 border border-teal-200 rounded-lg flex items-center justify-between text-xs text-teal-900">
+                    <span className="flex items-center gap-1.5 font-semibold">
+                      <Wallet size={14} className="text-teal-700" />
+                      Customer Advance Utilized (Non-Cash Bill Settlement):
+                    </span>
+                    <span className="font-mono font-bold text-teal-800 text-sm">
+                      ₹{Number(reconcileCalc.advance_utilized).toFixed(2)}
+                    </span>
+                  </div>
+                )}
 
                 <div className="p-4 grid grid-cols-2 gap-4">
                   {/* CASH COLUMN */}
