@@ -160,14 +160,19 @@ export interface Expense {
 export interface CustomerLedgerEntry {
   id: string;
   date: string;
-  type: 'BILL' | 'PAYMENT' | 'ADVANCE_USED' | 'LOYALTY_REDEEM';
+  type: 'BILL' | 'PAYMENT' | 'ADVANCE_USED' | 'OPENING_BALANCE' | 'LOYALTY_REDEEM';
   reference_no: string;
   description: string;
   bill_amount: number;
   paid_amount: number;
   advance_used: number;
+  direct_paid?: number;
+  bill_due?: number;
+  is_fully_paid?: boolean;
   loyalty_points: number;
   running_balance: number;
+  bill_id?: string;
+  payment_method?: string;
   items?: {
     product_name: string;
     quantity: number;
@@ -391,12 +396,48 @@ export interface CustomerStatementBill {
   grand_total: number;
   paid_amount: number;
   balance_due: number;
+  advance_used?: number;
+  advance_earned?: number;
 }
 
 export interface CustomerStatementDateGroup {
   date_formatted: string;
   raw_date: string;
   bills: CustomerStatementBill[];
+}
+
+export interface CustomerStatementTransaction {
+  id: string;
+  date: string;
+  type: 'INVOICE' | 'PAYMENT' | 'ADVANCE_DEPOSIT' | 'OPENING_BALANCE' | 'REFUND' | 'ADVANCE_REFUND' | 'ADJUSTMENT';
+  reference_no: string;
+  bill_id?: string;
+  particulars: string;
+  debit: number;
+  credit: number;
+  running_balance: number;
+  advance_used?: number;
+  direct_paid?: number;
+  bill_due?: number;
+  is_fully_paid?: boolean;
+  payment_method?: string;
+  status?: string;
+  items?: CustomerStatementBillItem[];
+}
+
+export interface CustomerStatementFinancialSummary {
+  opening_balance: number;
+  total_bills: number;
+  total_billed: number;
+  total_cash_received: number;
+  total_upi_received: number;
+  total_mixed_payments: number;
+  total_advance_received: number;
+  total_advance_utilized: number;
+  total_advance_refunded: number;
+  total_bill_refunds: number;
+  total_outstanding: number;
+  closing_balance: number;
 }
 
 export interface CustomerStatementData {
@@ -407,12 +448,19 @@ export interface CustomerStatementData {
     start_date?: string;
     end_date?: string;
   };
+  opening_balance: number; // >0 Due (Dr), <0 Adv (Cr)
+  closing_balance: number; // Balance at end of period
+  current_advance_balance: number; // Live unspent advance
+  current_balance_due: number; // Live outstanding dues
+  financial_summary: CustomerStatementFinancialSummary;
   kpi: {
-    total_invoiced: number;
-    total_paid: number;
+    total_invoiced: number; // Period Debits
+    total_paid: number; // Period Credits
     invoices_count: number;
+    payments_count: number;
     total_units_bought: number;
   };
+  transactions: CustomerStatementTransaction[];
   date_groups: CustomerStatementDateGroup[];
   reconciliation: {
     period_purchases: number;
@@ -481,8 +529,10 @@ export interface CurrentSessionStatus {
   bills_count: number;
   expenses_count: number;
   transfers_count: number;
+  current_advance_utilized?: number;
   pending_dues_total?: number;
   unpaid_bills_count?: number;
+  customer_advances_total?: number;
 }
 
 export interface UnpaidSessionBill {
@@ -491,6 +541,7 @@ export interface UnpaidSessionBill {
   customer_id?: string | null;
   customer_name?: string;
   customer_mobile?: string | null;
+  customer_advance?: number;
   grand_total: number;
   paid_total: number;
   due_amount: number;
@@ -504,6 +555,7 @@ export interface ReconciliationCalculation {
   opening_upi: number;
   cash_inflow: number;
   upi_inflow: number;
+  advance_utilized?: number;
   cash_outflow: number;
   upi_outflow: number;
   transfers_cash_to_upi: number;

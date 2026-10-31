@@ -115,7 +115,7 @@ export function Navigation() {
             return (
               <Link
                 key={item.href}
-                href={item.href}
+                href={item.href} prefetch={false}
                 className={`flex items-center space-x-2 px-3.5 py-3 text-xs font-semibold transition border-b-2 ${
                   isActive
                     ? 'border-blue-400 text-white bg-slate-900/60'
@@ -155,7 +155,7 @@ export function Navigation() {
                   return (
                     <Link
                       key={item.href}
-                      href={item.href}
+                      href={item.href} prefetch={false}
                       onClick={() => setMobileOpen(false)}
                       className={`flex items-center space-x-3 px-4 py-2.5 rounded-lg text-sm font-medium transition ${
                         isActive

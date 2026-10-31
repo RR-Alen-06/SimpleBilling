@@ -6,8 +6,8 @@ export async function proxy(request: NextRequest) {
     request,
   });
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   const pathname = request.nextUrl.pathname;
   const isPublicAuthRoute =
@@ -40,6 +40,12 @@ export async function proxy(request: NextRequest) {
 
   // If on a public auth route and no auth token present, serve immediately
   if (isPublicAuthRoute && !hasAuthToken) {
+    return supabaseResponse;
+  }
+
+  // Fast path for prefetch requests: skip remote getUser() roundtrip if auth cookie is present
+  const isPrefetch = request.headers.get('next-router-prefetch') === '1' || request.headers.get('purpose') === 'prefetch';
+  if (isPrefetch && hasAuthToken) {
     return supabaseResponse;
   }
 
@@ -131,6 +137,6 @@ export const config = {
      * - favicon.ico (favicon file)
      * - public assets
      */
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|woff2?|ico|css|js)$).*)',
   ],
 };

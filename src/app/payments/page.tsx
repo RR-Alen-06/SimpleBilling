@@ -19,7 +19,6 @@ import {
   Clock, 
   History,
   Eye,
-  RotateCcw,
   Trash2,
   RefreshCw,
   X,
@@ -55,6 +54,7 @@ function PaymentsContent() {
 
   // Custom Dropdown State
   const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false);
+  const [customerDropdownSearch, setCustomerDropdownSearch] = useState('');
   const customerDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -97,6 +97,7 @@ function PaymentsContent() {
     setDeletePin('');
     setOverride48h(false);
     const reversalWindowHours = Number(settings?.security?.payment_reversal_window_hours) || 72;
+    // eslint-disable-next-line react-hooks/purity
     setIsDeletionPastLimit((Date.now() - new Date(payment.created_at).getTime()) > reversalWindowHours * 3600 * 1000);
     setErrorMsg('');
     setSuccessMsg('');
@@ -157,13 +158,11 @@ function PaymentsContent() {
   };
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadData();
   }, []);
 
   useEffect(() => {
     if (initialCustomerId) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedCustomerId(initialCustomerId);
     }
   }, [initialCustomerId]);
@@ -270,8 +269,13 @@ function PaymentsContent() {
     }
   };
 
-  // Customers with pending dues
-  const customersWithDues = customers.filter(c => c.balance_due > 0);
+  // Customers with pending dues (and filtered for dropdown search)
+  const dropdownFilteredCustomers = customers.filter(c =>
+    c.name.toLowerCase().includes(customerDropdownSearch.trim().toLowerCase()) ||
+    (c.mobile && c.mobile.includes(customerDropdownSearch.trim()))
+  );
+  const customersWithDues = dropdownFilteredCustomers.filter(c => c.balance_due > 0);
+  const otherDropdownCustomers = dropdownFilteredCustomers.filter(c => c.balance_due <= 0);
 
   // Counts
   const totalPaymentsCount = payments.length;
@@ -390,7 +394,20 @@ function PaymentsContent() {
                   </button>
 
                   {customerDropdownOpen && (
-                    <div className="absolute top-full left-0 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto divide-y divide-slate-100 animate-in fade-in duration-100">
+                    <div className="absolute top-full left-0 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 max-h-72 overflow-y-auto divide-y divide-slate-100 animate-in fade-in duration-100">
+                      <div className="sticky top-0 bg-white p-2 border-b border-slate-100 z-10">
+                        <div className="flex items-center space-x-2 bg-slate-50 border border-slate-200 rounded-md px-2.5 py-1.5">
+                          <Search size={14} className="text-slate-400 shrink-0" />
+                          <input
+                            type="text"
+                            autoFocus
+                            placeholder="Search customer name or mobile..."
+                            value={customerDropdownSearch}
+                            onChange={(e) => setCustomerDropdownSearch(e.target.value)}
+                            className="w-full bg-transparent text-xs text-slate-800 focus:outline-none"
+                          />
+                        </div>
+                      </div>
                       <button
                         type="button"
                         onClick={() => {
@@ -401,6 +418,12 @@ function PaymentsContent() {
                       >
                         -- Choose Customer --
                       </button>
+
+                      {dropdownFilteredCustomers.length === 0 && (
+                        <div className="p-4 text-center text-xs text-slate-500">
+                          No customer matching &ldquo;{customerDropdownSearch}&rdquo;.
+                        </div>
+                      )}
 
                       {customersWithDues.length > 0 && (
                         <div>
@@ -414,6 +437,7 @@ function PaymentsContent() {
                               onClick={() => {
                                 setSelectedCustomerId(c.id);
                                 setCustomerDropdownOpen(false);
+                                setCustomerDropdownSearch('');
                               }}
                               className={`w-full text-left px-3 py-2.5 text-xs transition flex items-center justify-between cursor-pointer ${
                                 selectedCustomerId === c.id
@@ -430,18 +454,19 @@ function PaymentsContent() {
                         </div>
                       )}
 
-                      {customers.filter(c => c.balance_due <= 0).length > 0 && (
+                      {otherDropdownCustomers.length > 0 && (
                         <div>
                           <div className="bg-slate-100 px-3 py-1 text-[10px] font-bold text-slate-600 uppercase tracking-wider">
                             All Other Customers
                           </div>
-                          {customers.filter(c => c.balance_due <= 0).map((c) => (
+                          {otherDropdownCustomers.map((c) => (
                             <button
                               key={c.id}
                               type="button"
                               onClick={() => {
                                 setSelectedCustomerId(c.id);
                                 setCustomerDropdownOpen(false);
+                                setCustomerDropdownSearch('');
                               }}
                               className={`w-full text-left px-3 py-2.5 text-xs transition flex items-center justify-between cursor-pointer ${
                                 selectedCustomerId === c.id

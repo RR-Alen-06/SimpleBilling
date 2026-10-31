@@ -60,7 +60,7 @@ export default function BillingPage() {
   const [roundingMethod, setRoundingMethod] = useState<RoundingMethod>('None');
 
   // Split Payment & Advance Amounts
-  const [paymentMode, setPaymentMode] = useState<BillingPaymentMode>('Cash');
+  const [paymentMode, setPaymentMode] = useState<BillingPaymentMode>('Pay Later');
   const [cashPaid, setCashPaid] = useState<number | ''>('');
   const [upiPaid, setUpiPaid] = useState<number | ''>('');
   const [useAdvance, setUseAdvance] = useState<boolean>(false);
@@ -87,6 +87,7 @@ export default function BillingPage() {
 
   // Custom Dropdown State
   const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false);
+  const [customerSearch, setCustomerSearch] = useState('');
   const customerDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -103,7 +104,12 @@ export default function BillingPage() {
     let active = true;
     if (selectedCustomerId) {
       ApiService.getCustomerLedger(selectedCustomerId).then(res => {
-        if (active) setCustomerLedgerData({ runningBalance: res.runningBalance, pendingPoints: res.pendingPoints });
+        if (active) {
+          setCustomerLedgerData({ runningBalance: res.runningBalance, pendingPoints: res.pendingPoints });
+          if (res.customer) {
+            setCustomers(prev => prev.map(c => c.id === selectedCustomerId ? { ...c, advance_balance: res.customer!.advance_balance } : c));
+          }
+        }
       }).catch(() => {
         if (active) setCustomerLedgerData(null);
       });
@@ -118,7 +124,7 @@ export default function BillingPage() {
   const fetchInitialData = async () => {
     try {
       const [custList, prodList, shopSettings, redRules] = await Promise.all([
-        ApiService.getCustomers(),
+        ApiService.getCustomerSummaries(),
         ApiService.getProducts(),
         ApiService.getSettings(),
         ApiService.getLoyaltyRedemptionRules()
@@ -165,17 +171,22 @@ export default function BillingPage() {
   const totalBeforeRounding = totalAfterDiscount + gstAmount;
   const { roundedTotal, roundingAdjustment } = ApiService.calculateRounding(totalBeforeRounding, roundingMethod);
 
-  // Auto pre-fill full customer advance immediately when selecting a customer with an advance balance
+  // Adjust customer advance allocation when customer or total changes
   useEffect(() => {
     let active = true;
     if (selectedCustomerId) {
       const cust = customers.find(c => c.id === selectedCustomerId);
       if (cust && cust.advance_balance > 0) {
         Promise.resolve().then(() => {
-          if (active) {
-            setUseAdvance(true);
+          if (active && (useAdvance || paymentMode === 'Advance')) {
             const maxUsable = roundedTotal > 0 ? Math.min(cust.advance_balance, roundedTotal) : cust.advance_balance;
-            setAdvanceUsed(maxUsable);
+            setAdvanceUsed(prev => {
+              const prevNum = Number(prev || 0);
+              if (paymentMode === 'Advance' || prev === '' || prevNum > maxUsable) {
+                return maxUsable;
+              }
+              return prev;
+            });
           }
         });
       } else {
@@ -195,7 +206,7 @@ export default function BillingPage() {
       });
     }
     return () => { active = false; };
-  }, [selectedCustomerId, customers, roundedTotal]);
+  }, [selectedCustomerId, customers, roundedTotal, useAdvance, paymentMode]);
 
   useEffect(() => {
     let active = true;
@@ -321,6 +332,13 @@ export default function BillingPage() {
     e.preventDefault();
     if (!newCustName.trim()) return;
 
+    const normalizedTarget = newCustName.trim().replace(/\s+/g, ' ').toLowerCase();
+    const existing = customers.find(c => (c.name || '').trim().replace(/\s+/g, ' ').toLowerCase() === normalizedTarget);
+    if (existing) {
+      setErrorMsg(`Customer "${existing.name}" already exists. Please select the existing customer instead of creating a duplicate.`);
+      return;
+    }
+
     try {
       const created = await ApiService.addCustomer({
         name: newCustName.trim(),
@@ -441,6 +459,11 @@ export default function BillingPage() {
         items: cart
       });
 
+      if (!createdBill) {
+        setErrorMsg('Customer record not found or access denied.');
+        return;
+      }
+
       const financialSummary = await ApiService.getBillFinancialSummary(createdBill);
       const billWithSummary = { ...createdBill, financial_summary: financialSummary };
 
@@ -456,6 +479,7 @@ export default function BillingPage() {
       setAdvanceUsed('');
       setPointsToRedeem(0);
       setSelectedCustomerId('');
+      setPaymentMode('Pay Later');
 
       await fetchInitialData();
     } catch (err: unknown) {
@@ -469,6 +493,19 @@ export default function BillingPage() {
     p.name.toLowerCase().includes(productSearch.toLowerCase()) ||
     p.category.toLowerCase().includes(productSearch.toLowerCase())
   );
+
+  const filteredDropdownCustomers = customers.filter(c =>
+    c.name.toLowerCase().includes(customerSearch.trim().toLowerCase()) ||
+    (c.mobile && c.mobile.includes(customerSearch.trim()))
+  );
+
+  const normalizedNewCustName = newCustName.trim().replace(/\s+/g, ' ').toLowerCase();
+  const exactDuplicateNewCust = normalizedNewCustName
+    ? customers.find(c => (c.name || '').trim().replace(/\s+/g, ' ').toLowerCase() === normalizedNewCustName)
+    : undefined;
+  const similarNewCustomers = normalizedNewCustName.length >= 2
+    ? customers.filter(c => (c.name || '').toLowerCase().includes(normalizedNewCustName)).slice(0, 4)
+    : [];
 
   return (
     <div className="space-y-6">
@@ -522,37 +559,85 @@ export default function BillingPage() {
                 </button>
 
                 {customerDropdownOpen && (
-                  <div className="absolute top-full left-0 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto divide-y divide-slate-100 animate-in fade-in duration-100">
+                  <div className="absolute top-full left-0 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 max-h-72 overflow-y-auto divide-y divide-slate-100 animate-in fade-in duration-100">
+                    <div className="sticky top-0 bg-white p-2 border-b border-slate-100 z-10">
+                      <div className="flex items-center space-x-2 bg-slate-50 border border-slate-200 rounded-md px-2.5 py-1.5">
+                        <Search size={14} className="text-slate-400 shrink-0" />
+                        <input
+                          type="text"
+                          autoFocus
+                          placeholder="Search customer name or mobile..."
+                          value={customerSearch}
+                          onChange={(e) => setCustomerSearch(e.target.value)}
+                          className="w-full bg-transparent text-xs text-slate-800 focus:outline-none"
+                        />
+                      </div>
+                    </div>
                     <button
                       type="button"
                       onClick={() => {
                         setSelectedCustomerId('');
                         setPointsToRedeem(0);
+                        setUseAdvance(false);
+                        setAdvanceUsed('');
                         setCustomerDropdownOpen(false);
                       }}
                       className="w-full text-left px-3 py-2 text-xs text-slate-500 hover:bg-slate-50 font-medium transition cursor-pointer"
                     >
-                      -- Select Customer * --
+                      -- Counter / Walk-in Customer --
                     </button>
-                    {customers.map((c) => (
-                      <button
-                        key={c.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedCustomerId(c.id);
-                          setPointsToRedeem(0);
-                          setCustomerDropdownOpen(false);
-                        }}
-                        className={`w-full text-left px-3 py-2.5 text-xs transition flex items-center justify-between cursor-pointer ${
-                          selectedCustomerId === c.id
-                            ? 'bg-blue-50 text-blue-900 font-bold'
-                            : 'text-slate-800 hover:bg-slate-50'
-                        }`}
-                      >
-                        <span className="truncate">{c.name} {c.mobile ? `(${c.mobile})` : ''}</span>
-                        {selectedCustomerId === c.id && <CheckCircle2 size={14} className="text-blue-600 flex-shrink-0 ml-1.5" />}
-                      </button>
-                    ))}
+                    {filteredDropdownCustomers.length === 0 ? (
+                      <div className="p-3 text-center space-y-2">
+                        <p className="text-xs text-slate-500">No matching customer found.</p>
+                        {customerSearch.trim() && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setNewCustName(customerSearch.trim());
+                              setCustomerDropdownOpen(false);
+                              setShowAddCustomerModal(true);
+                            }}
+                            className="inline-flex items-center space-x-1 text-xs font-bold text-blue-600 hover:text-blue-700 bg-blue-50 px-2.5 py-1 rounded"
+                          >
+                            <UserPlus size={13} />
+                            <span>+ Add &ldquo;{customerSearch.trim()}&rdquo;</span>
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      filteredDropdownCustomers.map((c) => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedCustomerId(c.id);
+                            setPointsToRedeem(0);
+                            setUseAdvance(false);
+                            setAdvanceUsed('');
+                            setCustomerDropdownOpen(false);
+                            setCustomerSearch('');
+                          }}
+                          className={`w-full text-left px-3 py-2.5 text-xs transition flex items-center justify-between cursor-pointer ${
+                            selectedCustomerId === c.id
+                              ? 'bg-blue-50 text-blue-900 font-bold'
+                              : 'text-slate-800 hover:bg-slate-50'
+                          }`}
+                        >
+                          <div className="truncate pr-2">
+                            <span>{c.name}</span>
+                            {c.mobile && <span className="text-slate-500 ml-1">({c.mobile})</span>}
+                          </div>
+                          <div className="flex items-center space-x-1.5 shrink-0">
+                            {Number(c.advance_balance || 0) > 0 && (
+                              <span className="text-[10px] font-bold font-data-mono bg-teal-50 text-teal-700 border border-teal-200 px-1.5 py-0.5 rounded">
+                                Adv ₹{Number(c.advance_balance).toFixed(0)}
+                              </span>
+                            )}
+                            {selectedCustomerId === c.id && <CheckCircle2 size={14} className="text-blue-600 flex-shrink-0" />}
+                          </div>
+                        </button>
+                      ))
+                    )}
                   </div>
                 )}
               </div>
@@ -756,7 +841,8 @@ export default function BillingPage() {
                 <label className="text-[10px] text-slate-400 font-semibold block">Qty</label>
                 <input
                   type="number"
-                  min="1"
+                  step="any"
+                  min="0.01"
                   value={customItemQty}
                   onChange={(e) => setCustomItemQty(e.target.value === '' ? '' : Number(e.target.value))}
                   className="w-full bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs text-center font-data-mono font-bold"
@@ -1311,11 +1397,25 @@ export default function BillingPage() {
                 <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs space-y-2">
                   <div className="flex justify-between items-center text-amber-900 font-bold">
                     <span>Credit / Pay Later:</span>
-                    <span className="text-base font-extrabold font-mono">₹{roundedTotal.toFixed(2)}</span>
+                    <span className="text-base font-extrabold font-mono">
+                      ₹{Math.max(0, roundedTotal - (useAdvance ? Number(advanceUsed || 0) : 0)).toFixed(2)}
+                    </span>
                   </div>
-                  <p className="text-[11px] text-amber-800">
-                    No payment collected upfront. The full amount of <strong>₹{roundedTotal.toFixed(2)}</strong> will be tracked on the customer&apos;s ledger.
-                  </p>
+                  {useAdvance && Number(advanceUsed || 0) > 0 ? (
+                    <div className="text-[11px] text-amber-800 space-y-0.5">
+                      <div className="flex justify-between text-teal-900 font-medium bg-teal-100/70 px-2 py-1 rounded">
+                        <span>Paid from Advance:</span>
+                        <span className="font-bold font-mono">₹{Number(advanceUsed || 0).toFixed(2)}</span>
+                      </div>
+                      <p className="pt-1">
+                        Remaining balance of <strong>₹{Math.max(0, roundedTotal - Number(advanceUsed || 0)).toFixed(2)}</strong> will be tracked as Pay Later due on the customer&apos;s ledger.
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-amber-800">
+                      No payment collected upfront. The full amount of <strong>₹{roundedTotal.toFixed(2)}</strong> will be tracked on the customer&apos;s ledger.
+                    </p>
+                  )}
                   {!selectedCustomerId && (
                     <div className="bg-rose-100 text-rose-800 p-2 rounded text-[11px] font-bold border border-rose-200">
                       ⚠️ Customer is required for Pay Later. Please select or add a customer above.
@@ -1403,8 +1503,56 @@ export default function BillingPage() {
                   required
                   value={newCustName}
                   onChange={(e) => setNewCustName(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded px-3 py-1.5 text-xs font-medium"
+                  className={`w-full bg-slate-50 border rounded px-3 py-1.5 text-xs font-medium ${
+                    exactDuplicateNewCust ? 'border-rose-400 bg-rose-50/40' : 'border-slate-300'
+                  }`}
                 />
+                {exactDuplicateNewCust && (
+                  <div className="mt-1.5 bg-rose-50 border border-rose-200 rounded p-2 text-xs text-rose-800 space-y-1.5">
+                    <p className="font-bold flex items-center space-x-1">
+                      <AlertTriangle size={13} className="text-rose-600 shrink-0" />
+                      <span>Customer &ldquo;{exactDuplicateNewCust.name}&rdquo; already exists!</span>
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedCustomerId(exactDuplicateNewCust.id);
+                        setShowAddCustomerModal(false);
+                        setNewCustName('');
+                        setNewCustMobile('');
+                        setNewCustEmail('');
+                      }}
+                      className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-1 px-2.5 rounded text-[11px]"
+                    >
+                      Select Existing &ldquo;{exactDuplicateNewCust.name}&rdquo;
+                    </button>
+                  </div>
+                )}
+                {!exactDuplicateNewCust && similarNewCustomers.length > 0 && (
+                  <div className="mt-1.5 bg-slate-50 border border-slate-200 rounded p-2 space-y-1">
+                    <p className="text-[10px] font-bold uppercase text-slate-500">Matching Existing Customers:</p>
+                    {similarNewCustomers.map(match => (
+                      <div key={match.id} className="flex items-center justify-between text-xs py-0.5">
+                        <span className="font-semibold text-slate-800 truncate">
+                          {match.name} {match.mobile ? `(${match.mobile})` : ''}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedCustomerId(match.id);
+                            setShowAddCustomerModal(false);
+                            setNewCustName('');
+                            setNewCustMobile('');
+                            setNewCustEmail('');
+                          }}
+                          className="text-blue-600 hover:underline font-bold text-[11px] ml-2 shrink-0"
+                        >
+                          Use
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Mobile Number (Optional)</label>
@@ -1437,7 +1585,8 @@ export default function BillingPage() {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white rounded shadow"
+                  disabled={Boolean(exactDuplicateNewCust)}
+                  className="px-4 py-1.5 text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white rounded shadow disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Save & Select
                 </button>

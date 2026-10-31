@@ -3,7 +3,8 @@ import { CustomerStatementData } from '../types';
 
 export class StatementGenerator {
   /**
-   * Generates an executive-grade, high-contrast monochrome Customer Consolidated Purchase Statement PDF.
+   * Generates an executive-grade, high-contrast monochrome Customer Statement of Account PDF.
+   * Full financial ledger format with Debits (Invoices), Credits (Payments), and Running Balance.
    * Optimized for crystal-clear A4 printing and archival accounting.
    */
   static generateStatementPdf(data: CustomerStatementData): jsPDF {
@@ -20,11 +21,14 @@ export class StatementGenerator {
     let y = margin;
 
     // Helper for pagination tracking
-    const checkPageBreak = (neededHeight: number) => {
+    const checkPageBreak = (neededHeight: number, onBreak?: () => void) => {
       if (y + neededHeight > pageHeight - 18) {
         doc.addPage();
         y = margin;
         renderRunningHeader();
+        if (onBreak) {
+          onBreak();
+        }
       }
     };
 
@@ -32,19 +36,18 @@ export class StatementGenerator {
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
       doc.setTextColor(80, 80, 80);
-      doc.text(`${data.shop_settings.shop_name} — Consolidated Customer Statement`, margin, y);
+      doc.text(`${data.shop_settings.shop_name} — Statement of Account`, margin, y);
       doc.text(`Customer: ${data.customer.name} | Period: ${data.period.filter_label}`, pageWidth - margin, y, { align: 'right' });
       y += 3.5;
       doc.setDrawColor(0, 0, 0);
       doc.setLineWidth(0.3);
       doc.line(margin, y, pageWidth - margin, y);
-      y += 6;
+      y += 5.5;
     };
 
     // =========================================================================
     // 1. TOP HEADER & METADATA (Monochrome Executive Dual-Column)
     // =========================================================================
-    // Top border accent
     doc.setDrawColor(0, 0, 0);
     doc.setLineWidth(0.6);
     doc.line(margin, y, pageWidth - margin, y);
@@ -77,7 +80,7 @@ export class StatementGenerator {
     const rightX = pageWidth - margin;
     let rightY = margin + 5;
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(11);
+    doc.setFontSize(12);
     doc.setTextColor(0, 0, 0);
     doc.text('STATEMENT OF ACCOUNT', rightX, rightY, { align: 'right' });
 
@@ -118,10 +121,10 @@ export class StatementGenerator {
     doc.setTextColor(0, 0, 0);
     doc.text('CUSTOMER ACCOUNT INFORMATION', margin + 3, y + 3.6);
 
-    const isSettled = data.reconciliation.current_outstanding_balance <= 0.01;
+    const isSettled = data.current_balance_due <= 0.01;
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(7.5);
-    doc.text(`ACCOUNT STATUS: ${isSettled ? 'DUES SETTLED (NIL)' : `OUTSTANDING DUE: Rs. ${data.reconciliation.current_outstanding_balance.toFixed(2)}`}`, rightX - 3, y + 3.6, { align: 'right' });
+    doc.text(`STATUS: ${isSettled ? 'DUES SETTLED (NIL)' : `OUTSTANDING DUE: Rs. ${data.current_balance_due.toFixed(2)}`}`, rightX - 3, y + 3.6, { align: 'right' });
 
     // Customer details row
     doc.setFont('helvetica', 'normal');
@@ -136,25 +139,25 @@ export class StatementGenerator {
     doc.text(`Phone: ${data.customer.mobile || 'N/A'}`, margin + 65, infoY);
     doc.text(`Email: ${data.customer.email || 'N/A'}`, margin + 115, infoY);
 
-    if (data.reconciliation.advance_balance > 0) {
+    if (data.current_advance_balance > 0) {
       doc.setFont('helvetica', 'bold');
-      doc.text(`Advance Credit: Rs. ${data.reconciliation.advance_balance.toFixed(2)}`, rightX - 3, infoY, { align: 'right' });
+      doc.text(`Advance Credit: Rs. ${data.current_advance_balance.toFixed(2)}`, rightX - 3, infoY, { align: 'right' });
     }
 
     y += custBoxHeight + 4;
 
     // =========================================================================
-    // 3. EXECUTIVE KPI MATRIX TILES
+    // 3. EXECUTIVE KPI MATRIX TILES (Opening, Invoiced, Paid, Closing)
     // =========================================================================
     const kpiCount = 4;
     const kpiWidth = contentWidth / kpiCount;
     const kpiHeight = 11;
 
     const kpiItems = [
-      { label: 'TOTAL INVOICED (DEBIT)', value: `Rs. ${data.kpi.total_invoiced.toFixed(2)}` },
-      { label: 'TOTAL PAID (CREDIT)', value: `Rs. ${data.kpi.total_paid.toFixed(2)}` },
-      { label: 'TOTAL INVOICES', value: `${data.kpi.invoices_count} Bills` },
-      { label: 'TOTAL UNITS BOUGHT', value: `${data.kpi.total_units_bought} Units` }
+      { label: 'OPENING BALANCE', value: `Rs. ${data.opening_balance.toFixed(2)}` },
+      { label: 'TOTAL INVOICED (DR)', value: `Rs. ${data.kpi.total_invoiced.toFixed(2)}` },
+      { label: 'TOTAL PAID (CR)', value: `Rs. ${data.kpi.total_paid.toFixed(2)}` },
+      { label: 'CLOSING BALANCE', value: `Rs. ${data.closing_balance.toFixed(2)}` }
     ];
 
     doc.setDrawColor(0, 0, 0);
@@ -178,26 +181,40 @@ export class StatementGenerator {
       doc.text(kpi.value, kX + kpiWidth / 2, y + 8.5, { align: 'center' });
     });
 
-    y += kpiHeight + 5;
+    y += kpiHeight + 2;
+
+    // Collections & Financial Summary Sub-row
+    const summary = data.financial_summary || {
+      total_cash_received: 0,
+      total_upi_received: 0,
+      total_advance_utilized: 0,
+      total_outstanding: data.current_balance_due
+    };
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.5);
+    doc.setTextColor(60, 60, 60);
+    const collSummary = `Collections Breakdown — Cash: Rs. ${(summary.total_cash_received || 0).toFixed(2)}   |   UPI: Rs. ${(summary.total_upi_received || 0).toFixed(2)}   |   Adv Utilized: Rs. ${(summary.total_advance_utilized || 0).toFixed(2)}   |   Total Dues: Rs. ${(summary.total_outstanding || data.current_balance_due).toFixed(2)}`;
+    doc.text(collSummary, margin, y + 2.5);
+    y += 5.5;
 
     // =========================================================================
-    // 4. ITEMIZED PURCHASE LEDGER TABLE (Monochrome Grid Layout)
+    // 4. FINANCIAL STATEMENT LEDGER TABLE (Standard Double-Entry Columns)
     // =========================================================================
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(8.5);
     doc.setTextColor(0, 0, 0);
-    doc.text('ITEMIZED TRANSACTION & PURCHASE HISTORY', margin, y);
+    doc.text('STATEMENT OF TRANSACTIONS (DEBITS & CREDITS)', margin, y);
     y += 3;
 
     // Table Column Coordinates
-    const colIdx = margin + 2;               // # (6mm)
-    const colDate = margin + 8;              // Date & Time (26mm)
-    const colBill = margin + 34;             // Bill Number (20mm)
-    const colDesc = margin + 56;             // Product Description (60mm)
-    const colQty = margin + 120;             // Qty (14mm, right)
-    const colRate = margin + 142;            // Unit Rate (18mm, right)
-    const colDisc = margin + 162;            // Discount (16mm, right)
-    const colTotal = margin + contentWidth;  // Line Total (24mm, right)
+    const colIdx = margin + 2;               // # (7mm)
+    const colDate = margin + 8;              // Date & Time (24mm)
+    const colType = margin + 32;             // Type (16mm)
+    const colRef = margin + 48;              // Ref # (22mm)
+    const colDesc = margin + 70;             // Particulars / Description (56mm)
+    const colDebit = margin + 144;           // Debit Dr (18mm, right)
+    const colCredit = margin + 165;          // Credit Cr (18mm, right)
+    const colBalance = margin + contentWidth;// Balance Dr (21mm, right)
 
     const renderTableHeader = () => {
       doc.setFillColor(240, 240, 240);
@@ -211,106 +228,156 @@ export class StatementGenerator {
 
       doc.text('#', colIdx, y + 3.8);
       doc.text('DATE', colDate, y + 3.8);
-      doc.text('INVOICE #', colBill, y + 3.8);
-      doc.text('PRODUCT / SERVICE DESCRIPTION', colDesc, y + 3.8);
-      doc.text('QTY', colQty, y + 3.8, { align: 'right' });
-      doc.text('RATE (Rs.)', colRate, y + 3.8, { align: 'right' });
-      doc.text('DISC (Rs.)', colDisc, y + 3.8, { align: 'right' });
-      doc.text('TOTAL (Rs.)', colTotal - 2, y + 3.8, { align: 'right' });
+      doc.text('TYPE', colType, y + 3.8);
+      doc.text('REF NO', colRef, y + 3.8);
+      doc.text('PARTICULARS / DESCRIPTION', colDesc, y + 3.8);
+      doc.text('DEBIT (Rs.)', colDebit, y + 3.8, { align: 'right' });
+      doc.text('CREDIT (Rs.)', colCredit, y + 3.8, { align: 'right' });
+      doc.text('BALANCE (Rs.)', colBalance - 2, y + 3.8, { align: 'right' });
 
       y += 5.5;
     };
 
     renderTableHeader();
 
-    if (data.date_groups.length === 0) {
-      checkPageBreak(12);
+    // 4.1 Opening Balance Row
+    doc.setFillColor(250, 250, 250);
+    doc.rect(margin, y, contentWidth, 4.5, 'F');
+    doc.setDrawColor(210, 210, 210);
+    doc.setLineWidth(0.2);
+    doc.line(margin, y + 4.5, margin + contentWidth, y + 4.5);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.setTextColor(80, 80, 80);
+    doc.text('—', colIdx, y + 3.2);
+
+    const openDateStr = data.period.start_date 
+      ? new Date(data.period.start_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+      : 'Initial';
+    doc.text(openDateStr, colDate, y + 3.2);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(0, 0, 0);
+    doc.text('OPENING', colType, y + 3.2);
+    doc.setFont('helvetica', 'normal');
+    doc.text('—', colRef, y + 3.2);
+    doc.setFont('helvetica', 'bold');
+    doc.text('Opening Balance Brought Forward', colDesc, y + 3.2);
+    doc.setFont('helvetica', 'normal');
+    doc.text('—', colDebit, y + 3.2, { align: 'right' });
+    doc.text('—', colCredit, y + 3.2, { align: 'right' });
+    doc.setFont('helvetica', 'bold');
+    doc.text(`${data.opening_balance.toFixed(2)}`, colBalance - 2, y + 3.2, { align: 'right' });
+
+    y += 4.8;
+
+    // 4.2 Chronological Transactions
+    const txns = data.transactions || [];
+    if (txns.length === 0) {
+      checkPageBreak(12, renderTableHeader);
       doc.setDrawColor(180, 180, 180);
-      doc.rect(margin, y, contentWidth, 10);
+      doc.rect(margin, y, contentWidth, 9);
       doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8);
+      doc.setFontSize(7.5);
       doc.setTextColor(100, 100, 100);
-      doc.text('No purchase transactions recorded in this selected period.', margin + contentWidth / 2, y + 6, { align: 'center' });
-      y += 14;
+      doc.text('No transactions recorded in this selected period.', margin + contentWidth / 2, y + 5.5, { align: 'center' });
+      y += 11;
     } else {
-      let overallIndex = 1;
+      txns.forEach((txn, idx) => {
+        checkPageBreak(5, renderTableHeader);
 
-      for (const group of data.date_groups) {
-        for (const bill of group.bills) {
-          const billTime = new Date(bill.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+        // Row background and bottom border
+        doc.setDrawColor(225, 225, 225);
+        doc.setLineWidth(0.15);
+        doc.line(margin, y + 4.5, margin + contentWidth, y + 4.5);
 
-          bill.items.forEach((item, itemIdx) => {
-            checkPageBreak(5);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7);
+        doc.setTextColor(0, 0, 0);
 
-            // Row background and borders
-            doc.setDrawColor(220, 220, 220);
-            doc.setLineWidth(0.15);
-            doc.line(margin, y + 4.5, margin + contentWidth, y + 4.5);
+        // Row Index
+        doc.text(`${idx + 1}`, colIdx, y + 3.2);
 
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(7);
-            doc.setTextColor(0, 0, 0);
+        // Date
+        const shortDate = txn.date.slice(0, 11);
+        doc.text(shortDate, colDate, y + 3.2);
 
-            // Row Index
-            doc.text(`${overallIndex++}`, colIdx, y + 3.2);
-
-            // Date & Invoice only on the first item of a bill
-            if (itemIdx === 0) {
-              doc.text(`${group.date_formatted}`, colDate, y + 3.2);
-              doc.setFont('helvetica', 'bold');
-              doc.text(bill.bill_number, colBill, y + 3.2);
-              doc.setFont('helvetica', 'normal');
-            } else {
-              doc.setTextColor(150, 150, 150);
-              doc.text('"', colDate + 8, y + 3.2);
-              doc.text('"', colBill + 6, y + 3.2);
-              doc.setTextColor(0, 0, 0);
-            }
-
-            // Description
-            const displayName = item.is_custom_item ? `${item.product_name} [Custom]` : item.product_name;
-            const cleanName = displayName.length > 34 ? displayName.slice(0, 32) + '..' : displayName;
-            doc.text(cleanName, colDesc, y + 3.2);
-
-            // Qty, Rate, Discount, Total
-            doc.text(`${item.quantity}`, colQty, y + 3.2, { align: 'right' });
-            doc.text(`${item.price.toFixed(2)}`, colRate, y + 3.2, { align: 'right' });
-            doc.text(itemIdx === 0 && bill.discount > 0 ? `${bill.discount.toFixed(2)}` : '0.00', colDisc, y + 3.2, { align: 'right' });
-            doc.setFont('helvetica', 'bold');
-            doc.text(`${item.total.toFixed(2)}`, colTotal - 2, y + 3.2, { align: 'right' });
-
-            y += 4.5;
-          });
-
-          // Bill Subtotal Row
-          checkPageBreak(5);
-          doc.setFillColor(248, 248, 248);
-          doc.rect(margin, y, contentWidth, 4.5, 'F');
-          doc.setDrawColor(180, 180, 180);
-          doc.setLineWidth(0.2);
-          doc.line(margin, y + 4.5, margin + contentWidth, y + 4.5);
-
-          doc.setFont('helvetica', 'normal');
-          doc.setFontSize(6.5);
-          doc.setTextColor(60, 60, 60);
-          doc.text(`Bill Ref: ${bill.bill_number} (${billTime})`, colDesc, y + 3.2);
-
-          const isFullyPaid = bill.balance_due <= 0.01;
-          const statusText = isFullyPaid ? 'Status: Fully Paid' : `Status: Due Rs. ${bill.balance_due.toFixed(2)}`;
-          doc.text(statusText, colQty, y + 3.2, { align: 'right' });
-
-          doc.setFont('helvetica', 'bold');
-          doc.setTextColor(0, 0, 0);
-          doc.text(`Paid: Rs. ${bill.paid_amount.toFixed(2)}`, colDisc, y + 3.2, { align: 'right' });
-          doc.text(`Bill Total: Rs. ${bill.grand_total.toFixed(2)}`, colTotal - 2, y + 3.2, { align: 'right' });
-
-          y += 5.5;
+        // Type
+        doc.setFont('helvetica', 'bold');
+        if (txn.type === 'INVOICE') {
+          doc.text('INVOICE', colType, y + 3.2);
+        } else {
+          doc.text('PAYMENT', colType, y + 3.2);
         }
-      }
+        doc.setFont('helvetica', 'normal');
+
+        // Ref No
+        doc.text(txn.reference_no, colRef, y + 3.2);
+
+        // Particulars / Description
+        let desc = txn.particulars || '';
+        if (txn.type === 'INVOICE' && txn.items && txn.items.length > 0) {
+          const itemSummary = txn.items.map(it => `${it.product_name} (x${it.quantity})`).join(', ');
+          desc = `${txn.reference_no}: ${itemSummary}`;
+        }
+        if (desc.length > 34) {
+          desc = desc.slice(0, 32) + '..';
+        }
+        doc.text(desc, colDesc, y + 3.2);
+
+        // Debit
+        if (txn.debit > 0) {
+          doc.setFont('helvetica', 'bold');
+          doc.text(`${txn.debit.toFixed(2)}`, colDebit, y + 3.2, { align: 'right' });
+          doc.setFont('helvetica', 'normal');
+        } else {
+          doc.text('—', colDebit, y + 3.2, { align: 'right' });
+        }
+
+        // Credit
+        if (txn.credit > 0) {
+          doc.setFont('helvetica', 'bold');
+          doc.text(`${txn.credit.toFixed(2)}`, colCredit, y + 3.2, { align: 'right' });
+          doc.setFont('helvetica', 'normal');
+        } else {
+          doc.text('—', colCredit, y + 3.2, { align: 'right' });
+        }
+
+        // Running Balance
+        doc.setFont('helvetica', 'bold');
+        doc.text(`${txn.running_balance.toFixed(2)}`, colBalance - 2, y + 3.2, { align: 'right' });
+
+        y += 4.5;
+      });
     }
 
-    // Outer table border
-    y += 1;
+    // 4.3 Closing Balance Row
+    checkPageBreak(6, renderTableHeader);
+    doc.setFillColor(245, 245, 245);
+    doc.rect(margin, y, contentWidth, 5, 'F');
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineWidth(0.25);
+    doc.line(margin, y, margin + contentWidth, y);
+    doc.line(margin, y + 5, margin + contentWidth, y + 5);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7);
+    doc.setTextColor(0, 0, 0);
+    doc.text('—', colIdx, y + 3.5);
+
+    const closeDateStr = data.period.end_date 
+      ? new Date(data.period.end_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+      : 'Current';
+    doc.text(closeDateStr, colDate, y + 3.5);
+    doc.text('CLOSING', colType, y + 3.5);
+    doc.text('—', colRef, y + 3.5);
+    doc.text('Closing Balance Carried Forward', colDesc, y + 3.5);
+    doc.text(`${data.kpi.total_invoiced.toFixed(2)}`, colDebit, y + 3.5, { align: 'right' });
+    doc.text(`${data.kpi.total_paid.toFixed(2)}`, colCredit, y + 3.5, { align: 'right' });
+    doc.text(`${data.closing_balance.toFixed(2)}`, colBalance - 2, y + 3.5, { align: 'right' });
+
+    y += 7.5;
 
     // =========================================================================
     // 5. FINANCIAL RECONCILIATION SUMMARY (High Contrast Table)
@@ -338,10 +405,10 @@ export class StatementGenerator {
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(6.5);
     doc.setTextColor(0, 0, 0);
-    doc.text('PERIOD PURCHASES', margin + rColWidth * 0.5, y + 3.5, { align: 'center' });
-    doc.text('PERIOD PAYMENTS RECEIVED', margin + rColWidth * 1.5, y + 3.5, { align: 'center' });
-    doc.text('CUSTOMER ADVANCE CREDIT', margin + rColWidth * 2.5, y + 3.5, { align: 'center' });
-    doc.text('NET CLOSING BALANCE DUE', margin + rColWidth * 3.5, y + 3.5, { align: 'center' });
+    doc.text('OPENING BALANCE', margin + rColWidth * 0.5, y + 3.5, { align: 'center' });
+    doc.text('+ TOTAL INVOICED (DR)', margin + rColWidth * 1.5, y + 3.5, { align: 'center' });
+    doc.text('- TOTAL PAID (CR)', margin + rColWidth * 2.5, y + 3.5, { align: 'center' });
+    doc.text('= CLOSING BALANCE', margin + rColWidth * 3.5, y + 3.5, { align: 'center' });
 
     // Vertical column lines
     doc.line(margin + rColWidth, y, margin + rColWidth, y + reconHeight);
@@ -353,18 +420,18 @@ export class StatementGenerator {
     doc.setFontSize(9.5);
     doc.setTextColor(0, 0, 0);
     const valY = y + 13;
-    doc.text(`Rs. ${data.reconciliation.period_purchases.toFixed(2)}`, margin + rColWidth * 0.5, valY, { align: 'center' });
-    doc.text(`Rs. ${data.reconciliation.period_payments.toFixed(2)}`, margin + rColWidth * 1.5, valY, { align: 'center' });
-    doc.text(`Rs. ${data.reconciliation.advance_balance.toFixed(2)}`, margin + rColWidth * 2.5, valY, { align: 'center' });
+    doc.text(`Rs. ${data.opening_balance.toFixed(2)}`, margin + rColWidth * 0.5, valY, { align: 'center' });
+    doc.text(`Rs. ${data.kpi.total_invoiced.toFixed(2)}`, margin + rColWidth * 1.5, valY, { align: 'center' });
+    doc.text(`Rs. ${data.kpi.total_paid.toFixed(2)}`, margin + rColWidth * 2.5, valY, { align: 'center' });
 
-    const netDue = data.reconciliation.current_outstanding_balance;
+    const netClosing = data.closing_balance;
     doc.setFontSize(10.5);
-    doc.text(`Rs. ${netDue.toFixed(2)}`, margin + rColWidth * 3.5, valY, { align: 'center' });
+    doc.text(`Rs. ${netClosing.toFixed(2)}`, margin + rColWidth * 3.5, valY, { align: 'center' });
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(6.5);
     doc.setTextColor(90, 90, 90);
-    doc.text(netDue > 0 ? '(Payment Due to Store)' : '(All Accounts Clear)', margin + rColWidth * 3.5, valY + 4.5, { align: 'center' });
+    doc.text(netClosing > 0 ? '(Payment Due to Store)' : '(All Accounts Clear)', margin + rColWidth * 3.5, valY + 4.5, { align: 'center' });
 
     y += reconHeight + 6;
 
@@ -443,4 +510,3 @@ export class StatementGenerator {
     }
   }
 }
-
