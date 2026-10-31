@@ -273,9 +273,34 @@ export default function ReportsPage() {
   };
 
   // Full Multi-Section Consolidated CSV Export (Active Period or All-Time)
-  const handleExportFullCSV = (isMasterAllTime = false) => {
+  const handleExportFullCSV = async (isMasterAllTime = false) => {
     const filterLabel = isMasterAllTime ? 'ALL TIME (Master Database Export)' : getFilterLabel();
     const dateStr = new Date().toISOString().split('T')[0];
+
+    const exportBills = isMasterAllTime ? await ApiService.getBillsByDateRange('all_time') : bills;
+    const exportExpenses = isMasterAllTime ? allExpenses : periodExpenses;
+    const exportSales = exportBills.reduce((s, b) => s + Number(b.grand_total || 0), 0);
+    const exportPaid = exportBills.reduce((s, b) => s + Number(b.paid_total || 0), 0);
+    const exportTax = exportBills.reduce((s, b) => s + Number(b.gst_amount || 0), 0);
+    const exportCash = exportBills.reduce((s, b) => s + Number(b.cash_paid || 0), 0);
+    const exportUpi = exportBills.reduce((s, b) => s + Number(b.upi_paid || 0), 0);
+    const exportPending = exportBills.reduce((s, b) => s + Math.max(0, Number(b.grand_total || 0) - Number(b.paid_total || 0)), 0);
+    const exportExpTotal = exportExpenses.reduce((s, e) => s + Number(e.amount || 0), 0);
+    const exportNetProfit = exportPaid - exportExpTotal;
+    const exportAvgBill = exportBills.length > 0 ? exportSales / exportBills.length : 0;
+
+    const exportItemSalesMap = new Map<string, { name: string; qty: number; total: number }>();
+    exportBills.forEach(bill => {
+      (bill.items || []).forEach(it => {
+        const existing = exportItemSalesMap.get(it.product_name) || { name: it.product_name, qty: 0, total: 0 };
+        exportItemSalesMap.set(it.product_name, {
+          name: it.product_name,
+          qty: existing.qty + Number(it.quantity || 0),
+          total: existing.total + Number(it.total || 0)
+        });
+      });
+    });
+    const exportItemSales = Array.from(exportItemSalesMap.values()).sort((a, b) => b.total - a.total);
     
     const lines: string[] = [];
     
@@ -287,24 +312,24 @@ export default function ReportsPage() {
     // 1. Executive Summary & Net Profit
     lines.push('"--- 1. EXECUTIVE FINANCIAL SUMMARY & NET PROFIT ---"');
     lines.push('"Metric","Value (INR / Count)"');
-    lines.push(`"Total Revenue / Invoiced (INR)","${totalSales.toFixed(2)}"`);
-    lines.push(`"Total Collected by Shop (INR)","${totalPaid.toFixed(2)}"`);
-    lines.push(`"Total Operating Expenses (INR)","${totalExpenses.toFixed(2)}"`);
-    lines.push(`"Net Operating Profit / Margin (INR)","${netProfit.toFixed(2)}"`);
-    lines.push(`"GST / Tax Collected (INR)","${totalTax.toFixed(2)}"`);
-    lines.push(`"Cash Collections (INR)","${cashTotal.toFixed(2)}"`);
-    lines.push(`"UPI Collections (INR)","${upiTotal.toFixed(2)}"`);
-    lines.push(`"Period Unpaid Dues (INR)","${pendingTotal.toFixed(2)}"`);
-    lines.push(`"Total Invoices Generated","${bills.length}"`);
-    lines.push(`"Average Invoice Value (INR)","${avgBill.toFixed(2)}"`);
+    lines.push(`"Total Revenue / Invoiced (INR)","${exportSales.toFixed(2)}"`);
+    lines.push(`"Total Collected by Shop (INR)","${exportPaid.toFixed(2)}"`);
+    lines.push(`"Total Operating Expenses (INR)","${exportExpTotal.toFixed(2)}"`);
+    lines.push(`"Net Operating Profit / Margin (INR)","${exportNetProfit.toFixed(2)}"`);
+    lines.push(`"GST / Tax Collected (INR)","${exportTax.toFixed(2)}"`);
+    lines.push(`"Cash Collections (INR)","${exportCash.toFixed(2)}"`);
+    lines.push(`"UPI Collections (INR)","${exportUpi.toFixed(2)}"`);
+    lines.push(`"Period Unpaid Dues (INR)","${exportPending.toFixed(2)}"`);
+    lines.push(`"Total Invoices Generated","${exportBills.length}"`);
+    lines.push(`"Average Invoice Value (INR)","${exportAvgBill.toFixed(2)}"`);
     lines.push(`"Customers with Outstanding Dues","${dueCustomers.length}"`);
     lines.push(`"Total Ledger Dues Outstanding (INR)","${totalDuesAmount.toFixed(2)}"`);
     lines.push('');
 
     // 2. Sales Invoices Register
-    lines.push(`"--- 2. SALES INVOICES REGISTER (${bills.length} Records) ---"`);
+    lines.push(`"--- 2. SALES INVOICES REGISTER (${exportBills.length} Records) ---"`);
     lines.push('"Bill Number","Date Time","Customer Name","Mobile","Payment Mode","Grand Total (INR)","Cash Paid (INR)","UPI Paid (INR)","Advance Used (INR)","Paid Total (INR)","Pending Balance (INR)","Status"');
-    bills.forEach(b => {
+    exportBills.forEach(b => {
       const isPaid = Number(b.paid_total || 0) >= Number(b.grand_total || 0) - 0.01;
       const pendingAmt = Math.max(0, Number(b.grand_total || 0) - Number(b.paid_total || 0));
       lines.push(`"${b.bill_number}","${new Date(b.created_at).toLocaleString('en-IN')}","${(b.customer_name || 'Walk-in').replace(/"/g, '""')}","${b.customer_mobile || ''}","${b.payment_method || 'Cash'}","${Number(b.grand_total || 0).toFixed(2)}","${Number(b.cash_paid || 0).toFixed(2)}","${Number(b.upi_paid || 0).toFixed(2)}","${Number(b.advance_used || 0).toFixed(2)}","${Number(b.paid_total || 0).toFixed(2)}","${pendingAmt.toFixed(2)}","${isPaid ? 'Paid' : 'Pending'}"`);
@@ -312,9 +337,9 @@ export default function ReportsPage() {
     lines.push('');
 
     // 3. Item Sales Volume
-    lines.push(`"--- 3. ITEM & SERVICE SALES VOLUME (${itemSales.length} Products) ---"`);
+    lines.push(`"--- 3. ITEM & SERVICE SALES VOLUME (${exportItemSales.length} Products) ---"`);
     lines.push('"Product / Service Name","Quantity Sold","Revenue Generated (INR)"');
-    itemSales.forEach(it => {
+    exportItemSales.forEach(it => {
       lines.push(`"${it.name.replace(/"/g, '""')}","${it.qty}","${it.total.toFixed(2)}"`);
     });
     lines.push('');
@@ -328,10 +353,10 @@ export default function ReportsPage() {
     lines.push('');
 
     // 5. Operating Expenses Register
-    if (periodExpenses.length > 0) {
-      lines.push(`"--- 5. OPERATING EXPENSES REGISTER (${periodExpenses.length} Records) ---"`);
+    if (exportExpenses.length > 0) {
+      lines.push(`"--- 5. OPERATING EXPENSES REGISTER (${exportExpenses.length} Records) ---"`);
       lines.push('"Expense Number","Date","Title / Description","Category","Payment Mode","Amount (INR)","Notes"');
-      periodExpenses.forEach(exp => {
+      exportExpenses.forEach(exp => {
         lines.push(`"${exp.expense_number || 'EXP'}","${new Date(exp.created_at).toLocaleDateString('en-IN')}","${exp.title.replace(/"/g, '""')}","${exp.category || 'General'}","${exp.payment_mode || 'Cash'}","${Number(exp.amount).toFixed(2)}","${(exp.notes || '').replace(/"/g, '""')}"`);
       });
     }

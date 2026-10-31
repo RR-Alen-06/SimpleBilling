@@ -113,9 +113,10 @@ export default function AccountingPage() {
 
   // Quick Settle Bill Due Modal (Inside Session Close Wizard)
   const [settlingBill, setSettlingBill] = useState<UnpaidSessionBill | null>(null);
-  const [settlePaymentMethod, setSettlePaymentMethod] = useState<'Cash' | 'UPI'>('Cash');
+  const [settlePaymentMethod, setSettlePaymentMethod] = useState<'Cash' | 'UPI' | 'Advance'>('Cash');
   const [settlingAmount, setSettlingAmount] = useState<number | ''>('');
   const [settlingSubmitting, setSettlingSubmitting] = useState(false);
+  const [customReconcileRange, setCustomReconcileRange] = useState(false);
 
   // Edit / Re-Audit Session Modal
   const [editingClosing, setEditingClosing] = useState<AccountingClosing | null>(null);
@@ -167,10 +168,11 @@ export default function AccountingPage() {
       // Add Bills:
       // Mark as duplicate voucher if this bill's payment is already represented by a payment voucher in paymentsData,
       // or if it was paid later via account dues payments (so money inflow is already accounted for under PAY-xxxx).
+      const paymentBillIds = new Set(activePayments.map(p => p.bill_id).filter(Boolean));
       billsData.forEach(b => {
         const cashAmt = Number(b.cash_paid || 0);
         const upiAmt = Number(b.upi_paid || 0);
-        const isHandledByPaymentVoucher = activePayments.length > 0;
+        const isHandledByPaymentVoucher = paymentBillIds.has(b.id);
 
         if (cashAmt > 0 || upiAmt > 0) {
           rows.push({
@@ -203,6 +205,17 @@ export default function AccountingPage() {
           desc = `${desc} - ${p.customer_name || 'Customer'}`;
         }
 
+        let payCashIn = p.payment_method === 'Cash' ? amt : 0;
+        let payUpiIn = p.payment_method === 'UPI' ? amt : 0;
+        if (p.payment_method === 'Split Payment') {
+          if (linkedBill && (Number(linkedBill.cash_paid || 0) + Number(linkedBill.upi_paid || 0) > 0)) {
+            payCashIn = Number(linkedBill.cash_paid || 0);
+            payUpiIn = Number(linkedBill.upi_paid || 0);
+          } else {
+            payCashIn = amt;
+          }
+        }
+
         rows.push({
           id: `pay_${p.id}`,
           date: p.created_at,
@@ -210,9 +223,9 @@ export default function AccountingPage() {
           refNumber: p.payment_number || 'PAY-—',
           description: desc,
           mode: p.payment_method || 'Cash',
-          cashIn: p.payment_method === 'Cash' ? amt : 0,
+          cashIn: payCashIn,
           cashOut: 0,
-          upiIn: p.payment_method === 'UPI' ? amt : 0,
+          upiIn: payUpiIn,
           upiOut: 0,
           isDuplicateVoucher: false
         });
@@ -280,12 +293,22 @@ export default function AccountingPage() {
       // Sort rows chronologically descending
       rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-      // Compute running balances chronologically ascending (skipping duplicate vouchers to keep true drawer/bank balances)
+      // Compute running balances chronologically ascending (skipping duplicate vouchers to keep true drawer/bank balances).
+      // Prior closed session rows accumulate from 0; active open session rows start cleanly at opening_cash / opening_upi
+      // so the active session running balance always matches Cash in Drawer & UPI / Bank Balance 100%.
       const ascending = [...rows].reverse();
-      let runningCash = currentStatus.opening_cash;
-      let runningUpi = currentStatus.opening_upi;
+      const activeSessionStartMs = new Date(currentStatus.session_start_date).getTime();
+      let runningCash = 0;
+      let runningUpi = 0;
+      let enteredActiveSession = false;
 
       ascending.forEach(row => {
+        const rowMs = new Date(row.date).getTime();
+        if (!enteredActiveSession && rowMs > activeSessionStartMs) {
+          runningCash = currentStatus.opening_cash;
+          runningUpi = currentStatus.opening_upi;
+          enteredActiveSession = true;
+        }
         if (!row.isDuplicateVoucher) {
           runningCash += row.cashIn - row.cashOut;
           runningUpi += row.upiIn - row.upiOut;
@@ -312,6 +335,7 @@ export default function AccountingPage() {
     setCloseAdminPin('');
     setDiscrepancyNote('');
     setFeedback(null);
+    setCustomReconcileRange(false);
 
     const now = new Date();
     const defaultTo = now.toISOString();
@@ -332,10 +356,13 @@ export default function AccountingPage() {
   };
 
   // Re-calculate when closing date range changes
-  const handleRecalculateCloseRange = async (from: string, to: string) => {
+  const handleRecalculateCloseRange = async (from: string, to: string, isCustom = true) => {
     try {
-      const fromIso = `${from}T00:00:00.000Z`;
-      const toIso = `${to}T23:59:59.999Z`;
+      setCustomReconcileRange(isCustom);
+      const todayDatePart = new Date().toISOString().slice(0, 10);
+      const sessionStartIso = sessionStatus?.session_start_date || `${from}T00:00:00.000Z`;
+      const fromIso = (!isCustom || from === sessionStartIso.slice(0, 10)) ? sessionStartIso : `${from}T00:00:00.000Z`;
+      const toIso = (!isCustom || to === todayDatePart) ? new Date().toISOString() : `${to}T23:59:59.999Z`;
       const calc = await ApiService.calculateReconciliationForRange(fromIso, toIso);
       setReconcileCalc(calc);
       setActualCash(calc.expected_cash);
@@ -364,8 +391,14 @@ export default function AccountingPage() {
     setFeedback(null);
 
     try {
-      const fromIso = `${reconcileFromDate}T00:00:00.000Z`;
-      const toIso = `${reconcileToDate}T23:59:59.999Z`;
+      const todayDatePart = new Date().toISOString().slice(0, 10);
+      const sessionStartIso = sessionStatus?.session_start_date || `${reconcileFromDate}T00:00:00.000Z`;
+      const fromIso = (!customReconcileRange || reconcileFromDate === sessionStartIso.slice(0, 10))
+        ? sessionStartIso
+        : `${reconcileFromDate}T00:00:00.000Z`;
+      const toIso = (!customReconcileRange || reconcileToDate === todayDatePart)
+        ? new Date().toISOString()
+        : `${reconcileToDate}T23:59:59.999Z`;
 
       await ApiService.createAccountingClosing({
         from_date: fromIso,
@@ -521,8 +554,13 @@ export default function AccountingPage() {
   // Quick Settle Bill Due inside Close Session Modal
   const handleOpenSettleBill = (bill: UnpaidSessionBill) => {
     setSettlingBill(bill);
-    setSettlePaymentMethod('Cash');
-    setSettlingAmount(bill.due_amount);
+    if (Number(bill.customer_advance || 0) > 0) {
+      setSettlePaymentMethod('Advance');
+      setSettlingAmount(Math.min(bill.due_amount, Number(bill.customer_advance || 0)));
+    } else {
+      setSettlePaymentMethod('Cash');
+      setSettlingAmount(bill.due_amount);
+    }
   };
 
   const handleConfirmSettleBill = async (e: React.FormEvent) => {
@@ -536,28 +574,34 @@ export default function AccountingPage() {
 
     setSettlingSubmitting(true);
     try {
-      await ApiService.settleBillDue({
-        customer_id: settlingBill.customer_id,
-        bill_id: settlingBill.id,
-        amount: amt,
-        payment_method: settlePaymentMethod,
-        notes: `Settled during accounting session close (${settlingBill.bill_number})`
-      });
+      if (settlePaymentMethod === 'Advance') {
+        if (!settlingBill.customer_id) {
+          throw new Error('Cannot apply advance to a bill without a linked customer.');
+        }
+        await ApiService.applyAdvanceToBill(settlingBill.id, amt);
+        setFeedback({
+          type: 'success',
+          message: `Applied ₹${amt.toFixed(2)} from Customer Advance to ${settlingBill.bill_number}.`
+        });
+      } else {
+        await ApiService.settleBillDue({
+          customer_id: settlingBill.customer_id,
+          bill_id: settlingBill.id,
+          amount: amt,
+          payment_method: settlePaymentMethod,
+          notes: `Settled during accounting session close (${settlingBill.bill_number})`
+        });
 
-      setFeedback({
-        type: 'success',
-        message: `Settlement of ₹${amt.toFixed(2)} via ${settlePaymentMethod} recorded for ${settlingBill.bill_number}.`
-      });
+        setFeedback({
+          type: 'success',
+          message: `Settlement of ₹${amt.toFixed(2)} via ${settlePaymentMethod} recorded for ${settlingBill.bill_number}.`
+        });
+      }
 
       setSettlingBill(null);
 
       // Recalculate reconciliation immediately for active close period
-      const fromIso = `${reconcileFromDate}T00:00:00.000Z`;
-      const toIso = `${reconcileToDate}T23:59:59.999Z`;
-      const calc = await ApiService.calculateReconciliationForRange(fromIso, toIso);
-      setReconcileCalc(calc);
-      setActualCash(calc.expected_cash);
-      setActualUpi(calc.expected_upi);
+      await handleRecalculateCloseRange(reconcileFromDate, reconcileToDate, customReconcileRange);
 
       // Also refresh background data
       loadData();
@@ -829,6 +873,22 @@ export default function AccountingPage() {
                   <div className="bg-teal-950/80 px-3 py-1.5 rounded-lg border border-teal-600/50">
                     <span className="text-teal-300 block text-[10px] uppercase font-sans">Advance Utilized</span>
                     <span className="text-teal-300 font-bold text-sm">₹{Number(sessionStatus.current_advance_utilized).toFixed(2)}</span>
+                  </div>
+                )}
+
+                {Number(sessionStatus.customer_advances_total || 0) > 0 && (
+                  <div className="bg-teal-900/60 px-3 py-1.5 rounded-lg border border-teal-500/40">
+                    <span className="text-teal-200 block text-[10px] uppercase font-sans">Customer Advance Pool</span>
+                    <span className="text-teal-300 font-bold text-sm">₹{Number(sessionStatus.customer_advances_total).toFixed(2)}</span>
+                  </div>
+                )}
+
+                {Number(sessionStatus.pending_dues_total || 0) > 0 && (
+                  <div className="bg-rose-950/80 px-3 py-1.5 rounded-lg border border-rose-500/50">
+                    <span className="text-rose-300 block text-[10px] uppercase font-sans">
+                      Pending Customer Dues ({sessionStatus.unpaid_bills_count || 0})
+                    </span>
+                    <span className="text-rose-300 font-bold text-sm">₹{Number(sessionStatus.pending_dues_total).toFixed(2)}</span>
                   </div>
                 )}
 
@@ -1490,6 +1550,11 @@ export default function AccountingPage() {
                             <div className="flex items-center gap-2">
                               <span className="font-mono font-bold text-slate-900">{ub.bill_number}</span>
                               <span className="text-slate-700 font-semibold truncate">{ub.customer_name}</span>
+                              {Number(ub.customer_advance || 0) > 0 && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-teal-50 text-teal-700 border border-teal-200 font-mono">
+                                  Adv Avail: ₹{Number(ub.customer_advance).toFixed(2)}
+                                </span>
+                              )}
                             </div>
                             <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5 font-mono">
                               <span>Bill Total: ₹{ub.grand_total.toFixed(2)}</span>
@@ -1856,10 +1921,13 @@ export default function AccountingPage() {
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">Payment Method</label>
-                <div className="grid grid-cols-2 gap-2">
+                <div className={`grid gap-2 ${Number(settlingBill.customer_advance || 0) > 0 ? 'grid-cols-3' : 'grid-cols-2'}`}>
                   <button
                     type="button"
-                    onClick={() => setSettlePaymentMethod('Cash')}
+                    onClick={() => {
+                      setSettlePaymentMethod('Cash');
+                      setSettlingAmount(settlingBill.due_amount);
+                    }}
                     className={`p-2 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition ${
                       settlePaymentMethod === 'Cash'
                         ? 'bg-amber-50 border-amber-500 text-amber-900 ring-2 ring-amber-500/20'
@@ -1871,7 +1939,10 @@ export default function AccountingPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setSettlePaymentMethod('UPI')}
+                    onClick={() => {
+                      setSettlePaymentMethod('UPI');
+                      setSettlingAmount(settlingBill.due_amount);
+                    }}
                     className={`p-2 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition ${
                       settlePaymentMethod === 'UPI'
                         ? 'bg-cyan-50 border-cyan-500 text-cyan-900 ring-2 ring-cyan-500/20'
@@ -1881,17 +1952,40 @@ export default function AccountingPage() {
                     <Smartphone size={14} className="text-cyan-600" />
                     <span>UPI / Bank</span>
                   </button>
+                  {Number(settlingBill.customer_advance || 0) > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSettlePaymentMethod('Advance');
+                        setSettlingAmount(Math.min(settlingBill.due_amount, Number(settlingBill.customer_advance || 0)));
+                      }}
+                      className={`p-2 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition ${
+                        settlePaymentMethod === 'Advance'
+                          ? 'bg-teal-50 border-teal-500 text-teal-900 ring-2 ring-teal-500/20'
+                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      <CheckCircle2 size={14} className="text-teal-600" />
+                      <span>Advance (₹{Number(settlingBill.customer_advance).toFixed(0)})</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Amount to Collect (₹) *</label>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  {settlePaymentMethod === 'Advance' ? 'Advance Amount to Apply (₹) *' : 'Amount to Collect (₹) *'}
+                </label>
                 <input
                   type="number"
                   required
                   step="0.01"
                   min="0.01"
-                  max={settlingBill.due_amount}
+                  max={
+                    settlePaymentMethod === 'Advance'
+                      ? Math.min(settlingBill.due_amount, Number(settlingBill.customer_advance || 0))
+                      : settlingBill.due_amount
+                  }
                   value={settlingAmount}
                   onChange={(e) => setSettlingAmount(e.target.value === '' ? '' : Number(e.target.value))}
                   className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"

@@ -258,22 +258,10 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
                 <p className="font-data-mono font-bold text-emerald-600">₹{totalPaid.toFixed(2)}</p>
               </div>
               <div className="text-right bg-teal-50 px-3.5 py-2 rounded-lg border border-teal-200">
-                <p className="text-[11px] text-teal-800 uppercase font-bold tracking-wider">Advance Credit</p>
+                <p className="text-[11px] text-teal-800 uppercase font-bold tracking-wider">Current Advance</p>
                 <p className="text-xl font-data-mono font-extrabold text-teal-700">
                   ₹{Number(customer?.advance_balance || 0).toFixed(2)}
                 </p>
-                {Number(customer?.advance_balance || 0) > 0 && runningBalance > 0 && (
-                  <button
-                    id="apply-advance-btn"
-                    onClick={handleApplyAdvance}
-                    disabled={applyingAdvance}
-                    className="mt-1 ml-auto text-[11px] font-bold bg-teal-600 hover:bg-teal-500 text-white px-2 py-1 rounded transition flex items-center space-x-1 disabled:opacity-50"
-                    title="Allocate advance credit to unpaid bills (oldest first)"
-                  >
-                    <Wallet size={12} />
-                    <span>{applyingAdvance ? 'Applying...' : 'Apply to Dues'}</span>
-                  </button>
-                )}
               </div>
               <div className="text-right bg-slate-50 px-4 py-2 rounded-lg border border-slate-200">
                 <p className="text-[11px] text-slate-500 uppercase font-bold tracking-wider">Current Balance Due</p>
@@ -289,7 +277,7 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
                 <FileText size={16} />
                 <span>Statement PDF</span>
               </button>
-              {Number(customer?.advance_balance || 0) > 0 && (
+              {Number(customer?.advance_balance || 0) > 0 && runningBalance > 0 && (
                 <button
                   onClick={handleApplyAdvance}
                   disabled={applyingAdvance}
@@ -371,11 +359,11 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
               <thead>
                 <tr className="bg-slate-100 text-slate-700 uppercase text-[11px] font-bold tracking-wider border-b border-slate-200">
                   <th className="px-6 py-3.5">Date &amp; Time</th>
-                  <th className="px-6 py-3.5">Type</th>
+                  <th className="px-6 py-3.5">Transaction Type</th>
                   <th className="px-6 py-3.5">Reference No</th>
                   <th className="px-6 py-3.5">Description &amp; Items</th>
-                  <th className="px-6 py-3.5 text-right">Bill Amount</th>
-                  <th className="px-6 py-3.5 text-right">Paid Amount</th>
+                  <th className="px-6 py-3.5 text-right">Billed (Debit / Dr)</th>
+                  <th className="px-6 py-3.5 text-right">Paid / Credited (Cr)</th>
                   <th className="px-6 py-3.5 text-right">Running Balance</th>
                 </tr>
               </thead>
@@ -396,18 +384,64 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
                         <td className="px-6 py-4">
                           <span className={`inline-block px-3 py-0.5 rounded-full text-[11px] font-bold ${
                             entry.type === 'BILL'
-                              ? 'bg-blue-50 text-blue-700 border border-blue-100'
+                              ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                              : entry.type === 'OPENING_BALANCE'
+                              ? 'bg-teal-50 text-teal-800 border border-teal-200'
                               : entry.type === 'ADVANCE_USED'
                               ? 'bg-teal-50 text-teal-800 border border-teal-200'
-                              : 'bg-emerald-50 text-emerald-700 border border-emerald-100'
+                              : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                           }`}>
-                            {entry.type === 'ADVANCE_USED' ? 'ADVANCE USED' : entry.type}
+                            {entry.type === 'OPENING_BALANCE'
+                              ? 'OPENING ADVANCE'
+                              : entry.type === 'BILL'
+                              ? 'INVOICE'
+                              : entry.type === 'ADVANCE_USED'
+                              ? 'ADVANCE USED'
+                              : 'PAYMENT'}
                           </span>
                         </td>
-                        <td className="px-6 py-4 font-data-mono font-bold text-slate-900">{entry.reference_no}</td>
+                        <td className="px-6 py-4 font-data-mono font-bold text-slate-900 whitespace-nowrap">
+                          {entry.reference_no}
+                        </td>
                         <td className="px-6 py-4 text-xs text-slate-600">
                           <div className="flex flex-wrap items-center gap-2">
-                            <span>{entry.description}</span>
+                            <span className="font-medium text-slate-800">{entry.description}</span>
+
+                            {/* Explicit Advance Paid on this Bill Badge */}
+                            {entry.type === 'BILL' && entry.advance_used > 0 && (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-teal-50 text-teal-800 border border-teal-200 px-2 py-0.5 rounded-md shadow-2xs">
+                                <Wallet size={11} className="text-teal-600" />
+                                <span>Adv Paid: ₹{entry.advance_used.toFixed(2)}</span>
+                              </span>
+                            )}
+
+                            {/* Direct Paid Badge if any */}
+                            {entry.type === 'BILL' && (entry.direct_paid || 0) > 0 && (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded-md">
+                                <span>Direct: ₹{entry.direct_paid!.toFixed(2)}</span>
+                              </span>
+                            )}
+
+                            {/* Bill Due Badge if pending */}
+                            {entry.type === 'BILL' && (entry.bill_due || 0) > 0.009 && (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-amber-50 text-amber-800 border border-amber-200 px-2 py-0.5 rounded-md">
+                                <span>Due: ₹{entry.bill_due!.toFixed(2)}</span>
+                              </span>
+                            )}
+
+                            {/* Fully Paid Badge */}
+                            {entry.type === 'BILL' && entry.is_fully_paid && (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 px-1.5 py-0.5 rounded">
+                                <CheckCircle2 size={11} className="text-emerald-700" />
+                                <span>Fully Paid</span>
+                              </span>
+                            )}
+
+                            {entry.payment_method && entry.type === 'PAYMENT' && (
+                              <span className="text-[10px] font-semibold bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded border border-slate-200">
+                                {entry.payment_method}
+                              </span>
+                            )}
                             {hasItems && (
                               <button
                                 onClick={() => toggleBillExpanded(entry.reference_no)}
@@ -418,7 +452,7 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
                                 {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                               </button>
                             )}
-                            {entry.type === 'BILL' && entry.bill_id && Number(customer?.advance_balance || 0) > 0 && (
+                            {entry.type === 'BILL' && entry.bill_id && Number(customer?.advance_balance || 0) > 0 && (entry.bill_due || 0) > 0.009 && (
                               <button
                                 onClick={() => handleApplyAdvanceToSingleBill(entry.bill_id!, entry.reference_no)}
                                 className="inline-flex items-center gap-1 text-[11px] font-bold text-teal-700 hover:text-teal-900 bg-teal-50 hover:bg-teal-100 px-2 py-0.5 rounded-md transition border border-teal-200 cursor-pointer shadow-2xs"
@@ -457,7 +491,7 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
                       {isExpanded && hasItems && (
                         <tr className="bg-slate-50/90 border-b border-slate-200">
                           <td colSpan={7} className="px-8 py-3.5">
-                            <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs space-y-2.5">
+                            <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs space-y-3">
                               <div className="flex items-center justify-between text-xs font-bold text-slate-800 border-b border-slate-100 pb-2">
                                 <span className="flex items-center gap-2">
                                   <Package size={15} className="text-blue-600" />
@@ -466,6 +500,28 @@ export default function CustomerLedgerPage({ params }: { params: Promise<{ id: s
                                 <span className="text-[11px] text-slate-400 font-normal">
                                   {entry.items!.length} distinct line item{entry.items!.length > 1 ? 's' : ''}
                                 </span>
+                              </div>
+
+                              {/* Bill Settlement Breakdown Summary */}
+                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 bg-slate-50 border border-slate-200/80 rounded-lg p-3 text-xs">
+                                <div>
+                                  <span className="text-slate-500 text-[11px] block">Invoice Total</span>
+                                  <span className="font-bold text-slate-900 font-data-mono text-sm">₹{entry.bill_amount.toFixed(2)}</span>
+                                </div>
+                                <div>
+                                  <span className="text-teal-700 text-[11px] block font-semibold">Advance Applied</span>
+                                  <span className="font-bold text-teal-800 font-data-mono text-sm">₹{entry.advance_used.toFixed(2)}</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-600 text-[11px] block">Direct Paid</span>
+                                  <span className="font-bold text-emerald-700 font-data-mono text-sm">₹{(entry.direct_paid || 0).toFixed(2)}</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-600 text-[11px] block">Remaining Due</span>
+                                  <span className={`font-bold font-data-mono text-sm ${(entry.bill_due || 0) > 0.009 ? 'text-amber-700' : 'text-emerald-700'}`}>
+                                    ₹{(entry.bill_due || 0).toFixed(2)}
+                                  </span>
+                                </div>
                               </div>
                               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 pt-1">
                                 {entry.items!.map((it, idx) => (

@@ -43,6 +43,12 @@ export async function proxy(request: NextRequest) {
     return supabaseResponse;
   }
 
+  // Fast path for prefetch requests: skip remote getUser() roundtrip if auth cookie is present
+  const isPrefetch = request.headers.get('next-router-prefetch') === '1' || request.headers.get('purpose') === 'prefetch';
+  if (isPrefetch && hasAuthToken) {
+    return supabaseResponse;
+  }
+
   // If on protected page and no auth token present, redirect to login immediately
   if (!isPublicAuthRoute && !hasAuthToken) {
     const url = request.nextUrl.clone();
@@ -131,6 +137,6 @@ export const config = {
      * - favicon.ico (favicon file)
      * - public assets
      */
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|woff2?|ico|css|js)$).*)',
   ],
 };

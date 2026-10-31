@@ -23,6 +23,7 @@ import {
   ProductSalesAnalytics,
   ProductSalesHistoryItem,
   CustomerStatementData,
+  CustomerStatementTransaction,
   CustomerStatementBill,
   CustomerStatementBillItem,
   CustomerStatementDateGroup,
@@ -674,9 +675,15 @@ export class ApiService {
   }
 
   // --- SETTINGS SERVICE ---
+  private static cachedSettings: { data: AllSettings; timestamp: number } | null = null;
+  private static readonly SETTINGS_CACHE_TTL_MS = 30000; // 30s cache
 
 
-  static async getSettings(): Promise<AllSettings> {
+  static async getSettings(forceRefresh = false): Promise<AllSettings> {
+    const now = Date.now();
+    if (!forceRefresh && this.cachedSettings && (now - this.cachedSettings.timestamp < this.SETTINGS_CACHE_TTL_MS)) {
+      return this.cachedSettings.data;
+    }
     if (!isSupabaseConfigured) {
       return DEFAULT_SETTINGS;
     }
@@ -700,11 +707,13 @@ export class ApiService {
         };
       }
     });
+    this.cachedSettings = { data: merged, timestamp: Date.now() };
     return merged;
   }
 
 
   static async saveSettings(key: keyof AllSettings, value: unknown, userName = 'Super Admin'): Promise<void> {
+    this.cachedSettings = null; // Invalidate cache on write
     if (!isSupabaseConfigured) return;
     const userId = await this.getUserId();
     
@@ -944,12 +953,38 @@ export class ApiService {
   static async addCustomer(customer: { name: string; mobile?: string; email?: string }, userName = 'Admin'): Promise<Customer> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
+
+    const cleanName = String(customer.name || '').trim().replace(/\s+/g, ' ');
+    if (!cleanName) {
+      throw new Error('Customer name is required.');
+    }
+
+    // Strict duplicate customer name check (case-insensitive, whitespace-normalized)
+    let existingQuery = supabase
+      .from('customers')
+      .select('*');
+
+    if (userId) {
+      existingQuery = existingQuery.eq('user_id', userId);
+    }
+
+    const { data: existingList } = await existingQuery;
+    const duplicate = (existingList || []).find(
+      c => c.name.trim().replace(/\s+/g, ' ').toLowerCase() === cleanName.toLowerCase()
+    );
+
+    if (duplicate) {
+      throw new Error(
+        `Customer "${duplicate.name}" already exists${duplicate.mobile ? ` (Mobile: ${duplicate.mobile})` : ''}. Duplicate customer names are not allowed.`
+      );
+    }
+
     const customer_code = await this.getNextSequence('CUSTOMER');
 
     const payload = {
-      name: customer.name,
-      mobile: customer.mobile || null,
-      email: customer.email || null,
+      name: cleanName,
+      mobile: customer.mobile ? customer.mobile.trim() : null,
+      email: customer.email ? customer.email.trim() : null,
       customer_code,
       advance_balance: 0,
       loyalty_points: 0,
@@ -968,7 +1003,7 @@ export class ApiService {
     await this.logAudit({
       user_name: userName,
       action: 'CREATE_CUSTOMER',
-      entity: `Customer ${customer.name}`,
+      entity: `Customer ${cleanName}`,
       new_value: JSON.stringify(data)
     });
 
@@ -981,12 +1016,33 @@ export class ApiService {
     const userId = await this.getUserId();
     if (!userId) return null;
 
+    const cleanName = String(customer.name || '').trim().replace(/\s+/g, ' ');
+    if (!cleanName) {
+      throw new Error('Customer name is required.');
+    }
+
+    // Prevent renaming a customer to another existing customer's name
+    const { data: existingList } = await supabase
+      .from('customers')
+      .select('id, name, mobile')
+      .eq('user_id', userId);
+
+    const duplicate = (existingList || []).find(
+      c => c.id !== id && c.name.trim().replace(/\s+/g, ' ').toLowerCase() === cleanName.toLowerCase()
+    );
+
+    if (duplicate) {
+      throw new Error(
+        `Another customer named "${duplicate.name}" already exists${duplicate.mobile ? ` (Mobile: ${duplicate.mobile})` : ''}. Duplicate customer names are not allowed.`
+      );
+    }
+
     const { data, error } = await supabase
       .from('customers')
       .update({
-        name: customer.name,
-        mobile: customer.mobile || null,
-        email: customer.email || null
+        name: cleanName,
+        mobile: customer.mobile ? customer.mobile.trim() : null,
+        email: customer.email ? customer.email.trim() : null
       })
       .eq('id', id)
       .eq('user_id', userId)
@@ -1001,7 +1057,7 @@ export class ApiService {
     await this.logAudit({
       user_name: userName,
       action: 'UPDATE_CUSTOMER',
-      entity: `Customer ${customer.name}`,
+      entity: `Customer ${cleanName}`,
       new_value: JSON.stringify(data)
     });
 
@@ -1009,25 +1065,85 @@ export class ApiService {
   }
 
 
-  static async getCustomerSummaries(): Promise<CustomerSummary[]> {
-    const customers = await this.getCustomers();
+  static async getCustomerSummaries(skipAutoReconcile = false): Promise<CustomerSummary[]> {
+    let customers = await this.getCustomers();
     if (!customers.length) return [];
 
     const userId = await this.getUserId();
-    let billsQuery = supabase.from('bills').select('customer_id, grand_total, paid_total');
+    let billsQuery = supabase
+      .from('bills')
+      .select('id, customer_id, grand_total, paid_total, advance_used');
 
     if (userId) {
       billsQuery = billsQuery.eq('user_id', userId);
     }
 
-    const { data: bills } = await billsQuery;
+    let { data: bills } = await billsQuery;
+
+    const computeTrueCustomerAdvance = (
+      cust: Customer
+    ): number => {
+      return Math.max(0, Number(Number(cust.advance_balance || 0).toFixed(2)));
+    };
+
+    if (!skipAutoReconcile) {
+      const seenNames = new Set<string>();
+      let hasDuplicates = false;
+      for (const c of customers) {
+        const norm = c.name.trim().replace(/\s+/g, ' ').toLowerCase();
+        if (seenNames.has(norm)) {
+          hasDuplicates = true;
+          break;
+        }
+        seenNames.add(norm);
+      }
+
+      const hasDiscrepancy = customers.some(cust => {
+        const storedAdv = Number(cust.advance_balance || 0);
+        const custBills = (bills || []).filter(b => b.customer_id === cust.id);
+        const trueAdv = computeTrueCustomerAdvance(cust);
+        const dues = custBills.reduce(
+          (sum, b) => sum + Math.max(0, Number(b.grand_total || 0) - Number(b.paid_total || 0)),
+          0
+        );
+        return (
+          Math.abs(storedAdv - trueAdv) > 0.009 ||
+          (storedAdv > 0.009 && dues > 0.009) ||
+          (trueAdv > 0.009 && dues > 0.009)
+        );
+      });
+
+      if (hasDuplicates || hasDiscrepancy) {
+        try {
+          await this.reconcileCustomerAdvanceBalances('System Auto-Sync');
+          customers = await this.getCustomers();
+          let refreshedBillsQ = supabase
+            .from('bills')
+            .select('id, customer_id, grand_total, paid_total, advance_used');
+          if (userId) {
+            refreshedBillsQ = refreshedBillsQ.eq('user_id', userId);
+          }
+          const { data: refreshedB } = await refreshedBillsQ;
+          bills = refreshedB;
+        } catch (err) {
+          console.warn('Auto-reconcile in getCustomerSummaries skipped:', err);
+        }
+      }
+    }
 
     return customers.map(cust => {
       const custBills = (bills || []).filter(b => b.customer_id === cust.id);
 
       const totalBilled = custBills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
-      const totalPaidBills = custBills.reduce((sum, b) => sum + Number(b.paid_total || 0), 0);
-      const dues = custBills.reduce((sum, b) => sum + Math.max(0, Number(b.grand_total || 0) - Number(b.paid_total || 0)), 0);
+      const totalPaidBills = custBills.reduce(
+        (sum, b) => sum + Math.min(Number(b.grand_total || 0), Number(b.paid_total || 0)),
+        0
+      );
+      const dues = custBills.reduce(
+        (sum, b) => sum + Math.max(0, Number(b.grand_total || 0) - Number(b.paid_total || 0)),
+        0
+      );
+      const currentAdvance = computeTrueCustomerAdvance(cust);
 
       return {
         id: cust.id,
@@ -1036,7 +1152,7 @@ export class ApiService {
         mobile: cust.mobile,
         email: cust.email,
         customer_code: cust.customer_code,
-        advance_balance: Number(cust.advance_balance || 0),
+        advance_balance: currentAdvance,
         loyalty_points: Number(cust.loyalty_points || 0),
         total_billed: Number(totalBilled.toFixed(2)),
         total_paid: Number(totalPaidBills.toFixed(2)),
@@ -1082,6 +1198,9 @@ export class ApiService {
       if (custErr || !custData) {
         return null;
       }
+
+      // Authoritative live advance balance from customer record
+      custData.advance_balance = Math.max(0, Number(Number(custData.advance_balance || 0).toFixed(2)));
       verifiedCustomer = custData;
     }
 
@@ -1108,13 +1227,15 @@ export class ApiService {
     // Explicit allowlist for line items: product_id, product_name, quantity, price, total
     const sanitizedItems = billData.items.map(item => {
       const dbProd = item.product_id ? catalogProductsMap.get(item.product_id) : null;
-      // Enforce canonical catalog price if product exists; prevent user from overriding price
-      const unitPrice = dbProd ? Number(dbProd.price) : Math.max(0, Number(item.price || 0));
-      const qty = Math.max(1, Number(item.quantity || 1));
+      const providedPrice = item.price !== undefined && item.price !== null && !isNaN(Number(item.price))
+        ? Math.max(0, Number(item.price))
+        : null;
+      const unitPrice = providedPrice !== null ? providedPrice : (dbProd ? Number(dbProd.price) : 0);
+      const qty = Math.max(0.001, Number(item.quantity || 1));
       const lineTotal = Number((qty * unitPrice).toFixed(2));
       return {
         product_id: dbProd ? dbProd.id : null,
-        product_name: dbProd ? dbProd.name : String(item.product_name || 'Item').trim(),
+        product_name: String(item.product_name || (dbProd ? dbProd.name : 'Item')).trim(),
         quantity: qty,
         price: unitPrice,
         total: lineTotal
@@ -1151,6 +1272,10 @@ export class ApiService {
     const directUpiPaid = Math.max(0, Number(billData.upi_paid || 0));
     const totalDirectPaid = directCashPaid + directUpiPaid;
 
+    // 1. Advance used applies directly to THIS bill
+    const thisBillAdvanceUsed = Math.min(grandTotal, advanceUsed);
+    const balanceAfterAdvance = Math.max(0, grandTotal - thisBillAdvanceUsed);
+
     // Determine primary payment method
     let primaryPaymentMethod: PaymentMethod = 'Cash';
     if (directUpiPaid > 0 && directCashPaid === 0) {
@@ -1159,23 +1284,20 @@ export class ApiService {
       primaryPaymentMethod = 'Cash';
     } else if (directCashPaid > 0 && directUpiPaid > 0) {
       primaryPaymentMethod = 'Split Payment';
-    } else if (advanceUsed > 0 && directCashPaid === 0 && directUpiPaid === 0) {
-      primaryPaymentMethod = advanceUsed >= grandTotal - 0.01 ? 'Advance Used' : ((billData.payment_method as PaymentMethod) || 'Pay Later');
-    } else if (totalDirectPaid === 0 && advanceUsed === 0) {
+    } else if (thisBillAdvanceUsed > 0 && directCashPaid === 0 && directUpiPaid === 0) {
+      primaryPaymentMethod = thisBillAdvanceUsed >= grandTotal - 0.01 ? 'Advance Used' : ((billData.payment_method as PaymentMethod) || 'Pay Later');
+    } else if (totalDirectPaid === 0 && thisBillAdvanceUsed === 0) {
       primaryPaymentMethod = (billData.payment_method as PaymentMethod) || 'Pay Later';
     } else if (billData.payment_method) {
       primaryPaymentMethod = billData.payment_method as PaymentMethod;
     }
-
-    // 1. Advance used applies directly to THIS bill
-    const thisBillAdvanceUsed = Math.min(grandTotal, advanceUsed);
-    const balanceAfterAdvance = Math.max(0, grandTotal - thisBillAdvanceUsed);
 
     // 2. Direct payments (Cash / UPI) apply to remainder of this bill
     const thisBillDirectPaid = Math.min(balanceAfterAdvance, totalDirectPaid);
     const paidTotal = Number((thisBillAdvanceUsed + thisBillDirectPaid).toFixed(2));
     const excessDirectPaid = Math.max(0, totalDirectPaid - thisBillDirectPaid);
     let advanceEarned = 0;
+    let pointsEarnedFromOlderBills = 0;
 
     // 3. Excess direct cash/UPI payment can auto-clear older unpaid bills or earn advance
     if (billData.customer_id && excessDirectPaid > 0) {
@@ -1194,9 +1316,11 @@ export class ApiService {
 
       for (const oldBill of unpaidOlderBills) {
         if (availablePayment <= 0) break;
-        const due = Number(oldBill.grand_total || 0) - Number(oldBill.paid_total || 0);
+        const oldGrandTotal = Number(oldBill.grand_total || 0);
+        const due = oldGrandTotal - Number(oldBill.paid_total || 0);
         const allocate = Math.min(due, availablePayment);
         const newPaidTotal = Number((Number(oldBill.paid_total || 0) + allocate).toFixed(2));
+        const isOldBillNowFullyPaid = newPaidTotal >= oldGrandTotal - 0.01;
 
         const oldCash = Number(oldBill.cash_paid || 0);
         const oldUpi = Number(oldBill.upi_paid || 0);
@@ -1212,14 +1336,34 @@ export class ApiService {
         else if (updatedCash > 0 && updatedUpi === 0) updatedMethod = 'Cash';
         else if (updatedCash > 0 && updatedUpi > 0) updatedMethod = 'Split Payment';
 
+        const oldBillUpdate: Record<string, unknown> = {
+          paid_total: newPaidTotal,
+          cash_paid: updatedCash,
+          upi_paid: updatedUpi,
+          payment_method: updatedMethod
+        };
+
+        if (isOldBillNowFullyPaid && Number(oldBill.loyalty_points_earned || 0) === 0 && oldGrandTotal > 0) {
+          const oldPts = await this.calculateLoyaltyPointsEarned(oldGrandTotal);
+          if (oldPts > 0) {
+            const loySeq = await this.getNextSequence('LOYALTY');
+            await supabase.from('loyalty_transactions').insert([{
+              transaction_number: loySeq,
+              customer_id: billData.customer_id,
+              bill_id: oldBill.id,
+              points: oldPts,
+              type: 'EARN',
+              notes: `Award Reason: Bill Fully Paid - ${oldBill.bill_number}`,
+              ...(userId ? { user_id: userId } : {})
+            }]);
+            oldBillUpdate.loyalty_points_earned = oldPts;
+            pointsEarnedFromOlderBills += oldPts;
+          }
+        }
+
         let updateOldBillQ = supabase
           .from('bills')
-          .update({ 
-            paid_total: newPaidTotal,
-            cash_paid: updatedCash,
-            upi_paid: updatedUpi,
-            payment_method: updatedMethod
-          })
+          .update(oldBillUpdate)
           .eq('id', oldBill.id);
 
         if (userId) updateOldBillQ = updateOldBillQ.eq('user_id', userId);
@@ -1266,7 +1410,7 @@ export class ApiService {
       cash_paid: directCashPaid,
       upi_paid: directUpiPaid,
       paid_total: paidTotal,
-      advance_used: advanceUsed,
+      advance_used: thisBillAdvanceUsed,
       advance_earned: advanceEarned,
       payment_method: primaryPaymentMethod,
       loyalty_points_earned: 0,
@@ -1338,13 +1482,13 @@ export class ApiService {
       }
     }
 
-    if (billData.customer_id && billData.points_to_redeem > 0) {
+    if (billData.customer_id && pointsToRedeem > 0) {
       const redSeq = await this.getNextSequence('LOYALTY');
       await supabase.from('loyalty_transactions').insert([{
         transaction_number: redSeq,
         customer_id: billData.customer_id,
         bill_id: bill.id,
-        points: -billData.points_to_redeem,
+        points: -pointsToRedeem,
         type: 'REDEEM',
         notes: `Redemption: Redeemed on Bill ${bill.bill_number} (Discount: ₹${redemptionDiscount})`,
         ...(userId ? { user_id: userId } : {})
@@ -1354,10 +1498,10 @@ export class ApiService {
     if (billData.customer_id && verifiedCustomer) {
       const currentAdvance = Number(verifiedCustomer.advance_balance || 0);
       const currentLoyalty = Number(verifiedCustomer.loyalty_points || 0);
-      const pointsEarnedNow = bill.loyalty_points_earned || 0;
+      const pointsEarnedNow = (bill.loyalty_points_earned || 0) + pointsEarnedFromOlderBills;
 
-      const newAdvance = Math.max(0, currentAdvance - advanceUsed + advanceEarned);
-      const newLoyalty = Math.max(0, currentLoyalty - (billData.points_to_redeem || 0) + pointsEarnedNow);
+      const newAdvance = Number(Math.max(0, currentAdvance - thisBillAdvanceUsed + advanceEarned).toFixed(2));
+      const newLoyalty = Math.max(0, currentLoyalty - pointsToRedeem + pointsEarnedNow);
 
       let updateCustQ = supabase.from('customers').update({
         advance_balance: newAdvance,
@@ -1377,7 +1521,7 @@ export class ApiService {
 
     return this.formatBillRow({
       ...bill,
-      items: billData.items.map((item, idx) => ({
+      items: sanitizedItems.map((item, idx) => ({
         id: `temp-${idx}`,
         bill_id: bill.id,
         product_id: item.product_id || null,
@@ -1460,6 +1604,18 @@ export class ApiService {
       (bill.rounding_method as RoundingMethod) || 'None'
     );
 
+    const prevPaidTotal = Number(bill.paid_total || 0);
+    const prevAdvanceEarned = Number(bill.advance_earned || 0);
+    let updatedPaidTotal = prevPaidTotal;
+    let updatedAdvanceEarned = prevAdvanceEarned;
+    let excessCreditFromDiscount = 0;
+
+    if (prevPaidTotal > newGrandTotal) {
+      excessCreditFromDiscount = Number((prevPaidTotal - newGrandTotal).toFixed(2));
+      updatedPaidTotal = newGrandTotal;
+      updatedAdvanceEarned = Number((prevAdvanceEarned + excessCreditFromDiscount).toFixed(2));
+    }
+
     const { data: updatedBill, error } = await supabase
       .from('bills')
       .update({
@@ -1467,6 +1623,8 @@ export class ApiService {
         gst_amount: newGstAmount,
         rounding_adjustment: newAdjustment,
         grand_total: newGrandTotal,
+        paid_total: updatedPaidTotal,
+        advance_earned: updatedAdvanceEarned,
         edited_at: new Date().toISOString(),
         edited_by: userName,
         edit_reason: reason
@@ -1478,6 +1636,28 @@ export class ApiService {
 
     if (error) throw new Error(error.message);
     if (!updatedBill) return null;
+
+    if (bill.customer_id && excessCreditFromDiscount > 0) {
+      const { data: cust } = await supabase
+        .from('customers')
+        .select('advance_balance')
+        .eq('id', bill.customer_id)
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (cust) {
+        const newAdv = Number((Number(cust.advance_balance || 0) + excessCreditFromDiscount).toFixed(2));
+        await supabase
+          .from('customers')
+          .update({ advance_balance: newAdv })
+          .eq('id', bill.customer_id)
+          .eq('user_id', userId);
+      }
+    }
+
+    if (bill.customer_id && updatedPaidTotal >= newGrandTotal - 0.01 && newGrandTotal > 0 && Number(bill.loyalty_points_earned || 0) === 0) {
+      await this.processBillFullPaymentLoyalty(billId);
+    }
 
     await this.logAudit({
       user_name: userName,
@@ -1634,18 +1814,50 @@ export class ApiService {
       }
     }
 
+    const activePayments = (payments || []).filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
+    const paymentBillIds = new Set(activePayments.map(p => p.bill_id).filter(Boolean));
+
+    // Calculate direct checkout payments on bills that do not have a separate payment voucher row
+    let directCheckoutPaidWithoutVoucher = 0;
+    const directCheckoutBills: Array<{ bill: typeof bills[0]; directPaid: number }> = [];
+    (bills || []).forEach(b => {
+      if (!paymentBillIds.has(b.id)) {
+        const directPaid = Math.max(0, Number(b.paid_total || 0) - Number(b.advance_used || 0));
+        if (directPaid > 0.009) {
+          directCheckoutPaidWithoutVoucher += directPaid;
+          directCheckoutBills.push({ bill: b, directPaid });
+        }
+      }
+    });
+
+    const voucherPaymentsTotal = Number(
+      (activePayments.reduce((sum, p) => sum + Number(p.amount || 0), 0) + directCheckoutPaidWithoutVoucher).toFixed(2)
+    );
+    const totalAdvanceUsedOnBills = Number((bills || []).reduce((sum, b) => sum + Number(b.advance_used || 0), 0).toFixed(2));
+    const storedAdv = Number(customer.advance_balance || 0);
+
+    // If customer has advance used on bills or stored advance that exceeds recorded payment vouchers,
+    // that difference is an opening advance credit granted prior to vouchers.
+    const openingAdvanceCredit = Math.max(
+      0,
+      Number(((totalAdvanceUsedOnBills + storedAdv) - voucherPaymentsTotal).toFixed(2))
+    );
+
     const rawEvents: {
       date: string;
-      type: 'BILL' | 'PAYMENT' | 'ADVANCE_USED' | 'LOYALTY_REDEEM';
+      type: 'BILL' | 'PAYMENT' | 'ADVANCE_USED' | 'OPENING_BALANCE' | 'LOYALTY_REDEEM';
       reference_no: string;
       bill_id?: string;
       description: string;
       bill_amount: number;
       paid_amount: number;
       advance_used: number;
+      direct_paid?: number;
+      bill_due?: number;
+      is_fully_paid?: boolean;
       loyalty_points: number;
-      items_summary: string;
-      payment_method: string;
+      payment_method?: string;
+      items_summary?: string;
       items?: {
         product_name: string;
         quantity: number;
@@ -1654,28 +1866,62 @@ export class ApiService {
       }[];
     }[] = [];
 
+    // 1. Opening Advance Balance Credit (if applicable)
+    if (openingAdvanceCredit > 0.009) {
+      const earliestDate = bills[0]?.created_at || activePayments[0]?.created_at || customer.created_at || new Date().toISOString();
+      const openDate = new Date(new Date(earliestDate).getTime() - 1000).toISOString();
+      rawEvents.push({
+        date: openDate,
+        type: 'OPENING_BALANCE',
+        reference_no: 'OPN-ADV',
+        description: 'Opening Customer Advance Credit Balance',
+        bill_amount: 0,
+        paid_amount: openingAdvanceCredit,
+        advance_used: 0,
+        loyalty_points: 0,
+        payment_method: 'Advance Deposit'
+      });
+    }
+
     let totalBilled = 0;
 
+    // 2. Bill Invoices (Debit events)
     (bills || []).forEach(b => {
       const grand = Number(b.grand_total || 0);
+      const advUsed = Number(b.advance_used || 0);
+      const paidTot = Number(b.paid_total || 0);
+      const directPaid = Math.max(0, paidTot - advUsed);
+      const billDue = Math.max(0, grand - paidTot);
+      const isFullyPaid = paidTot >= grand - 0.009;
       const items = (b.bill_items as BillItem[]) || [];
       const itemsSummary = items.map(i => `${i.product_name} (${i.quantity})`).join(', ');
 
       totalBilled += grand;
 
-      // 1. Bill Debit Event
+      let billDesc = itemsSummary || 'Sales Invoice Billed';
+      if (advUsed > 0 && directPaid > 0) {
+        billDesc += ` [Paid: ₹${advUsed.toFixed(2)} Advance + ₹${directPaid.toFixed(2)} ${b.payment_method || 'Direct'}]`;
+      } else if (advUsed > 0) {
+        billDesc += ` [Paid: ₹${advUsed.toFixed(2)} Advance]`;
+      } else if (b.payment_method && b.payment_method !== 'Pay Later') {
+        billDesc += ` [Mode: ${b.payment_method}]`;
+      }
+
       rawEvents.push({
         date: b.created_at,
         type: 'BILL',
         reference_no: b.bill_number,
         bill_id: b.id,
-        description: itemsSummary || 'Invoice billed',
+        description: billDesc,
         bill_amount: grand,
         paid_amount: 0,
-        advance_used: Number(b.advance_used || 0),
+        advance_used: advUsed,
+        direct_paid: directPaid,
+        bill_due: billDue,
+        is_fully_paid: isFullyPaid,
         loyalty_points: Number(b.loyalty_points_earned || 0),
-        items_summary: itemsSummary,
         payment_method: b.payment_method || 'Cash',
+        items_summary: itemsSummary,
         items: items.map(it => ({
           product_name: it.product_name,
           quantity: it.quantity,
@@ -1683,28 +1929,9 @@ export class ApiService {
           total: it.total
         }))
       });
-
-      // 2. Advance Settlement Credit Event
-      if (Number(b.advance_used || 0) > 0) {
-        const advAmt = Number(b.advance_used || 0);
-
-        rawEvents.push({
-          date: b.created_at,
-          type: 'ADVANCE_USED',
-          reference_no: b.bill_number,
-          bill_id: b.id,
-          description: `Advance balance adjusted against Bill ${b.bill_number}`,
-          bill_amount: 0,
-          paid_amount: advAmt,
-          advance_used: advAmt,
-          loyalty_points: 0,
-          items_summary: '',
-          payment_method: 'Advance Used'
-        });
-      }
     });
 
-    const activePayments = (payments || []).filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
+    // 3. Payment Vouchers (Credit events)
     activePayments.forEach(p => {
       const amt = Number(p.amount || 0);
 
@@ -1712,31 +1939,43 @@ export class ApiService {
         date: p.created_at,
         type: 'PAYMENT',
         reference_no: p.payment_number || 'PAY',
+        bill_id: p.bill_id || undefined,
         description: p.notes || `Payment received via ${p.payment_method || 'Cash'}`,
         bill_amount: 0,
         paid_amount: amt,
         advance_used: 0,
         loyalty_points: 0,
-        items_summary: '',
         payment_method: p.payment_method || 'Cash'
       });
     });
 
-    // Sort chronologically; when timestamps match, BILL precedes ADVANCE_USED then PAYMENT
+    // 4. Direct checkout payments on bills without a separate payment voucher (Credit events)
+    directCheckoutBills.forEach(({ bill: b, directPaid }) => {
+      rawEvents.push({
+        date: b.created_at,
+        type: 'PAYMENT',
+        reference_no: b.bill_number,
+        bill_id: b.id,
+        description: `Settled at checkout for Bill ${b.bill_number} via ${b.payment_method || 'Cash'}`,
+        bill_amount: 0,
+        paid_amount: Number(directPaid.toFixed(2)),
+        advance_used: 0,
+        loyalty_points: 0,
+        payment_method: b.payment_method || 'Cash'
+      });
+    });
+
+    // Sort chronologically; when timestamps match, OPENING_BALANCE precedes BILL precedes PAYMENT
     rawEvents.sort((a, b) => {
       const diff = new Date(a.date).getTime() - new Date(b.date).getTime();
       if (diff !== 0) return diff;
-      const order: Record<string, number> = { BILL: 1, ADVANCE_USED: 2, PAYMENT: 3, LOYALTY_REDEEM: 4 };
+      const order: Record<string, number> = { OPENING_BALANCE: 1, BILL: 2, ADVANCE_USED: 3, PAYMENT: 4, LOYALTY_REDEEM: 5 };
       return (order[a.type] || 99) - (order[b.type] || 99);
     });
 
-    let runningBalance = 0;
+    let ledgerRunningBalance = 0;
     const entries: CustomerLedgerEntry[] = rawEvents.map((evt, idx) => {
-      if (evt.type === 'BILL') {
-        runningBalance += evt.bill_amount;
-      } else {
-        runningBalance -= evt.paid_amount;
-      }
+      ledgerRunningBalance += (evt.bill_amount - evt.paid_amount);
 
       return {
         id: `entry-${idx}`,
@@ -1748,20 +1987,33 @@ export class ApiService {
         bill_amount: evt.bill_amount,
         paid_amount: evt.paid_amount,
         advance_used: evt.advance_used,
+        direct_paid: evt.direct_paid,
+        bill_due: evt.bill_due,
+        is_fully_paid: evt.is_fully_paid,
         loyalty_points: evt.loyalty_points,
-        running_balance: Number(runningBalance.toFixed(2)),
+        running_balance: Number(ledgerRunningBalance.toFixed(2)),
+        payment_method: evt.payment_method,
         items: evt.items
       };
     });
 
-    const totalPaid = Number(entries.reduce((sum, e) => sum + (e.type !== 'BILL' ? e.paid_amount : 0), 0).toFixed(2));
+    const totalBillDues = Number(
+      (bills || []).reduce((sum, b) => sum + Math.max(0, Number(b.grand_total || 0) - Number(b.paid_total || 0)), 0).toFixed(2)
+    );
+    const totalPaidOnBills = Number(
+      (bills || []).reduce((sum, b) => sum + Math.min(Number(b.grand_total || 0), Number(b.paid_total || 0)), 0).toFixed(2)
+    );
+    const liveAdvance = Number(Number(customer.advance_balance || 0).toFixed(2));
+    customer.advance_balance = liveAdvance;
+
+    const totalPaid = Number((totalPaidOnBills + liveAdvance).toFixed(2));
 
     return {
       customer,
       entries,
       totalBilled: Number(totalBilled.toFixed(2)),
-      totalPaid: Number(totalPaid.toFixed(2)),
-      runningBalance: Number(runningBalance.toFixed(2)),
+      totalPaid,
+      runningBalance: totalBillDues,
       pendingPoints
     };
   }
@@ -2110,11 +2362,10 @@ export class ApiService {
       });
 
       const previous_outstanding = Math.max(0, priorTotalBilled - priorTotalPaid);
+      const previous_advance = Math.max(0, Number((priorTotalPaid - priorTotalBilled).toFixed(2)));
 
-      const currentAdvBalance = Number(customer.advance_balance || 0);
       const advance_used = Number(bill.advance_used || 0);
       const advance_earned = Number(bill.advance_earned || 0);
-      const previous_advance = Math.max(0, currentAdvBalance + advance_used - advance_earned);
 
       const current_bill_amount = Number(bill.grand_total || 0);
       const total_amount_due = previous_outstanding + current_bill_amount;
@@ -2124,7 +2375,7 @@ export class ApiService {
       const total_paid = Number(bill.paid_total || (cash_paid + upi_paid + advance_used));
 
       const remaining_balance = Math.max(0, total_amount_due - total_paid);
-      const remaining_advance_balance = Math.max(0, previous_advance - advance_used + advance_earned);
+      const remaining_advance_balance = Math.max(0, Number((previous_advance - advance_used + advance_earned).toFixed(2)));
 
       const bill_remaining = Math.max(0, current_bill_amount - total_paid);
       const isFullyPaid = bill_remaining <= 0.01;
@@ -2280,6 +2531,7 @@ export class ApiService {
     if (!data) throw new Error('Failed to record payment');
 
     let unallocatedAmount = Number(payment.amount || 0);
+    let totalPointsEarned = 0;
 
     // 1. Direct Bill Allocation
     if (payment.bill_id) {
@@ -2321,7 +2573,7 @@ export class ApiService {
           payment_method: newMethod
         };
 
-        if (isNowFullyPaid && Number(bill.loyalty_points_earned || 0) === 0) {
+        if (isNowFullyPaid && Number(bill.loyalty_points_earned || 0) === 0 && grandTotal > 0) {
           const pointsEarned = await this.calculateLoyaltyPointsEarned(grandTotal);
           if (pointsEarned > 0) {
             const loySeq = await this.getNextSequence('LOYALTY');
@@ -2335,6 +2587,7 @@ export class ApiService {
               user_id: userId
             }]);
             updateData.loyalty_points_earned = pointsEarned;
+            totalPointsEarned += pointsEarned;
           }
         }
 
@@ -2392,7 +2645,7 @@ export class ApiService {
           payment_method: newMethod
         };
 
-        if (isNowFullyPaid && Number(b.loyalty_points_earned || 0) === 0) {
+        if (isNowFullyPaid && Number(b.loyalty_points_earned || 0) === 0 && grandTotal > 0) {
           const pointsEarned = await this.calculateLoyaltyPointsEarned(grandTotal);
           if (pointsEarned > 0) {
             const loySeq = await this.getNextSequence('LOYALTY');
@@ -2406,6 +2659,7 @@ export class ApiService {
               user_id: userId
             }]);
             updateData.loyalty_points_earned = pointsEarned;
+            totalPointsEarned += pointsEarned;
           }
         }
 
@@ -2419,21 +2673,23 @@ export class ApiService {
       }
     }
 
-    // 3. Excess payment turns into Advance Balance (synced with customer ledger)
-    if (payment.customer_id && unallocatedAmount > 0) {
+    // 3. Excess payment turns into Advance Balance & settled bills credit Loyalty Points
+    if (payment.customer_id && (unallocatedAmount > 0 || totalPointsEarned > 0)) {
       const { data: cust } = await supabase
         .from('customers')
-        .select('advance_balance')
+        .select('advance_balance, loyalty_points')
         .eq('id', payment.customer_id)
         .eq('user_id', userId)
         .maybeSingle();
 
       const currentAdv = Number(cust?.advance_balance || 0);
+      const currentLoy = Number(cust?.loyalty_points || 0);
       const newAdv = Number((currentAdv + unallocatedAmount).toFixed(2));
+      const newLoy = Math.max(0, currentLoy + totalPointsEarned);
 
       await supabase
         .from('customers')
-        .update({ advance_balance: newAdv })
+        .update({ advance_balance: newAdv, loyalty_points: newLoy })
         .eq('id', payment.customer_id)
         .eq('user_id', userId);
     }
@@ -2726,7 +2982,7 @@ export class ApiService {
 
     const { data: cust, error: custErr } = await supabase
       .from('customers')
-      .select('id, name, advance_balance')
+      .select('id, name, advance_balance, loyalty_points')
       .eq('id', customerId)
       .eq('user_id', userId)
       .maybeSingle();
@@ -2752,6 +3008,7 @@ export class ApiService {
     );
 
     let totalApplied = 0;
+    let totalPointsEarned = 0;
     const billsUpdated: string[] = [];
 
     for (const b of unpaidBills) {
@@ -2784,7 +3041,7 @@ export class ApiService {
         payment_method: newMethod
       };
 
-      if (isNowFullyPaid && Number(b.loyalty_points_earned || 0) === 0) {
+      if (isNowFullyPaid && Number(b.loyalty_points_earned || 0) === 0 && grandTotal > 0) {
         const pointsEarned = await this.calculateLoyaltyPointsEarned(grandTotal);
         if (pointsEarned > 0) {
           const loySeq = await this.getNextSequence('LOYALTY');
@@ -2798,6 +3055,7 @@ export class ApiService {
             user_id: userId
           }]);
           updateData.loyalty_points_earned = pointsEarned;
+          totalPointsEarned += pointsEarned;
         }
       }
 
@@ -2815,9 +3073,10 @@ export class ApiService {
     }
 
     if (totalApplied > 0) {
+      const newLoyalty = Math.max(0, Number(cust.loyalty_points || 0) + totalPointsEarned);
       await supabase
         .from('customers')
-        .update({ advance_balance: Math.max(0, available) })
+        .update({ advance_balance: Math.max(0, available), loyalty_points: newLoyalty })
         .eq('id', customerId)
         .eq('user_id', userId);
 
@@ -2858,7 +3117,7 @@ export class ApiService {
 
     const { data: cust, error: custErr } = await supabase
       .from('customers')
-      .select('id, name, advance_balance')
+      .select('id, name, advance_balance, loyalty_points')
       .eq('id', bill.customer_id)
       .eq('user_id', userId)
       .maybeSingle();
@@ -2912,7 +3171,8 @@ export class ApiService {
       edit_reason: `Allocated ₹${allocate.toFixed(2)} from customer advance`
     };
 
-    if (isNowFullyPaid && Number(bill.loyalty_points_earned || 0) === 0) {
+    let pointsEarnedOnBill = 0;
+    if (isNowFullyPaid && Number(bill.loyalty_points_earned || 0) === 0 && grandTotal > 0) {
       const pointsEarned = await this.calculateLoyaltyPointsEarned(grandTotal);
       if (pointsEarned > 0) {
         const loySeq = await this.getNextSequence('LOYALTY');
@@ -2926,6 +3186,7 @@ export class ApiService {
           user_id: userId
         }]);
         updateData.loyalty_points_earned = pointsEarned;
+        pointsEarnedOnBill = pointsEarned;
       }
     }
 
@@ -2938,9 +3199,10 @@ export class ApiService {
     if (updErr) throw new Error(updErr.message);
 
     const newCustAdvance = Number(Math.max(0, availableAdvance - allocate).toFixed(2));
+    const newCustLoyalty = Math.max(0, Number(cust.loyalty_points || 0) + pointsEarnedOnBill);
     await supabase
       .from('customers')
-      .update({ advance_balance: newCustAdvance })
+      .update({ advance_balance: newCustAdvance, loyalty_points: newCustLoyalty })
       .eq('id', bill.customer_id)
       .eq('user_id', userId);
 
@@ -3007,7 +3269,7 @@ export class ApiService {
 
     const amount = Number(payment.amount || 0);
 
-    // If attached to a bill, deduct from bill paid_total
+    // If attached to a bill, deduct from bill paid_total (and reverse any advance_earned from overpayment)
     if (payment.bill_id) {
       const { data: bill } = await supabase
         .from('bills')
@@ -3019,7 +3281,9 @@ export class ApiService {
       if (bill) {
         const grandTotal = Number(bill.grand_total || 0);
         const currentPaid = Number(bill.paid_total || 0);
-        const newPaid = Math.max(0, currentPaid - amount);
+        const billAdvanceEarned = Number(bill.advance_earned || 0);
+        const directAppliedToBill = Math.max(0, amount - billAdvanceEarned);
+        const newPaid = Number(Math.max(0, currentPaid - directAppliedToBill).toFixed(2));
 
         const currentCash = Number(bill.cash_paid || 0);
         const currentUpi = Number(bill.upi_paid || 0);
@@ -3029,6 +3293,9 @@ export class ApiService {
           newUpi = Math.max(0, newUpi - amount);
         } else if (payment.payment_method === 'Cash') {
           newCash = Math.max(0, newCash - amount);
+        } else if (payment.payment_method === 'Split Payment') {
+          newCash = 0;
+          newUpi = 0;
         }
 
         let newMethod = bill.payment_method;
@@ -3036,13 +3303,42 @@ export class ApiService {
         else if (newUpi > 0 && newCash === 0) newMethod = 'UPI';
         else if (newCash > 0 && newUpi === 0) newMethod = 'Cash';
         else if (newCash > 0 && newUpi > 0) newMethod = 'Split Payment';
+        else if (Number(bill.advance_used || 0) > 0) newMethod = newPaid >= grandTotal - 0.01 ? 'Advance Used' : 'Pay Later';
 
-        const updateData: { paid_total: number; cash_paid: number; upi_paid: number; payment_method: string; loyalty_points_earned?: number } = {
+        const updateData: {
+          paid_total: number;
+          cash_paid: number;
+          upi_paid: number;
+          advance_earned?: number;
+          payment_method: string;
+          loyalty_points_earned?: number;
+        } = {
           paid_total: newPaid,
           cash_paid: newCash,
           upi_paid: newUpi,
           payment_method: newMethod
         };
+
+        if (billAdvanceEarned > 0) {
+          updateData.advance_earned = 0;
+          if (bill.customer_id) {
+            const { data: cust } = await supabase
+              .from('customers')
+              .select('advance_balance')
+              .eq('id', bill.customer_id)
+              .eq('user_id', userId)
+              .maybeSingle();
+
+            if (cust) {
+              const updatedAdv = Number(Math.max(0, Number(cust.advance_balance || 0) - billAdvanceEarned).toFixed(2));
+              await supabase
+                .from('customers')
+                .update({ advance_balance: updatedAdv })
+                .eq('id', bill.customer_id)
+                .eq('user_id', userId);
+            }
+          }
+        }
 
         if (newPaid < grandTotal - 0.01 && Number(bill.loyalty_points_earned || 0) > 0) {
           await this.reverseLoyaltyPointsForBill(bill.id, userName);
@@ -3063,14 +3359,97 @@ export class ApiService {
         .eq('user_id', userId)
         .maybeSingle();
 
-      if (cust) {
-        const currentAdvance = Number(cust.advance_balance || 0);
-        const newAdvance = Math.max(0, currentAdvance - amount);
+      const currentAdvance = Number(cust?.advance_balance || 0);
+
+      const { data: custBills } = await supabase
+        .from('bills')
+        .select('*')
+        .eq('customer_id', payment.customer_id)
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+
+      // Identify portion of this specific payment that was credited to advance vs applied to bills
+      let advanceCreditedFromThisPayment = 0;
+      if (payment.notes) {
+        const advMatch = payment.notes.match(/Advance Credited:\s*₹?([0-9.]+)/i);
+        if (advMatch) {
+          advanceCreditedFromThisPayment = Number(advMatch[1]) || 0;
+        }
+      }
+      if (advanceCreditedFromThisPayment === 0 && !payment.bill_id) {
+        const totalDuesAcrossBills = (custBills || []).reduce(
+          (s, b) => s + Math.max(0, Number(b.grand_total || 0) - Number(b.paid_total || 0)),
+          0
+        );
+        if (amount > totalDuesAcrossBills) {
+          advanceCreditedFromThisPayment = Number((amount - totalDuesAcrossBills).toFixed(2));
+        }
+      }
+
+      // Rollback only the advance amount created by THIS payment; never touch customer's separate advance or applied advance on bills
+      const deductFromAdvance = Math.min(currentAdvance, advanceCreditedFromThisPayment);
+      let remainingToReverseFromBills = Number((amount - advanceCreditedFromThisPayment).toFixed(2));
+
+      if (cust && deductFromAdvance > 0) {
+        const newAdvance = Number(Math.max(0, currentAdvance - deductFromAdvance).toFixed(2));
         await supabase
           .from('customers')
           .update({ advance_balance: newAdvance })
           .eq('id', payment.customer_id)
           .eq('user_id', userId);
+      }
+
+      if (remainingToReverseFromBills > 0.009) {
+        for (const b of (custBills || [])) {
+          if (remainingToReverseFromBills <= 0.009) break;
+          const bCash = Number(b.cash_paid || 0);
+          const bUpi = Number(b.upi_paid || 0);
+          const bDirect = bCash + bUpi;
+          const bPaid = Number(b.paid_total || 0);
+          const bAdvUsed = Number(b.advance_used || 0);
+          const reversiblePaid = Math.max(0, bPaid - bAdvUsed);
+          if (reversiblePaid <= 0.009) continue;
+
+          const deduct = Number(Math.min(reversiblePaid, remainingToReverseFromBills).toFixed(2));
+          const newPaid = Number(Math.max(0, bPaid - deduct).toFixed(2));
+          let newCash = bCash;
+          let newUpi = bUpi;
+          if (payment.payment_method === 'UPI') {
+            newUpi = Math.max(0, bUpi - deduct);
+          } else if (payment.payment_method === 'Cash') {
+            newCash = Math.max(0, bCash - deduct);
+          } else if (bDirect > 0) {
+            newCash = Math.max(0, bCash - deduct);
+          }
+
+          const grandTotal = Number(b.grand_total || 0);
+          let newMethod = b.payment_method;
+          if (newPaid <= 0.01) newMethod = 'Pay Later';
+          else if (newUpi > 0 && newCash === 0) newMethod = 'UPI';
+          else if (newCash > 0 && newUpi === 0) newMethod = 'Cash';
+          else if (newCash > 0 && newUpi > 0) newMethod = 'Split Payment';
+          else if (bAdvUsed > 0) newMethod = newPaid >= grandTotal - 0.01 ? 'Advance Used' : 'Pay Later';
+
+          const bUpdate: Record<string, unknown> = {
+            paid_total: newPaid,
+            cash_paid: newCash,
+            upi_paid: newUpi,
+            payment_method: newMethod
+          };
+
+          if (newPaid < grandTotal - 0.01 && Number(b.loyalty_points_earned || 0) > 0) {
+            await this.reverseLoyaltyPointsForBill(b.id, userName);
+            bUpdate.loyalty_points_earned = 0;
+          }
+
+          await supabase
+            .from('bills')
+            .update(bUpdate)
+            .eq('id', b.id)
+            .eq('user_id', userId);
+
+          remainingToReverseFromBills = Number((remainingToReverseFromBills - deduct).toFixed(2));
+        }
       }
     }
 
@@ -3103,15 +3482,20 @@ export class ApiService {
   static async reconcileCustomerAdvanceBalances(userName = 'Super Admin'): Promise<{
     customersReconciled: number;
     discrepanciesFixed: number;
+    duplicatesMerged: number;
     totalAdvanceBefore: number;
     totalAdvanceAfter: number;
   }> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
     const userId = await this.getUserId();
 
-    let custQ = supabase.from('customers').select('id, name, advance_balance');
-    let billsQ = supabase.from('bills').select('id, customer_id, grand_total, paid_total, cash_paid, upi_paid, advance_used');
-    let payQ = supabase.from('payments').select('id, customer_id, bill_id, amount, status');
+    // 1. Fetch all customers, bills, and payments
+    let custQ = supabase.from('customers').select('*');
+    let billsQ = supabase
+      .from('bills')
+      .select('id, bill_number, customer_id, grand_total, paid_total, cash_paid, upi_paid, advance_used, advance_earned, payment_method, loyalty_points_earned, created_at')
+      .order('created_at', { ascending: true });
+    let payQ = supabase.from('payments').select('id, payment_number, customer_id, bill_id, amount, status, notes, created_at');
 
     if (userId) {
       custQ = custQ.eq('user_id', userId);
@@ -3120,35 +3504,132 @@ export class ApiService {
     }
 
     const [
-      { data: customers, error: custErr },
-      { data: bills, error: billsErr },
-      { data: payments, error: payErr }
+      { data: rawCustomers, error: custErr },
+      { data: rawBills, error: billsErr },
+      { data: rawPayments, error: payErr }
     ] = await Promise.all([custQ, billsQ, payQ]);
 
     if (custErr) throw new Error(custErr.message);
     if (billsErr) throw new Error(billsErr.message);
     if (payErr) throw new Error(payErr.message);
 
-    const custList = customers || [];
-    const billList = bills || [];
-    const payList = payments || [];
+    let custList = rawCustomers || [];
+    const billList = rawBills || [];
+    const payList = rawPayments || [];
 
-    let totalAdvanceBefore = 0;
-    let totalAdvanceAfter = 0;
+    let duplicatesMerged = 0;
     let discrepanciesFixed = 0;
+    const totalAdvanceBefore = custList.reduce((sum, c) => sum + Number(c.advance_balance || 0), 0);
+
+    // 2. DETECT & MERGE DUPLICATE CUSTOMER ACCOUNTS (by trimmed normalized lowercase name)
+    const nameGroups = new Map<string, Customer[]>();
+    for (const c of custList) {
+      const normName = c.name.trim().replace(/\s+/g, ' ').toLowerCase();
+      const group = nameGroups.get(normName) || [];
+      group.push(c);
+      nameGroups.set(normName, group);
+    }
+
+    const mergedCustomerIds = new Set<string>();
+
+    for (const [, group] of nameGroups.entries()) {
+      if (group.length > 1) {
+        // Earliest created is the primary account
+        group.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+        const primary = group[0];
+        const duplicates = group.slice(1);
+
+        for (const dup of duplicates) {
+          // Inherit contact details if primary is missing them
+          const contactUpdates: Record<string, unknown> = {};
+          if (!primary.mobile && dup.mobile) {
+            primary.mobile = dup.mobile;
+            contactUpdates.mobile = dup.mobile;
+          }
+          if (!primary.email && dup.email) {
+            primary.email = dup.email;
+            contactUpdates.email = dup.email;
+          }
+          if (Object.keys(contactUpdates).length > 0) {
+            await supabase.from('customers').update(contactUpdates).eq('id', primary.id);
+          }
+
+          // Reassign all bills from dup to primary (including any legacy rows)
+          await supabase.from('bills').update({ customer_id: primary.id }).eq('customer_id', dup.id);
+          const dupBills = billList.filter(b => b.customer_id === dup.id);
+          for (const b of dupBills) {
+            b.customer_id = primary.id;
+          }
+
+          // Reassign all payments from dup to primary
+          await supabase.from('payments').update({ customer_id: primary.id }).eq('customer_id', dup.id);
+          const dupPayments = payList.filter(p => p.customer_id === dup.id);
+          for (const p of dupPayments) {
+            p.customer_id = primary.id;
+          }
+
+          // Reassign loyalty transactions from dup to primary
+          await supabase.from('loyalty_transactions').update({ customer_id: primary.id }).eq('customer_id', dup.id);
+
+          // Combine opening advance / loyalty if dup had any
+          if (Number(dup.advance_balance || 0) > 0) {
+            primary.advance_balance = Number(primary.advance_balance || 0) + Number(dup.advance_balance || 0);
+          }
+          if (Number(dup.loyalty_points || 0) > 0) {
+            primary.loyalty_points = Number(primary.loyalty_points || 0) + Number(dup.loyalty_points || 0);
+          }
+
+          // Delete redundant duplicate customer record
+          const { error: delCustErr } = await supabase.from('customers').delete().eq('id', dup.id);
+          if (!delCustErr) {
+            mergedCustomerIds.add(dup.id);
+            duplicatesMerged++;
+
+            await this.logAudit({
+              user_name: userName,
+              action: 'MERGE_DUPLICATE_CUSTOMER',
+              entity: `Customer ${primary.name}`,
+              new_value: `Merged duplicate profile (${dup.customer_code || dup.id}) with ${dupBills.length} bills into primary (${primary.customer_code || primary.id})`
+            });
+          }
+        }
+      }
+    }
+
+    // Refresh active customer list after merging duplicates
+    custList = custList.filter(c => !mergedCustomerIds.has(c.id));
+
+    // 3. RECONCILE BILL ALLOCATIONS (FIFO) AND REAL ADVANCE BALANCES ACROSS ALL CUSTOMERS
+    let totalAdvanceAfter = 0;
     let customersReconciled = 0;
 
     for (const cust of custList) {
       const storedAdvance = Number(cust.advance_balance || 0);
-      totalAdvanceBefore += storedAdvance;
+      let custLoyaltyPoints = Number(cust.loyalty_points || 0);
+      let loyaltyChanged = false;
 
-      const custBills = billList.filter(b => b.customer_id === cust.id);
+      const custBills = billList
+        .filter(b => b.customer_id === cust.id)
+        .sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+
       const custPayments = payList.filter(
         p => p.customer_id === cust.id && p.status !== 'CANCELLED' && p.status !== 'REVERSED'
       );
 
+      // Cap any individual bill whose paid_total exceeds grand_total
+      for (const b of custBills) {
+        const gTotal = Number(b.grand_total || 0);
+        const pTotal = Number(b.paid_total || 0);
+        if (pTotal > gTotal + 0.009) {
+          b.paid_total = gTotal;
+          let capBillQ = supabase.from('bills').update({ paid_total: gTotal }).eq('id', b.id);
+          if (userId) capBillQ = capBillQ.eq('user_id', userId);
+          await capBillQ;
+          discrepanciesFixed++;
+        }
+      }
+
       const custTotalPayments = custPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
-      const custTotalBilled = custBills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
       const paymentBillIds = new Set(custPayments.map(p => p.bill_id).filter(Boolean));
       const directPaidAtCheckout = custBills.reduce((sum, b) => {
         if (!paymentBillIds.has(b.id)) {
@@ -3157,27 +3638,96 @@ export class ApiService {
         return sum;
       }, 0);
 
-      const totalDepositedByCust = custTotalPayments + directPaidAtCheckout;
+      const totalDepositedByCust = Number((custTotalPayments + directPaidAtCheckout).toFixed(2));
 
-      // Real Advance = Excess of deposited payments over all-time billed purchases
-      let calculatedAdvance = Math.max(0, Number((totalDepositedByCust - custTotalBilled).toFixed(2)));
+      // Repair any legacy bills where paid_total exceeds authentic totalDepositedByCust
+      // (e.g. a bill was marked Advance Used without an actual advance deposit, or duplicate credit was applied)
+      const currentlyAllocatedOnBillsInitial = Number(
+        custBills.reduce((sum, b) => sum + Math.min(Number(b.grand_total || 0), Number(b.paid_total || 0)), 0).toFixed(2)
+      );
 
-      // If customer has no payments or bills recorded, preserve their stored opening advance balance
-      if (custPayments.length === 0 && custBills.length === 0) {
-        calculatedAdvance = storedAdvance;
+      // Compute authentic available advance credit: honors stored advance plus any unallocated payment deposits
+      const unallocatedDeposits = Math.max(0, Number((totalDepositedByCust - currentlyAllocatedOnBillsInitial).toFixed(2)));
+      let availableCreditToAllocate = Math.max(storedAdvance, unallocatedDeposits);
+
+      // Auto-allocate any available credit FIFO across oldest unpaid bills
+      if (availableCreditToAllocate > 0.009) {
+        const unpaidBills = custBills.filter(
+          b => Number(b.paid_total || 0) < Number(b.grand_total || 0) - 0.009
+        );
+
+        for (const b of unpaidBills) {
+          if (availableCreditToAllocate <= 0.009) break;
+          const grandTotal = Number(b.grand_total || 0);
+          const currentPaid = Number(b.paid_total || 0);
+          const due = Number((grandTotal - currentPaid).toFixed(2));
+          const allocate = Number(Math.min(due, availableCreditToAllocate).toFixed(2));
+          if (allocate <= 0) continue;
+
+          const newPaidTotal = Number((currentPaid + allocate).toFixed(2));
+          const newAdvanceUsed = Number((Number(b.advance_used || 0) + allocate).toFixed(2));
+          const isNowFullyPaid = newPaidTotal >= grandTotal - 0.01;
+          const hasDirect = Number(b.cash_paid || 0) + Number(b.upi_paid || 0) > 0;
+
+          let newMethod = b.payment_method;
+          if (!hasDirect) {
+            newMethod = isNowFullyPaid ? 'Advance Used' : 'Pay Later';
+          }
+
+          const billUpdate: Record<string, unknown> = {
+            paid_total: newPaidTotal,
+            advance_used: newAdvanceUsed,
+            payment_method: newMethod
+          };
+
+          if (isNowFullyPaid && Number(b.loyalty_points_earned || 0) === 0 && grandTotal > 0) {
+            const ptsEarned = await this.calculateLoyaltyPointsEarned(grandTotal);
+            if (ptsEarned > 0) {
+              const loySeq = await this.getNextSequence('LOYALTY');
+              await supabase.from('loyalty_transactions').insert([{
+                transaction_number: loySeq,
+                customer_id: cust.id,
+                bill_id: b.id,
+                points: ptsEarned,
+                type: 'EARN',
+                notes: `Award Reason: Bill Fully Paid (Reconciliation Advance Applied) - ${b.bill_number}`,
+                ...(userId ? { user_id: userId } : {})
+              }]);
+              billUpdate.loyalty_points_earned = ptsEarned;
+              custLoyaltyPoints += ptsEarned;
+              loyaltyChanged = true;
+            }
+          }
+
+          let updBillQ = supabase.from('bills').update(billUpdate).eq('id', b.id);
+          if (userId) updBillQ = updBillQ.eq('user_id', userId);
+          await updBillQ;
+
+          b.paid_total = newPaidTotal;
+          b.advance_used = newAdvanceUsed;
+          availableCreditToAllocate = Number((availableCreditToAllocate - allocate).toFixed(2));
+          discrepanciesFixed++;
+        }
       }
+
+      const calculatedAdvance = Math.max(0, Number(availableCreditToAllocate.toFixed(2)));
       totalAdvanceAfter += calculatedAdvance;
 
-      if (Math.abs(calculatedAdvance - storedAdvance) > 0.001) {
+      if (Math.abs(calculatedAdvance - storedAdvance) > 0.001 || loyaltyChanged) {
         let updateCustQ = supabase
           .from('customers')
-          .update({ advance_balance: calculatedAdvance })
+          .update({
+            advance_balance: calculatedAdvance,
+            loyalty_points: custLoyaltyPoints
+          })
           .eq('id', cust.id);
 
         if (userId) updateCustQ = updateCustQ.eq('user_id', userId);
         await updateCustQ;
 
-        discrepanciesFixed++;
+        if (Math.abs(calculatedAdvance - storedAdvance) > 0.001) {
+          discrepanciesFixed++;
+        }
       }
       customersReconciled++;
     }
@@ -3186,12 +3736,13 @@ export class ApiService {
       user_name: userName,
       action: 'RECONCILE_ADVANCE_BALANCES',
       entity: 'All Customers',
-      new_value: `Reconciled ${customersReconciled} customers, fixed ${discrepanciesFixed} discrepancies. Advance before: ₹${totalAdvanceBefore.toFixed(2)}, after: ₹${totalAdvanceAfter.toFixed(2)}`
+      new_value: `Reconciled ${customersReconciled} customers, merged ${duplicatesMerged} duplicate accounts, fixed ${discrepanciesFixed} balance discrepancies. Advance before: ₹${totalAdvanceBefore.toFixed(2)}, after: ₹${totalAdvanceAfter.toFixed(2)}`
     });
 
     return {
       customersReconciled,
       discrepanciesFixed,
+      duplicatesMerged,
       totalAdvanceBefore: Number(totalAdvanceBefore.toFixed(2)),
       totalAdvanceAfter: Number(totalAdvanceAfter.toFixed(2))
     };
@@ -3530,26 +4081,75 @@ export class ApiService {
     const allPayments = (payments || []).filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
     const allExpenses = expenses || [];
 
-    const customers = await this.getCustomerSummaries();
-    const total_customers = customers.length;
-    const pending_balance = customers.reduce((sum, c) => sum + Number(c.balance_due || 0), 0);
-    const total_advance = customers.reduce((sum, c) => sum + Number(c.advance_balance || 0), 0);
+    let custQuery = supabase.from('customers').select('id, name, advance_balance');
+    let allBillsDueQuery = supabase.from('bills').select('id, customer_id, grand_total, paid_total, cash_paid, upi_paid, advance_used');
+    let allPaymentsAdvQuery = supabase.from('payments').select('id, customer_id, bill_id, amount, status');
+    if (userId) {
+      custQuery = custQuery.eq('user_id', userId);
+      allBillsDueQuery = allBillsDueQuery.eq('user_id', userId);
+      allPaymentsAdvQuery = allPaymentsAdvQuery.eq('user_id', userId);
+    }
+    const [{ data: custRows }, { data: allTimeBillsForDue }, { data: allTimePaymentsForAdv }] = await Promise.all([
+      custQuery,
+      allBillsDueQuery,
+      allPaymentsAdvQuery
+    ]);
+    const total_customers = custRows?.length || 0;
+    const activeAllTimePays = (allTimePaymentsForAdv || []).filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
+    const total_advance = (custRows || []).reduce((sum, c) => {
+      const cBills = (allTimeBillsForDue || []).filter(b => b.customer_id === c.id);
+      const cPays = activeAllTimePays.filter(p => p.customer_id === c.id);
+      if (cBills.length === 0 && cPays.length === 0) {
+        return sum + Math.max(0, Number(c.advance_balance || 0));
+      }
+      const cBilled = cBills.reduce((s, b) => s + Number(b.grand_total || 0), 0);
+      const cPayBillIds = new Set(cPays.map(p => p.bill_id).filter(Boolean));
+      const cDirectNoVoucher = cBills.reduce((s, b) => {
+        if (!cPayBillIds.has(b.id)) {
+          return s + Math.max(0, Number(b.paid_total || 0) - Number(b.advance_used || 0));
+        }
+        return s;
+      }, 0);
+      const cDeposited = cPays.reduce((s, p) => s + Number(p.amount || 0), 0) + cDirectNoVoucher;
+      return sum + Math.max(0, Number((cDeposited - cBilled).toFixed(2)));
+    }, 0);
+    const pending_balance = (allTimeBillsForDue || allBills).reduce(
+      (sum, b) => sum + Math.max(0, Number(b.grand_total || 0) - Number(b.paid_total || 0)),
+      0
+    );
+
+    const billsLookup = new Map<string, { cash_paid?: number; upi_paid?: number }>();
+    (allTimeBillsForDue || []).forEach(b => billsLookup.set(b.id, b));
+    allBills.forEach(b => billsLookup.set(b.id, b));
+
+    const paymentBillIds = new Set(allPayments.map(p => p.bill_id).filter(Boolean));
 
     let cashCollected = 0;
     let upiCollected = 0;
 
     allPayments.forEach(p => {
       const amt = Number(p.amount || 0);
-      if (p.payment_method === 'Cash') cashCollected += amt;
-      else if (p.payment_method === 'UPI') upiCollected += amt;
+      if (p.payment_method === 'Cash') {
+        cashCollected += amt;
+      } else if (p.payment_method === 'UPI') {
+        upiCollected += amt;
+      } else if (p.payment_method === 'Split Payment') {
+        const linked = p.bill_id ? billsLookup.get(p.bill_id) : undefined;
+        if (linked && (Number(linked.cash_paid || 0) + Number(linked.upi_paid || 0) > 0)) {
+          cashCollected += Number(linked.cash_paid || 0);
+          upiCollected += Number(linked.upi_paid || 0);
+        } else {
+          cashCollected += amt;
+        }
+      }
     });
 
-    if (allPayments.length === 0) {
-      allBills.forEach(b => {
+    allBills.forEach(b => {
+      if (!paymentBillIds.has(b.id)) {
         cashCollected += Number(b.cash_paid || 0);
         upiCollected += Number(b.upi_paid || 0);
-      });
-    }
+      }
+    });
 
     const totalAmountCollected = cashCollected + upiCollected;
     const totalSales = allBills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
@@ -4264,29 +4864,49 @@ _(Points will be credited upon bill settlement)_`;
     const payments = paymentsRes.data || [];
     const activePayments = payments.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
 
-    let allTimeBilled = 0;
-    let allTimePaid = 0;
-    (bills || []).forEach(b => {
-      allTimeBilled += Number(b.grand_total || 0);
-      allTimePaid += Number(b.paid_total || 0);
-    });
-
     const paymentBillIds = new Set(activePayments.map(p => p.bill_id).filter(Boolean));
-    activePayments.forEach(p => {
-      if (!p.bill_id || !paymentBillIds.has(p.bill_id)) {
-        allTimePaid += Number(p.amount || 0);
+    const directCheckoutBills: Array<{ bill: typeof bills[0]; directPaid: number }> = [];
+    (bills || []).forEach(b => {
+      if (!paymentBillIds.has(b.id)) {
+        const directPaid = Math.max(0, Number(b.paid_total || 0) - Number(b.advance_used || 0));
+        if (directPaid > 0.009) {
+          directCheckoutBills.push({ bill: b, directPaid });
+        }
       }
     });
 
-    const currentOutstandingBalance = Math.max(0, allTimeBilled - allTimePaid);
+    const currentOutstandingBalance = Number(
+      (bills || []).reduce((sum, b) => sum + Math.max(0, Number(b.grand_total || 0) - Number(b.paid_total || 0)), 0).toFixed(2)
+    );
+    // Real-time unspent advance is the authoritative balance from the customer record
+    const currentAdvanceBalance = Math.max(0, Number(Number(customer.advance_balance || 0).toFixed(2)));
+    customer.advance_balance = currentAdvanceBalance;
 
     const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
 
+    // Compute Opening Balance as of start date (prior debits minus prior credits)
+    let openingBalance = 0;
+    if (startDate) {
+      const priorDebits = (bills || [])
+        .filter(b => new Date(b.created_at).getTime() < startDate.getTime())
+        .reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
+
+      const priorVouchers = activePayments
+        .filter(p => new Date(p.created_at).getTime() < startDate.getTime())
+        .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+
+      const priorDirect = directCheckoutBills
+        .filter(({ bill: b }) => new Date(b.created_at).getTime() < startDate.getTime())
+        .reduce((sum, { directPaid }) => sum + directPaid, 0);
+
+      openingBalance = Number((priorDebits - (priorVouchers + priorDirect)).toFixed(2));
+    }
+
     const filteredBills: CustomerStatementBill[] = [];
-    let periodInvoiced = 0;
-    let periodPaid = 0;
+    const transactionsList: CustomerStatementTransaction[] = [];
     let periodUnits = 0;
 
+    // 1. Invoices in period
     for (const b of (bills || [])) {
       const bTime = new Date(b.created_at).getTime();
       if (startDate && bTime < startDate.getTime()) continue;
@@ -4294,12 +4914,11 @@ _(Points will be credited upon bill settlement)_`;
 
       const grandTotal = Number(b.grand_total || 0);
       const paidTotal = Number(b.paid_total || 0);
+      const advUsed = Number(b.advance_used || 0);
+      const directPaid = Math.max(0, paidTotal - advUsed);
       const discount = Number(b.discount || 0);
       const subtotal = Number(b.total || (grandTotal + discount));
       const balanceDue = Math.max(0, grandTotal - paidTotal);
-
-      periodInvoiced += grandTotal;
-      periodPaid += paidTotal;
 
       const items: CustomerStatementBillItem[] = ((b.bill_items as BillItem[]) || []).map((item, idx) => {
         const qty = Number(item.quantity || 0);
@@ -4326,9 +4945,102 @@ _(Points will be credited upon bill settlement)_`;
         discount,
         grand_total: grandTotal,
         paid_amount: paidTotal,
-        balance_due: balanceDue
+        balance_due: balanceDue,
+        advance_used: advUsed,
+        advance_earned: Number(b.advance_earned || 0)
+      });
+
+      const itemsSummary = items.map(i => `${i.product_name} (${i.quantity})`).join(', ');
+      let billParticulars = itemsSummary || 'Sales Invoice Billed';
+      if (advUsed > 0 && directPaid > 0) {
+        billParticulars += ` [Paid: ₹${advUsed.toFixed(2)} Advance + ₹${directPaid.toFixed(2)} ${b.payment_method || 'Direct'}]`;
+      } else if (advUsed > 0) {
+        billParticulars += ` [Paid: ₹${advUsed.toFixed(2)} Advance]`;
+      } else if (b.payment_method && b.payment_method !== 'Pay Later') {
+        billParticulars += ` [Mode: ${b.payment_method}]`;
+      }
+
+      transactionsList.push({
+        id: `stmt-bill-${b.id}`,
+        date: b.created_at,
+        type: 'INVOICE',
+        reference_no: b.bill_number,
+        particulars: billParticulars,
+        debit: grandTotal,
+        credit: 0,
+        running_balance: 0,
+        advance_used: advUsed,
+        direct_paid: directPaid,
+        bill_due: balanceDue,
+        is_fully_paid: paidTotal >= grandTotal - 0.009,
+        payment_method: b.payment_method || 'Cash',
+        items
       });
     }
+
+    // 2. Payment Vouchers in period
+    let paymentsCount = 0;
+    for (const p of activePayments) {
+      const pTime = new Date(p.created_at).getTime();
+      if (startDate && pTime < startDate.getTime()) continue;
+      if (endDate && pTime > endDate.getTime()) continue;
+
+      const amt = Number(p.amount || 0);
+      paymentsCount++;
+
+      transactionsList.push({
+        id: `stmt-pay-${p.id}`,
+        date: p.created_at,
+        type: 'PAYMENT',
+        reference_no: p.payment_number || 'PAY',
+        particulars: p.notes || `Payment received via ${p.payment_method || 'Cash'}`,
+        debit: 0,
+        credit: amt,
+        running_balance: 0,
+        payment_method: p.payment_method || 'Cash'
+      });
+    }
+
+    // 3. Direct checkout payments in period (without a separate voucher)
+    for (const { bill: b, directPaid } of directCheckoutBills) {
+      const bTime = new Date(b.created_at).getTime();
+      if (startDate && bTime < startDate.getTime()) continue;
+      if (endDate && bTime > endDate.getTime()) continue;
+
+      paymentsCount++;
+      transactionsList.push({
+        id: `stmt-dirpay-${b.id}`,
+        date: b.created_at,
+        type: 'PAYMENT',
+        reference_no: b.bill_number,
+        particulars: `Paid at checkout for Bill ${b.bill_number} via ${b.payment_method || 'Cash'}`,
+        debit: 0,
+        credit: Number(directPaid.toFixed(2)),
+        running_balance: 0,
+        payment_method: b.payment_method || 'Cash'
+      });
+    }
+
+    // Sort transactions chronologically; when timestamps match, INVOICE precedes PAYMENT
+    transactionsList.sort((a, b) => {
+      const diff = new Date(a.date).getTime() - new Date(b.date).getTime();
+      if (diff !== 0) return diff;
+      return a.type === 'INVOICE' ? -1 : 1;
+    });
+
+    // Calculate chronological running balance starting from opening balance
+    let ledgerRunner = openingBalance;
+    const finalTransactions = transactionsList.map(t => {
+      ledgerRunner += (t.debit - t.credit);
+      return {
+        ...t,
+        running_balance: Number(ledgerRunner.toFixed(2))
+      };
+    });
+
+    const periodTotalInvoiced = Number(transactionsList.reduce((sum, t) => sum + t.debit, 0).toFixed(2));
+    const periodTotalPaid = Number(transactionsList.reduce((sum, t) => sum + t.credit, 0).toFixed(2));
+    const closingBalance = Number(ledgerRunner.toFixed(2));
 
     const dateMap = new Map<string, CustomerStatementBill[]>();
     for (const bill of filteredBills) {
@@ -4356,9 +5068,59 @@ _(Points will be credited upon bill settlement)_`;
         };
       });
 
-    let filterLabel = 'All Invoices';
+    // Financial Summary Aggregations
+    let totalCashReceived = 0;
+    let totalUpiReceived = 0;
+    let totalMixedPayments = 0;
+    let totalAdvanceReceived = 0;
+    let totalAdvanceUtilized = 0;
+    const totalAdvanceRefunded = 0;
+    const totalBillRefunds = 0;
+
+    for (const p of activePayments) {
+      const pTime = new Date(p.created_at).getTime();
+      if (startDate && pTime < startDate.getTime()) continue;
+      if (endDate && pTime > endDate.getTime()) continue;
+
+      const amt = Number(p.amount || 0);
+      const mode = (p.payment_method || '').toLowerCase();
+      if (mode.includes('upi')) {
+        totalUpiReceived += amt;
+      } else if (mode.includes('split') || mode.includes('mixed')) {
+        totalMixedPayments += amt;
+      } else {
+        totalCashReceived += amt;
+      }
+
+      if (p.notes && p.notes.toLowerCase().includes('advance')) {
+        totalAdvanceReceived += amt;
+      }
+    }
+
+    for (const { bill: b, directPaid } of directCheckoutBills) {
+      const bTime = new Date(b.created_at).getTime();
+      if (startDate && bTime < startDate.getTime()) continue;
+      if (endDate && bTime > endDate.getTime()) continue;
+
+      const mode = (b.payment_method || '').toLowerCase();
+      if (mode.includes('upi')) {
+        totalUpiReceived += directPaid;
+      } else if (mode.includes('split') || mode.includes('mixed')) {
+        totalMixedPayments += directPaid;
+      } else {
+        totalCashReceived += directPaid;
+      }
+    }
+
+    for (const b of filteredBills) {
+      totalAdvanceUtilized += Number(b.advance_used || 0);
+    }
+
+    let filterLabel = 'All Transactions';
     if (filter === 'today') filterLabel = 'Today';
+    else if (filter === 'weekly') filterLabel = 'This Week';
     else if (filter === 'monthly') filterLabel = 'This Month';
+    else if (filter === 'quarterly') filterLabel = 'This Quarter';
     else if (filter === 'financial_year') filterLabel = 'Financial Year (FY)';
     else if (filter === 'custom' && customRange?.from && customRange?.to) {
       filterLabel = `${customRange.from} to ${customRange.to}`;
@@ -4372,18 +5134,38 @@ _(Points will be credited upon bill settlement)_`;
         start_date: startDate?.toISOString(),
         end_date: endDate?.toISOString()
       },
+      opening_balance: openingBalance,
+      closing_balance: closingBalance,
+      current_advance_balance: currentAdvanceBalance,
+      current_balance_due: currentOutstandingBalance,
+      financial_summary: {
+        opening_balance: openingBalance,
+        total_bills: filteredBills.length,
+        total_billed: periodTotalInvoiced,
+        total_cash_received: Number(totalCashReceived.toFixed(2)),
+        total_upi_received: Number(totalUpiReceived.toFixed(2)),
+        total_mixed_payments: Number(totalMixedPayments.toFixed(2)),
+        total_advance_received: Number(totalAdvanceReceived.toFixed(2)),
+        total_advance_utilized: Number(totalAdvanceUtilized.toFixed(2)),
+        total_advance_refunded: Number(totalAdvanceRefunded.toFixed(2)),
+        total_bill_refunds: Number(totalBillRefunds.toFixed(2)),
+        total_outstanding: currentOutstandingBalance,
+        closing_balance: closingBalance
+      },
       kpi: {
-        total_invoiced: Number(periodInvoiced.toFixed(2)),
-        total_paid: Number(periodPaid.toFixed(2)),
+        total_invoiced: periodTotalInvoiced,
+        total_paid: periodTotalPaid,
         invoices_count: filteredBills.length,
+        payments_count: paymentsCount,
         total_units_bought: Number(periodUnits.toFixed(2))
       },
+      transactions: finalTransactions,
       date_groups,
       reconciliation: {
-        period_purchases: Number(periodInvoiced.toFixed(2)),
-        period_payments: Number(periodPaid.toFixed(2)),
-        current_outstanding_balance: Number(currentOutstandingBalance.toFixed(2)),
-        advance_balance: Number(customer.advance_balance || 0)
+        period_purchases: periodTotalInvoiced,
+        period_payments: periodTotalPaid,
+        current_outstanding_balance: currentOutstandingBalance,
+        advance_balance: currentAdvanceBalance
       }
     };
   }
@@ -4572,11 +5354,26 @@ _(Points will be credited upon bill settlement)_`;
   // ACCOUNTING CLOSINGS (PERIOD CLOSING & AUDIT RECONCILIATION)
   // =========================================================================
 
+  private static normalizeClosingRecord(c: AccountingClosing): AccountingClosing {
+    if (!c) return c;
+    // If to_date was stored as end-of-day (23:59:59.999Z) beyond the actual closed_at timestamp,
+    // clamp to_date to closed_at so transactions created later on the same day belong to the new session.
+    if (c.closed_at && c.to_date) {
+      const closedMs = new Date(c.closed_at).getTime();
+      const toMs = new Date(c.to_date).getTime();
+      if (!isNaN(closedMs) && !isNaN(toMs) && toMs > closedMs) {
+        return { ...c, to_date: c.closed_at };
+      }
+    }
+    return c;
+  }
+
   private static getLocalClosings(): AccountingClosing[] {
     if (typeof window === 'undefined') return [];
     try {
       const raw = window.localStorage.getItem('sb_accounting_closings');
-      return raw ? JSON.parse(raw) : [];
+      const parsed: AccountingClosing[] = raw ? JSON.parse(raw) : [];
+      return parsed.map(c => this.normalizeClosingRecord(c));
     } catch {
       return [];
     }
@@ -4598,7 +5395,7 @@ _(Points will be credited upon bill settlement)_`;
         const userId = await this.getUserId();
         let query = supabase.from('accounting_closings').select('*');
         if (userId) query = query.eq('user_id', userId);
-        const { data, error } = await query.order('to_date', { ascending: false });
+        const { data, error } = await query.order('closed_at', { ascending: false });
 
         if (error) {
           if (error.code === 'PGRST205' || error.message?.includes('schema cache') || error.code === '42P01') {
@@ -4613,7 +5410,7 @@ _(Points will be credited upon bill settlement)_`;
         if (typeof window !== 'undefined') {
           try { window.sessionStorage?.removeItem('sb_table_accounting_closings'); } catch {}
         }
-        return data || [];
+        return (data || []).map(c => this.normalizeClosingRecord(c));
       } catch {
         return this.getLocalClosings();
       } finally {
@@ -4640,8 +5437,13 @@ _(Points will be credited upon bill settlement)_`;
       throw new Error('Invalid Super Admin Security PIN. Closing rejected.');
     }
 
+    const closedAtIso = new Date().toISOString();
+    const effectiveToDate = new Date(closingData.to_date).getTime() > new Date(closedAtIso).getTime()
+      ? closedAtIso
+      : closingData.to_date;
+
     // Strict Zero-Dues Enforcement: Ensure all session bills are completed without pending dues
-    const reconCheck = await this.calculateReconciliationForRange(closingData.from_date, closingData.to_date);
+    const reconCheck = await this.calculateReconciliationForRange(closingData.from_date, effectiveToDate);
     if (reconCheck.pending_session_dues > 0.01) {
       throw new Error(
         `Cannot close accounting session: ${reconCheck.unpaid_bills.length} bills in this period have outstanding dues totaling ₹${reconCheck.pending_session_dues.toFixed(2)}. All session dues must be fully completed before closing.`
@@ -4657,7 +5459,7 @@ _(Points will be credited upon bill settlement)_`;
       user_id: userId,
       closing_number,
       from_date: closingData.from_date,
-      to_date: closingData.to_date,
+      to_date: effectiveToDate,
       opening_cash: Number(closingData.opening_cash || 0),
       opening_upi: Number(closingData.opening_upi || 0),
       cash_inflow: Number(closingData.cash_inflow || 0),
@@ -4676,7 +5478,7 @@ _(Points will be credited upon bill settlement)_`;
       status: 'CLOSED',
       is_locked: true,
       closed_by: userName,
-      closed_at: new Date().toISOString(),
+      closed_at: closedAtIso,
       last_audited_at: null,
       last_audited_by: null,
       audit_notes: null
@@ -4738,11 +5540,26 @@ _(Points will be credited upon bill settlement)_`;
     const userId = await this.getUserId();
     if (!userId) return null;
 
-    // Explicit allowlist: only audit_notes can be updated by user; drop status, is_locked, id, user_id, closing_number, amounts
+    // Explicit allowlist for auditing/editing a closed session: drop id, user_id, closing_number, status, is_locked
     const auditUpdates: Record<string, unknown> = {
       last_audited_at: new Date().toISOString(),
       last_audited_by: userName
     };
+    if (updates.actual_cash !== undefined) {
+      auditUpdates.actual_cash = Number(updates.actual_cash || 0);
+    }
+    if (updates.actual_upi !== undefined) {
+      auditUpdates.actual_upi = Number(updates.actual_upi || 0);
+    }
+    if (updates.cash_difference !== undefined) {
+      auditUpdates.cash_difference = Number(updates.cash_difference || 0);
+    }
+    if (updates.upi_difference !== undefined) {
+      auditUpdates.upi_difference = Number(updates.upi_difference || 0);
+    }
+    if (updates.discrepancy_note !== undefined) {
+      auditUpdates.discrepancy_note = updates.discrepancy_note ? String(updates.discrepancy_note).trim() : null;
+    }
     if (updates.audit_notes !== undefined) {
       auditUpdates.audit_notes = updates.audit_notes ? String(updates.audit_notes).trim() : null;
     }
@@ -4850,11 +5667,12 @@ _(Points will be credited upon bill settlement)_`;
     const opening_cash = latestClosing ? Number(latestClosing.actual_cash !== undefined ? latestClosing.actual_cash : (latestClosing.expected_cash || 0)) : 0;
     const opening_upi = latestClosing ? Number(latestClosing.actual_upi !== undefined ? latestClosing.actual_upi : (latestClosing.expected_upi || 0)) : 0;
 
-    const [allBills, allPayments, allExpenses, allTransfers] = await Promise.all([
+    const [allBills, allPayments, allExpenses, allTransfers, allCustomers] = await Promise.all([
       this.getBills(),
       this.getPayments(),
       this.getExpenses(),
-      this.getInternalTransfers()
+      this.getInternalTransfers(),
+      this.getCustomers()
     ]);
 
     const sessionStartMs = new Date(session_start_date).getTime();
@@ -4864,23 +5682,68 @@ _(Points will be credited upon bill settlement)_`;
     const expenses = allExpenses.filter(e => new Date(e.created_at).getTime() > sessionStartMs);
     const transfers = allTransfers.filter(t => new Date(t.created_at).getTime() > sessionStartMs);
 
+    let pending_dues_total = 0;
+    let unpaid_bills_count = 0;
+    allBills.forEach(b => {
+      const grandTotal = Number(b.grand_total || 0);
+      const paidTotal = Number(b.paid_total !== undefined ? b.paid_total : ((b.cash_paid || 0) + (b.upi_paid || 0) + (b.advance_used || 0)));
+      const due = Math.max(0, Number((grandTotal - paidTotal).toFixed(2)));
+      if (due > 0.01) {
+        pending_dues_total += due;
+        unpaid_bills_count++;
+      }
+    });
+
+    const activeAllPayments = allPayments.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
+    const customer_advances_total = allCustomers.reduce((sum, c) => {
+      const cBills = allBills.filter(b => b.customer_id === c.id);
+      const cPays = activeAllPayments.filter(p => p.customer_id === c.id);
+      if (cBills.length === 0 && cPays.length === 0) {
+        return sum + Math.max(0, Number(c.advance_balance || 0));
+      }
+      const cBilled = cBills.reduce((s, b) => s + Number(b.grand_total || 0), 0);
+      const cPayBillIds = new Set(cPays.map(p => p.bill_id).filter(Boolean));
+      const cDirectNoVoucher = cBills.reduce((s, b) => {
+        if (!cPayBillIds.has(b.id)) {
+          return s + Math.max(0, Number(b.paid_total || 0) - Number(b.advance_used || 0));
+        }
+        return s;
+      }, 0);
+      const cDeposited = cPays.reduce((s, p) => s + Number(p.amount || 0), 0) + cDirectNoVoucher;
+      return sum + Math.max(0, Number((cDeposited - cBilled).toFixed(2)));
+    }, 0);
+
     const current_sales = bills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
 
     let current_cash_inflow = 0;
     let current_upi_inflow = 0;
 
+    const billsById = new Map(allBills.map(b => [b.id, b]));
+    const paymentBillIds = new Set(payments.map(p => p.bill_id).filter(Boolean));
+
     payments.forEach(p => {
       const amt = Number(p.amount || 0);
-      if (p.payment_method === 'Cash') current_cash_inflow += amt;
-      else if (p.payment_method === 'UPI') current_upi_inflow += amt;
+      if (p.payment_method === 'Cash') {
+        current_cash_inflow += amt;
+      } else if (p.payment_method === 'UPI') {
+        current_upi_inflow += amt;
+      } else if (p.payment_method === 'Split Payment') {
+        const linked = p.bill_id ? billsById.get(p.bill_id) : undefined;
+        if (linked && (Number(linked.cash_paid || 0) + Number(linked.upi_paid || 0) > 0)) {
+          current_cash_inflow += Number(linked.cash_paid || 0);
+          current_upi_inflow += Number(linked.upi_paid || 0);
+        } else {
+          current_cash_inflow += amt;
+        }
+      }
     });
 
-    if (payments.length === 0) {
-      bills.forEach(b => {
+    bills.forEach(b => {
+      if (!paymentBillIds.has(b.id)) {
         current_cash_inflow += Number(b.cash_paid || 0);
         current_upi_inflow += Number(b.upi_paid || 0);
-      });
-    }
+      }
+    });
 
     const current_cash_outflow = expenses.reduce((sum, e) => sum + Number(e.cash_amount !== undefined ? e.cash_amount : (e.payment_mode === 'Cash' ? e.amount : 0)), 0);
     const current_upi_outflow = expenses.reduce((sum, e) => sum + Number(e.upi_amount !== undefined ? e.upi_amount : (e.payment_mode === 'UPI' ? e.amount : 0)), 0);
@@ -4916,7 +5779,10 @@ _(Points will be credited upon bill settlement)_`;
       expected_upi_in_hand: Number(expected_upi_in_hand.toFixed(2)),
       bills_count: bills.length,
       expenses_count: expenses.length,
-      transfers_count: transfers.length
+      transfers_count: transfers.length,
+      pending_dues_total: Number(pending_dues_total.toFixed(2)),
+      unpaid_bills_count,
+      customer_advances_total: Number(customer_advances_total.toFixed(2))
     };
   }
 
@@ -4929,51 +5795,54 @@ _(Points will be credited upon bill settlement)_`;
     const priorClosing = closings.find(c => new Date(c.to_date).getTime() <= fromMs);
     const opening_cash = priorClosing ? Number(priorClosing.actual_cash !== undefined ? priorClosing.actual_cash : (priorClosing.expected_cash || 0)) : 0;
     const opening_upi = priorClosing ? Number(priorClosing.actual_upi !== undefined ? priorClosing.actual_upi : (priorClosing.expected_upi || 0)) : 0;
+    const isExactPriorBoundary = priorClosing ? new Date(priorClosing.to_date).getTime() === fromMs : false;
 
-    const [allBills, allPayments, allExpenses, allTransfers] = await Promise.all([
+    const [allBills, allPayments, allExpenses, allTransfers, allCustomers] = await Promise.all([
       this.getBills(),
       this.getPayments(),
       this.getExpenses(),
-      this.getInternalTransfers()
+      this.getInternalTransfers(),
+      this.getCustomers()
     ]);
 
-    const rangeBills = allBills.filter(b => {
-      const t = new Date(b.created_at).getTime();
-      return t >= fromMs && t <= toMs;
-    });
+    const inRange = (ms: number) => isExactPriorBoundary ? (ms > fromMs && ms <= toMs) : (ms >= fromMs && ms <= toMs);
 
-    const rangePayments = allPayments.filter(p => {
-      const t = new Date(p.created_at).getTime();
-      return t >= fromMs && t <= toMs && p.status !== 'CANCELLED' && p.status !== 'REVERSED';
-    });
-
-    const rangeExpenses = allExpenses.filter(e => {
-      const t = new Date(e.created_at).getTime();
-      return t >= fromMs && t <= toMs;
-    });
-
-    const rangeTransfers = allTransfers.filter(t => {
-      const ms = new Date(t.created_at).getTime();
-      return ms >= fromMs && ms <= toMs;
-    });
+    const rangeBills = allBills.filter(b => inRange(new Date(b.created_at).getTime()));
+    const rangePayments = allPayments.filter(p => inRange(new Date(p.created_at).getTime()) && p.status !== 'CANCELLED' && p.status !== 'REVERSED');
+    const rangeExpenses = allExpenses.filter(e => inRange(new Date(e.created_at).getTime()));
+    const rangeTransfers = allTransfers.filter(t => inRange(new Date(t.created_at).getTime()));
 
     const total_sales = rangeBills.reduce((s, b) => s + Number(b.grand_total || 0), 0);
 
     let cash_inflow = 0;
     let upi_inflow = 0;
 
+    const billsById = new Map(allBills.map(b => [b.id, b]));
+    const paymentBillIds = new Set(rangePayments.map(p => p.bill_id).filter(Boolean));
+
     rangePayments.forEach(p => {
       const amt = Number(p.amount || 0);
-      if (p.payment_method === 'Cash') cash_inflow += amt;
-      else if (p.payment_method === 'UPI') upi_inflow += amt;
+      if (p.payment_method === 'Cash') {
+        cash_inflow += amt;
+      } else if (p.payment_method === 'UPI') {
+        upi_inflow += amt;
+      } else if (p.payment_method === 'Split Payment') {
+        const linked = p.bill_id ? billsById.get(p.bill_id) : undefined;
+        if (linked && (Number(linked.cash_paid || 0) + Number(linked.upi_paid || 0) > 0)) {
+          cash_inflow += Number(linked.cash_paid || 0);
+          upi_inflow += Number(linked.upi_paid || 0);
+        } else {
+          cash_inflow += amt;
+        }
+      }
     });
 
-    if (rangePayments.length === 0) {
-      rangeBills.forEach(b => {
+    rangeBills.forEach(b => {
+      if (!paymentBillIds.has(b.id)) {
         cash_inflow += Number(b.cash_paid || 0);
         upi_inflow += Number(b.upi_paid || 0);
-      });
-    }
+      }
+    });
 
     const cash_outflow = rangeExpenses.reduce((s, e) => s + Number(e.cash_amount !== undefined ? e.cash_amount : (e.payment_mode === 'Cash' ? e.amount : 0)), 0);
     const upi_outflow = rangeExpenses.reduce((s, e) => s + Number(e.upi_amount !== undefined ? e.upi_amount : (e.payment_mode === 'UPI' ? e.amount : 0)), 0);
@@ -4991,6 +5860,7 @@ _(Points will be credited upon bill settlement)_`;
     const expected_upi = opening_upi + upi_inflow - upi_outflow + transfers_cash_to_upi - transfers_upi_to_cash;
 
     // Scan for all pending dues on bills created in this session
+    const customersById = new Map(allCustomers.map(c => [c.id, c]));
     const unpaid_bills: UnpaidSessionBill[] = [];
     let pending_session_dues = 0;
 
@@ -5000,15 +5870,17 @@ _(Points will be credited upon bill settlement)_`;
       const due = Math.max(0, Number((grandTotal - paidTotal).toFixed(2)));
       if (due > 0.01) {
         pending_session_dues += due;
+        const cust = b.customer_id ? customersById.get(b.customer_id) : undefined;
         unpaid_bills.push({
           id: b.id,
           bill_number: b.bill_number,
           customer_id: b.customer_id,
-          customer_name: b.customer_name || 'Counter Customer',
-          customer_mobile: b.customer_mobile,
+          customer_name: b.customer_name || cust?.name || 'Counter Customer',
+          customer_mobile: b.customer_mobile || cust?.mobile,
           grand_total: grandTotal,
           paid_total: paidTotal,
           due_amount: due,
+          customer_advance: Number(cust?.advance_balance || 0),
           created_at: b.created_at
         });
       }

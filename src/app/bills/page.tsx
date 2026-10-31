@@ -187,7 +187,8 @@ export default function ManageBillsPage() {
     setSuccessMsg('');
     try {
       const result = await ApiService.reconcileCustomerAdvanceBalances('Super Admin');
-      setSuccessMsg(`Reconciliation complete: checked ${result.customersReconciled} customer ledgers, fixed ${result.discrepanciesFixed} balance discrepancies.`);
+      const dupMsg = result.duplicatesMerged ? `, merged ${result.duplicatesMerged} duplicate customer profile(s)` : '';
+      setSuccessMsg(`Reconciliation complete: checked ${result.customersReconciled} customer ledgers${dupMsg}, fixed ${result.discrepanciesFixed} balance discrepancies.`);
       loadData();
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to reconcile customer balances');
@@ -344,27 +345,45 @@ export default function ManageBillsPage() {
                       </td>
                       <td className="px-6 py-4 font-medium text-slate-800">{b.customer_name || 'Walk-in Customer'}</td>
                       <td className="px-6 py-4">
-                        {paid <= 0.01 || b.payment_method === 'Pay Later' ? (
-                          <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-amber-50 text-amber-700 uppercase border border-amber-200">
-                            Pay Later
-                          </span>
-                        ) : b.payment_method === 'UPI' ? (
-                          <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-indigo-50 text-indigo-700 uppercase border border-indigo-200">
-                            UPI
-                          </span>
-                        ) : b.payment_method === 'Cash' ? (
-                          <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-emerald-50 text-emerald-700 uppercase border border-emerald-200">
-                            Cash
-                          </span>
-                        ) : b.payment_method === 'Split Payment' ? (
-                          <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-purple-50 text-purple-700 uppercase border border-purple-200">
-                            Split
-                          </span>
-                        ) : (
-                          <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-blue-50 text-blue-700 uppercase border border-blue-200">
-                            {b.payment_method}
-                          </span>
-                        )}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {paid <= 0.01 || b.payment_method === 'Pay Later' ? (
+                            <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-amber-50 text-amber-700 uppercase border border-amber-200">
+                              Pay Later
+                            </span>
+                          ) : b.payment_method === 'UPI' ? (
+                            <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-indigo-50 text-indigo-700 uppercase border border-indigo-200">
+                              UPI
+                            </span>
+                          ) : b.payment_method === 'Cash' ? (
+                            <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-emerald-50 text-emerald-700 uppercase border border-emerald-200">
+                              Cash
+                            </span>
+                          ) : b.payment_method === 'Split Payment' ? (
+                            <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-purple-50 text-purple-700 uppercase border border-purple-200">
+                              Split
+                            </span>
+                          ) : (
+                            <span className="inline-block px-2.5 py-0.5 rounded text-xs font-semibold bg-blue-50 text-blue-700 uppercase border border-blue-200">
+                              {b.payment_method}
+                            </span>
+                          )}
+                          {Number(b.advance_used || 0) > 0 && (
+                            <span 
+                              className="inline-block px-2 py-0.5 rounded text-[11px] font-bold bg-teal-50 text-teal-800 border border-teal-200"
+                              title={`₹${Number(b.advance_used).toFixed(2)} deducted from customer advance`}
+                            >
+                              Adv: ₹{Number(b.advance_used).toFixed(2)}
+                            </span>
+                          )}
+                          {Number(b.advance_earned || 0) > 0 && (
+                            <span 
+                              className="inline-block px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200"
+                              title={`+₹${Number(b.advance_earned).toFixed(2)} added to customer advance`}
+                            >
+                              +₹{Number(b.advance_earned).toFixed(2)} Adv
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-6 py-4 text-right font-data-mono font-medium text-emerald-700">
                         {b.discount > 0 ? `₹${b.discount.toFixed(2)}` : '-'}

@@ -597,8 +597,8 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                   </div>
                 )}
                 <div className="flex justify-between">
-                  <span>Customer Advance Bal:</span>
-                  <span>₹{summary.remaining_advance_balance.toFixed(2)}</span>
+                  <span>Customer Advance Wallet:</span>
+                  <span className="font-semibold text-teal-800">₹{summary.remaining_advance_balance.toFixed(2)}</span>
                 </div>
               </div>
 
