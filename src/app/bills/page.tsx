@@ -6,6 +6,7 @@ import { ApiService } from '@/lib/services/api';
 import { Bill, AllSettings } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { InvoiceModal } from '@/components/InvoiceModal';
+import { EditBillModal } from '@/components/EditBillModal';
 import { 
   FileText, 
   Search, 
@@ -14,7 +15,6 @@ import {
   AlertTriangle, 
   CheckCircle2, 
   X, 
-  ShieldAlert,
   Clock,
   CreditCard,
   RotateCcw,
@@ -30,11 +30,8 @@ export default function ManageBillsPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedBill, setSelectedBill] = useState<Bill | null>(null);
 
-  // Edit Discount Modal
+  // Edit Bill Modal
   const [editingBill, setEditingBill] = useState<Bill | null>(null);
-  const [newDiscount, setNewDiscount] = useState<number | ''>('');
-  const [editReason, setEditReason] = useState('');
-  const [adminPin, setAdminPin] = useState('');
 
   // Reverse Payment Modal
   const [reversingBill, setReversingBill] = useState<Bill | null>(null);
@@ -121,13 +118,19 @@ export default function ManageBillsPage() {
     loadData();
   }, []);
 
-  const handleOpenEdit = (bill: Bill) => {
-    setEditingBill(bill);
-    setNewDiscount(bill.discount);
-    setEditReason('');
-    setAdminPin('');
+  const handleOpenEdit = async (bill: Bill) => {
     setErrorMsg('');
     setSuccessMsg('');
+    setLoading(true);
+    try {
+      const fullBill = await ApiService.getBillById(bill.id);
+      setEditingBill(fullBill || bill);
+    } catch (err) {
+      console.error('Failed to load bill for editing:', err);
+      setEditingBill(bill);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleOpenReversePayment = (bill: Bill) => {
@@ -197,42 +200,7 @@ export default function ManageBillsPage() {
     }
   };
 
-  const handleEditSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg('');
-    setSuccessMsg('');
-
-    if (!editingBill) return;
-
-    const expectedPin = settings?.security?.super_admin_pin || '1234';
-    if (adminPin !== expectedPin) {
-      setErrorMsg('Invalid Super Admin Security PIN.');
-      return;
-    }
-
-    if (!editReason.trim()) {
-      setErrorMsg('Please state a reason for adjusting the bill discount.');
-      return;
-    }
-
-    const disc = Number(newDiscount);
-    if (isNaN(disc) || disc < 0) {
-      setErrorMsg('Discount cannot be negative.');
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      await ApiService.editBillDiscount(editingBill.id, disc, editReason.trim(), 'Super Admin');
-      setSuccessMsg('Bill discount updated & audit trail logged.');
-      setEditingBill(null);
-      loadData();
-    } catch (err: unknown) {
-      setErrorMsg(err instanceof Error ? err.message : 'Failed to update discount');
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  
 
   const handleViewBill = async (id: string) => {
     const fullBill = await ApiService.getBillById(id);
@@ -436,7 +404,7 @@ export default function ManageBillsPage() {
                         <button
                           onClick={() => handleOpenEdit(b)}
                           className="p-1.5 text-slate-600 hover:text-amber-600 hover:bg-amber-50 rounded transition"
-                          title="Super Admin Edit Discount"
+                          title="Super Admin: Edit Bill Items & Details"
                         >
                           <Edit3 size={16} />
                         </button>
@@ -635,77 +603,16 @@ export default function ManageBillsPage() {
         </div>
       )}
 
-      {/* EDIT DISCOUNT MODAL */}
+      {/* EDIT FULL BILL MODAL */}
       {editingBill && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4">
-            <div className="flex justify-between items-center border-b border-slate-200 pb-3">
-              <h2 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
-                <ShieldAlert className="text-amber-600" size={20} />
-                <span>Edit Discount ({editingBill.bill_number})</span>
-              </h2>
-              <button onClick={() => setEditingBill(null)} className="text-slate-400 hover:text-slate-600">
-                <X size={20} />
-              </button>
-            </div>
-
-            <form onSubmit={handleEditSubmit} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">New Discount Amount (₹)</label>
-                <input
-                  type="number"
-                  required
-                  min="0"
-                  step="1"
-                  value={newDiscount}
-                  onChange={(e) => setNewDiscount(e.target.value === '' ? '' : Number(e.target.value))}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-slate-900"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Reason for Discount Adjustment *</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Owner authorized extra xerox bulk discount"
-                  value={editReason}
-                  onChange={(e) => setEditReason(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Super Admin Security PIN *</label>
-                <input
-                  type="password"
-                  required
-                  placeholder="PIN (Default: 1234)"
-                  value={adminPin}
-                  onChange={(e) => setAdminPin(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono"
-                />
-              </div>
-
-              <div className="flex justify-end space-x-2 pt-3 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setEditingBill(null)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="px-5 py-2 text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-white rounded-lg shadow disabled:opacity-50"
-                >
-                  {submitting ? 'Saving...' : 'Update & Log Audit'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <EditBillModal
+          bill={editingBill}
+          onClose={() => setEditingBill(null)}
+          onSaved={(updated) => {
+            setSuccessMsg(`Bill #${updated.bill_number} has been updated successfully.`);
+            loadData();
+          }}
+        />
       )}
 
       {/* Allocate Customer Advance Modal */}

@@ -94,6 +94,26 @@ export interface Bill {
   financial_summary?: BillFinancialSummary;
 }
 
+export interface EditBillInput {
+  customer_id?: string | null;
+  items: Array<{
+    id?: string;
+    product_id?: string | null;
+    product_name: string;
+    quantity: number;
+    price: number;
+    total?: number;
+  }>;
+  discount: number;
+  rounding_method?: RoundingMethod;
+  payment_method: string;
+  cash_paid: number;
+  upi_paid: number;
+  advance_used?: number;
+  reason: string;
+  userName?: string;
+}
+
 export interface BillFinancialSummary {
   previous_outstanding: number;
   previous_advance: number;
@@ -510,6 +530,10 @@ export interface AccountingClosing {
   last_audited_at?: string | null;
   last_audited_by?: string | null;
   audit_notes?: string | null;
+  opening_advance_pool?: number;
+  advance_received?: number;
+  advance_utilized?: number;
+  closing_advance_pool?: number;
 }
 
 export interface CurrentSessionStatus {
@@ -517,6 +541,7 @@ export interface CurrentSessionStatus {
   session_start_date: string;
   opening_cash: number;
   opening_upi: number;
+  opening_advance_pool?: number;
   current_sales: number;
   current_cash_inflow: number;
   current_upi_inflow: number;
@@ -529,6 +554,7 @@ export interface CurrentSessionStatus {
   bills_count: number;
   expenses_count: number;
   transfers_count: number;
+  current_advance_received?: number;
   current_advance_utilized?: number;
   pending_dues_total?: number;
   unpaid_bills_count?: number;
@@ -553,9 +579,12 @@ export interface ReconciliationCalculation {
   to_date: string;
   opening_cash: number;
   opening_upi: number;
+  opening_advance_pool?: number;
   cash_inflow: number;
   upi_inflow: number;
+  advance_received?: number;
   advance_utilized?: number;
+  closing_advance_pool?: number;
   cash_outflow: number;
   upi_outflow: number;
   transfers_cash_to_upi: number;

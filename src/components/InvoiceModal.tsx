@@ -540,10 +540,12 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                   <span>Previous Outstanding:</span>
                   <span>₹{summary.previous_outstanding.toFixed(2)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span>Previous Advance:</span>
-                  <span>₹{summary.previous_advance.toFixed(2)}</span>
-                </div>
+                {summary.previous_advance > 0.009 && (
+                  <div className="flex justify-between text-teal-800">
+                    <span>Previous Advance:</span>
+                    <span>₹{summary.previous_advance.toFixed(2)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span>Current Bill:</span>
                   <span>₹{summary.current_bill_amount.toFixed(2)}</span>
@@ -596,10 +598,12 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                     <span>+₹{Number(bill.advance_earned).toFixed(2)}</span>
                   </div>
                 )}
-                <div className="flex justify-between">
-                  <span>Customer Advance Wallet:</span>
-                  <span className="font-semibold text-teal-800">₹{summary.remaining_advance_balance.toFixed(2)}</span>
-                </div>
+                {summary.remaining_advance_balance > 0.009 && (
+                  <div className="flex justify-between">
+                    <span>Customer Advance Wallet:</span>
+                    <span className="font-semibold text-teal-800">₹{summary.remaining_advance_balance.toFixed(2)}</span>
+                  </div>
+                )}
               </div>
 
               {/* 4. Loyalty Summary (If Enabled) */}
@@ -863,10 +867,12 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                         <span>+₹{Number(bill.advance_earned).toFixed(2)}</span>
                       </div>
                     )}
-                    <div className="flex justify-between text-slate-600 pt-0.5 border-t border-slate-200/60">
-                      <span>Customer Advance:</span>
-                      <span className="font-semibold text-slate-800">₹{summary.remaining_advance_balance.toFixed(2)}</span>
-                    </div>
+                    {summary.remaining_advance_balance > 0.009 && (
+                      <div className="flex justify-between text-slate-600 pt-0.5 border-t border-slate-200/60">
+                        <span>Customer Advance:</span>
+                        <span className="font-semibold text-slate-800">₹{summary.remaining_advance_balance.toFixed(2)}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
 

@@ -72,6 +72,7 @@ function PaymentsContent() {
   const [successMsg, setSuccessMsg] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [paymentStatusTab, setPaymentStatusTab] = useState<'ALL' | 'ACTIVE' | 'REVERSED'>('ALL');
+  const [showAllPayments, setShowAllPayments] = useState(true);
 
   const loadData = async () => {
     setLoading(true);
@@ -303,6 +304,8 @@ function PaymentsContent() {
       (p.cancellation_reason && p.cancellation_reason.toLowerCase().includes(term))
     );
   });
+
+  const displayedPayments = showAllPayments ? filteredPayments : filteredPayments.slice(0, 30);
 
   return (
     <div className="space-y-6">
@@ -750,8 +753,9 @@ function PaymentsContent() {
                 <p>No payment records found.</p>
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse">
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
                   <thead>
                     <tr className="bg-slate-50 text-slate-600 uppercase font-bold border-b border-slate-200 text-[11px]">
                       <th className="py-2.5 px-3">Receipt / Payment ID</th>
@@ -765,7 +769,7 @@ function PaymentsContent() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {filteredPayments.slice(0, 30).map((pay) => {
+                    {displayedPayments.map((pay) => {
                       const isCancelled = pay.status === 'CANCELLED';
                       const isReversed = pay.status === 'REVERSED';
                       const isInactive = isCancelled || isReversed;
@@ -873,6 +877,24 @@ function PaymentsContent() {
                   </tbody>
                 </table>
               </div>
+
+                {filteredPayments.length > 0 && (
+                  <div className="flex items-center justify-between pt-3 border-t border-slate-100 text-xs text-slate-500">
+                    <span>
+                      Showing <strong className="text-slate-900 font-mono">{displayedPayments.length}</strong> of <strong className="text-slate-900 font-mono">{filteredPayments.length}</strong> payment transactions
+                    </span>
+                    {filteredPayments.length > 30 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowAllPayments(!showAllPayments)}
+                        className="font-bold text-blue-600 hover:text-blue-800 transition cursor-pointer"
+                      >
+                        {showAllPayments ? 'Show Compact (30)' : `Show All (${filteredPayments.length})`}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
