@@ -2,7 +2,15 @@
 
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '@/lib/services/api';
-import { Bill, CustomerSummary, DateFilterOption, AllSettings, Expense } from '@/lib/types';
+import { 
+  Bill, 
+  CustomerSummary, 
+  DateFilterOption, 
+  AllSettings, 
+  Expense, 
+  Payment, 
+  InternalTransfer 
+} from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { downloadCSV } from '@/lib/utils/csv';
 import { REPORTS_DATE_FILTER_BUTTONS } from '@/lib/constants/filters';
@@ -23,14 +31,17 @@ import {
   FileText,
   Loader2,
   DollarSign,
-  Sparkles
+  Sparkles,
+  ArrowRightLeft
 } from 'lucide-react';
 
 export default function ReportsPage() {
-  const [activeTab, setActiveTab] = useState<'sales' | 'dues' | 'items' | 'expenses'>('sales');
+  const [activeTab, setActiveTab] = useState<'sales' | 'dues' | 'items' | 'expenses' | 'cash_payers' | 'upi_payers' | 'transfers'>('sales');
   const [bills, setBills] = useState<Bill[]>([]);
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [allExpenses, setAllExpenses] = useState<Expense[]>([]);
+  const [allPayments, setAllPayments] = useState<Payment[]>([]);
+  const [allTransfers, setAllTransfers] = useState<InternalTransfer[]>([]);
   const [settings, setSettings] = useState<AllSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [generatingPdf, setGeneratingPdf] = useState(false);
@@ -44,16 +55,20 @@ export default function ReportsPage() {
   const loadReportData = async () => {
     setLoading(true);
     try {
-      const [filteredBills, custSummaries, fetchedSettings, expensesData] = await Promise.all([
+      const [filteredBills, custSummaries, fetchedSettings, expensesData, paymentsData, transfersData] = await Promise.all([
         ApiService.getBillsByDateRange(dateFilter, { from: customFrom, to: customTo }),
         ApiService.getCustomerSummaries(),
         ApiService.getSettings(),
-        ApiService.getExpenses()
+        ApiService.getExpenses(),
+        ApiService.getPayments(),
+        ApiService.getInternalTransfers()
       ]);
       setBills(filteredBills);
       setCustomers(custSummaries);
       setSettings(fetchedSettings);
       setAllExpenses(expensesData || []);
+      setAllPayments(paymentsData || []);
+      setAllTransfers(transfersData || []);
     } catch (err) {
       console.error('Error fetching report data:', err);
     } finally {
@@ -66,12 +81,12 @@ export default function ReportsPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFilter, customFrom, customTo]);
 
-  // Helper to filter expenses by the active date range
-  const filterExpenses = (items: Expense[], filter: DateFilterOption, range?: { from?: string; to?: string }) => {
+  // Helper to filter any time-stamped array by the active date range
+  const filterByDate = <T extends { created_at: string }>(items: T[], filter: DateFilterOption, range?: { from?: string; to?: string }) => {
     if (filter === 'all_time') return items;
     const now = new Date();
-    return items.filter(exp => {
-      const d = new Date(exp.created_at);
+    return items.filter(it => {
+      const d = new Date(it.created_at);
       if (isNaN(d.getTime())) return true;
       if (filter === 'today') return d.toDateString() === now.toDateString();
       if (filter === 'yesterday') {
@@ -113,7 +128,57 @@ export default function ReportsPage() {
     });
   };
 
-  const periodExpenses = filterExpenses(allExpenses, dateFilter, { from: customFrom, to: customTo });
+  const periodExpenses = filterByDate(allExpenses, dateFilter, { from: customFrom, to: customTo });
+  const periodPayments = filterByDate(allPayments.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED'), dateFilter, { from: customFrom, to: customTo });
+  const periodTransfers = filterByDate(allTransfers, dateFilter, { from: customFrom, to: customTo });
+
+  // Cash Payers: customer bills paid in cash + standalone / dues payments in cash
+  const cashPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
+  bills.forEach(b => {
+    if (Number(b.cash_paid || 0) > 0) {
+      cashPayers.push({
+        customer_name: b.customer_name || 'Walk-in Customer',
+        ref: b.bill_number,
+        date: b.created_at,
+        amount: Number(b.cash_paid || 0)
+      });
+    }
+  });
+  periodPayments.forEach(p => {
+    if (p.payment_method === 'Cash' && !p.notes?.toLowerCase().includes('initial')) {
+      cashPayers.push({
+        customer_name: p.customer_name || 'Customer',
+        ref: p.payment_number || 'PAY-—',
+        date: p.created_at,
+        amount: Number(p.amount || 0)
+      });
+    }
+  });
+  cashPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  // UPI Payers: customer bills paid via UPI + standalone / dues payments via UPI
+  const upiPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
+  bills.forEach(b => {
+    if (Number(b.upi_paid || 0) > 0) {
+      upiPayers.push({
+        customer_name: b.customer_name || 'Walk-in Customer',
+        ref: b.bill_number,
+        date: b.created_at,
+        amount: Number(b.upi_paid || 0)
+      });
+    }
+  });
+  periodPayments.forEach(p => {
+    if (p.payment_method === 'UPI' && !p.notes?.toLowerCase().includes('initial')) {
+      upiPayers.push({
+        customer_name: p.customer_name || 'Customer',
+        ref: p.payment_number || 'PAY-—',
+        date: p.created_at,
+        amount: Number(p.amount || 0)
+      });
+    }
+  });
+  upiPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   // Aggregate Metrics for Current Filter
   const totalSales = bills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
@@ -137,13 +202,18 @@ export default function ReportsPage() {
   }, 0);
   const avgBill = bills.length > 0 ? totalSales / bills.length : 0;
 
-  // Aggregate Product / Item sales
+  // Aggregate Product / Item sales with proportional discount deduction
   const itemMap = new Map<string, { name: string; qty: number; total: number }>();
   bills.forEach(b => {
+    const rawSubtotal = b.items?.reduce((s, it) => s + Number(it.total || 0), 0) || Number(b.total || 0);
+    const grandTotal = Number(b.grand_total || 0);
+    const factor = rawSubtotal > 0 ? (grandTotal / rawSubtotal) : 1;
+
     b.items?.forEach(it => {
       const existing = itemMap.get(it.product_name) || { name: it.product_name, qty: 0, total: 0 };
+      const netItemTotal = Number(it.total || 0) * factor;
       existing.qty += Number(it.quantity || 0);
-      existing.total += Number(it.total || 0);
+      existing.total += netItemTotal;
       itemMap.set(it.product_name, existing);
     });
   });
@@ -192,7 +262,10 @@ export default function ReportsPage() {
         bills,
         item_sales: itemSales,
         due_customers: dueCustomers,
-        expenses: periodExpenses
+        expenses: periodExpenses,
+        cash_payers: cashPayers,
+        upi_payers: upiPayers,
+        transfers: periodTransfers
       });
 
       const filename = `Business_Report_${dateFilter}_${new Date().toISOString().split('T')[0]}.pdf`;
@@ -226,19 +299,66 @@ export default function ReportsPage() {
         return sum + Math.max(0, g - p);
       }, 0);
 
-      // Aggregate Master Item Sales
+      // Aggregate Master Item Sales with proportional discount deduction
       const masterItemMap = new Map<string, { name: string; qty: number; total: number }>();
       allBills.forEach(b => {
+        const rawSubtotal = b.items?.reduce((s, it) => s + Number(it.total || 0), 0) || Number(b.total || 0);
+        const grandTotal = Number(b.grand_total || 0);
+        const factor = rawSubtotal > 0 ? (grandTotal / rawSubtotal) : 1;
+
         b.items?.forEach(it => {
           const existing = masterItemMap.get(it.product_name) || { name: it.product_name, qty: 0, total: 0 };
+          const netItemTotal = Number(it.total || 0) * factor;
           existing.qty += Number(it.quantity || 0);
-          existing.total += Number(it.total || 0);
+          existing.total += netItemTotal;
           masterItemMap.set(it.product_name, existing);
         });
       });
       const masterItemSales = Array.from(masterItemMap.values()).sort((a, b) => b.total - a.total);
       const masterDueCust = custSummaries.filter(c => c.balance_due > 0);
       const masterTotalDues = masterDueCust.reduce((sum, c) => sum + c.balance_due, 0);
+
+      const masterCashPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
+      const masterUpiPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
+      allBills.forEach(b => {
+        if (Number(b.cash_paid || 0) > 0) {
+          masterCashPayers.push({
+            customer_name: b.customer_name || 'Walk-in Customer',
+            ref: b.bill_number,
+            date: b.created_at,
+            amount: Number(b.cash_paid || 0)
+          });
+        }
+        if (Number(b.upi_paid || 0) > 0) {
+          masterUpiPayers.push({
+            customer_name: b.customer_name || 'Walk-in Customer',
+            ref: b.bill_number,
+            date: b.created_at,
+            amount: Number(b.upi_paid || 0)
+          });
+        }
+      });
+      allPayments.forEach(p => {
+        if (p.status !== 'CANCELLED' && p.status !== 'REVERSED' && !p.notes?.toLowerCase().includes('initial')) {
+          if (p.payment_method === 'Cash') {
+            masterCashPayers.push({
+              customer_name: p.customer_name || 'Customer',
+              ref: p.payment_number || 'PAY-—',
+              date: p.created_at,
+              amount: Number(p.amount || 0)
+            });
+          } else if (p.payment_method === 'UPI') {
+            masterUpiPayers.push({
+              customer_name: p.customer_name || 'Customer',
+              ref: p.payment_number || 'PAY-—',
+              date: p.created_at,
+              amount: Number(p.amount || 0)
+            });
+          }
+        }
+      });
+      masterCashPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      masterUpiPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
       const doc = BusinessReportGenerator.generateReportPdf({
         shop_settings: shopSettings,
@@ -261,7 +381,10 @@ export default function ReportsPage() {
         bills: allBills,
         item_sales: masterItemSales,
         due_customers: custSummaries,
-        expenses: allExp
+        expenses: allExp,
+        cash_payers: masterCashPayers,
+        upi_payers: masterUpiPayers,
+        transfers: allTransfers
       });
 
       doc.save(`MASTER_BUSINESS_REPORT_ALL_TIME_${new Date().toISOString().split('T')[0]}.pdf`);
@@ -397,7 +520,7 @@ export default function ReportsPage() {
         it.total.toFixed(2)
       ]);
       downloadCSV(`Item_Sales_Volume_${filterLabel}`, headers, rows);
-    } else {
+    } else if (activeTab === 'dues') {
       const headers = ['Customer Name', 'Mobile Number', 'Email', 'Total Billed (INR)', 'Total Paid (INR)', 'Balance Due (INR)'];
       const rows = dueCustomers.map(c => [
         c.name,
@@ -408,6 +531,34 @@ export default function ReportsPage() {
         c.balance_due
       ]);
       downloadCSV(`Customer_Dues_Ledger_${new Date().toISOString().split('T')[0]}`, headers, rows);
+    } else if (activeTab === 'cash_payers') {
+      const headers = ['Customer / Entity', 'Reference / Bill #', 'Date & Time', 'Cash Received (INR)'];
+      const rows = cashPayers.map(cp => [
+        cp.customer_name,
+        cp.ref,
+        new Date(cp.date).toLocaleString('en-IN'),
+        cp.amount.toFixed(2)
+      ]);
+      downloadCSV(`Cash_Payers_${filterLabel}`, headers, rows);
+    } else if (activeTab === 'upi_payers') {
+      const headers = ['Customer / Entity', 'Reference / Bill #', 'Date & Time', 'UPI Received (INR)'];
+      const rows = upiPayers.map(up => [
+        up.customer_name,
+        up.ref,
+        new Date(up.date).toLocaleString('en-IN'),
+        up.amount.toFixed(2)
+      ]);
+      downloadCSV(`UPI_Payers_${filterLabel}`, headers, rows);
+    } else if (activeTab === 'transfers') {
+      const headers = ['Transfer #', 'Date & Time', 'Direction', 'Reason / Particulars', 'Amount (INR)'];
+      const rows = periodTransfers.map(tr => [
+        tr.transfer_number || 'TRANS-—',
+        new Date(tr.created_at).toLocaleString('en-IN'),
+        tr.direction === 'CASH_TO_UPI' ? 'Cash to UPI' : 'UPI to Cash',
+        tr.reason,
+        Number(tr.amount || 0).toFixed(2)
+      ]);
+      downloadCSV(`Contra_Transfers_${filterLabel}`, headers, rows);
     }
   };
 
@@ -690,6 +841,42 @@ export default function ReportsPage() {
           <TrendingUp size={16} className="rotate-180 text-rose-500" />
           <span>Operating Expenses ({periodExpenses.length})</span>
         </button>
+
+        <button
+          onClick={() => setActiveTab('cash_payers')}
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
+            activeTab === 'cash_payers'
+              ? 'bg-emerald-600 text-white shadow'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Wallet size={16} className={activeTab === 'cash_payers' ? 'text-white' : 'text-emerald-600'} />
+          <span>Cash Payers ({cashPayers.length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('upi_payers')}
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
+            activeTab === 'upi_payers'
+              ? 'bg-indigo-600 text-white shadow'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <CreditCard size={16} className={activeTab === 'upi_payers' ? 'text-white' : 'text-indigo-600'} />
+          <span>UPI Payers ({upiPayers.length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('transfers')}
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
+            activeTab === 'transfers'
+              ? 'bg-blue-600 text-white shadow'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <ArrowRightLeft size={16} className={activeTab === 'transfers' ? 'text-white' : 'text-blue-600'} />
+          <span>Contra Transfers ({periodTransfers.length})</span>
+        </button>
       </div>
 
       {/* REPORT CONTENT CARD */}
@@ -925,6 +1112,172 @@ export default function ReportsPage() {
                         </td>
                         <td className="py-3 px-4 text-xs font-semibold uppercase text-slate-600">{exp.payment_mode || 'Cash'}</td>
                         <td className="py-3 px-4 text-right font-extrabold text-rose-600">₹{Number(exp.amount).toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 5: CASH PAYERS BREAKDOWN */}
+        {activeTab === 'cash_payers' && (
+          <div className="space-y-4">
+            <div className="flex justify-between items-center pb-3 border-b border-slate-200">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">Cash Collections by Customer</h2>
+                <p className="text-xs text-slate-500">Detailed list of all customers and payers who paid in Cash</p>
+              </div>
+              <div className="text-right">
+                <span className="text-xs text-slate-500 uppercase font-semibold">Total Cash Collected</span>
+                <p className="text-xl font-extrabold text-emerald-600">₹{cashPayers.reduce((s, c) => s + c.amount, 0).toFixed(2)}</p>
+              </div>
+            </div>
+
+            {loading ? (
+              <div className="p-8 text-center text-slate-500 text-sm">Loading cash payers...</div>
+            ) : cashPayers.length === 0 ? (
+              <div className="p-12 text-center text-slate-500">
+                <Wallet className="mx-auto text-slate-300 mb-2" size={40} />
+                <p className="font-medium text-slate-700">No cash payments recorded for this period.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-600 uppercase text-xs font-semibold border-b border-slate-200">
+                      <th className="py-2.5 px-4">Customer Name</th>
+                      <th className="py-2.5 px-4">Ref / Bill #</th>
+                      <th className="py-2.5 px-4">Date & Time</th>
+                      <th className="py-2.5 px-4 text-right">Cash Received (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {cashPayers.map((cp, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50 transition">
+                        <td className="py-3 px-4 font-bold text-slate-900">{cp.customer_name}</td>
+                        <td className="py-3 px-4 font-mono text-xs text-slate-700">{cp.ref}</td>
+                        <td className="py-3 px-4 text-xs text-slate-500 font-mono">
+                          {new Date(cp.date).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true })}
+                        </td>
+                        <td className="py-3 px-4 text-right font-extrabold text-emerald-600 font-mono">
+                          +₹{cp.amount.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 6: UPI PAYERS BREAKDOWN */}
+        {activeTab === 'upi_payers' && (
+          <div className="space-y-4">
+            <div className="flex justify-between items-center pb-3 border-b border-slate-200">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">UPI & Bank Collections by Customer</h2>
+                <p className="text-xs text-slate-500">Detailed list of all customers and payers who paid via UPI / Bank</p>
+              </div>
+              <div className="text-right">
+                <span className="text-xs text-slate-500 uppercase font-semibold">Total UPI Collected</span>
+                <p className="text-xl font-extrabold text-indigo-600">₹{upiPayers.reduce((s, u) => s + u.amount, 0).toFixed(2)}</p>
+              </div>
+            </div>
+
+            {loading ? (
+              <div className="p-8 text-center text-slate-500 text-sm">Loading UPI payers...</div>
+            ) : upiPayers.length === 0 ? (
+              <div className="p-12 text-center text-slate-500">
+                <CreditCard className="mx-auto text-slate-300 mb-2" size={40} />
+                <p className="font-medium text-slate-700">No UPI payments recorded for this period.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-600 uppercase text-xs font-semibold border-b border-slate-200">
+                      <th className="py-2.5 px-4">Customer Name</th>
+                      <th className="py-2.5 px-4">Ref / Bill #</th>
+                      <th className="py-2.5 px-4">Date & Time</th>
+                      <th className="py-2.5 px-4 text-right">UPI Received (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {upiPayers.map((up, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50 transition">
+                        <td className="py-3 px-4 font-bold text-slate-900">{up.customer_name}</td>
+                        <td className="py-3 px-4 font-mono text-xs text-slate-700">{up.ref}</td>
+                        <td className="py-3 px-4 text-xs text-slate-500 font-mono">
+                          {new Date(up.date).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true })}
+                        </td>
+                        <td className="py-3 px-4 text-right font-extrabold text-indigo-600 font-mono">
+                          +₹{up.amount.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 7: CONTRA TRANSFERS & CONVERSIONS */}
+        {activeTab === 'transfers' && (
+          <div className="space-y-4">
+            <div className="flex justify-between items-center pb-3 border-b border-slate-200">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">Contra Transfers & Conversions (Cash ⇄ UPI)</h2>
+                <p className="text-xs text-slate-500">Money transferred between cash drawer and UPI / bank accounts</p>
+              </div>
+              <div className="text-right">
+                <span className="text-xs text-slate-500 uppercase font-semibold">Total Transfers</span>
+                <p className="text-xl font-extrabold text-blue-600">{periodTransfers.length} records</p>
+              </div>
+            </div>
+
+            {loading ? (
+              <div className="p-8 text-center text-slate-500 text-sm">Loading transfers...</div>
+            ) : periodTransfers.length === 0 ? (
+              <div className="p-12 text-center text-slate-500">
+                <ArrowRightLeft className="mx-auto text-slate-300 mb-2" size={40} />
+                <p className="font-medium text-slate-700">No transfers recorded for this period.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-600 uppercase text-xs font-semibold border-b border-slate-200">
+                      <th className="py-2.5 px-4">Transfer #</th>
+                      <th className="py-2.5 px-4">Date & Time</th>
+                      <th className="py-2.5 px-4">Conversion Direction</th>
+                      <th className="py-2.5 px-4">Reason / Notes</th>
+                      <th className="py-2.5 px-4 text-right">Amount (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {periodTransfers.map((tr) => (
+                      <tr key={tr.id} className="hover:bg-slate-50 transition">
+                        <td className="py-3 px-4 font-mono font-bold text-slate-900">{tr.transfer_number || 'TRANS-—'}</td>
+                        <td className="py-3 px-4 text-xs text-slate-500 font-mono">
+                          {new Date(tr.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true })}
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${
+                            tr.direction === 'CASH_TO_UPI'
+                              ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                              : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                          }`}>
+                            {tr.direction === 'CASH_TO_UPI' ? 'Cash -> UPI (Deposit)' : 'UPI -> Cash (Withdrawal)'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-xs text-slate-700 font-medium">{tr.reason}</td>
+                        <td className="py-3 px-4 text-right font-extrabold text-slate-900 font-mono">
+                          ₹{Number(tr.amount).toFixed(2)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

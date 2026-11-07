@@ -4363,7 +4363,7 @@ _(Points will be credited upon bill settlement)_`;
 
     let query = supabase
       .from('bill_items')
-      .select('*, bills(id, bill_number, created_at, customer_id, customers(name))');
+      .select('*, bills(id, bill_number, created_at, customer_id, customers(name), total, grand_total, discount)');
 
     if (isCustom) {
       query = query.is('product_id', null).eq('product_name', product.name);
@@ -4391,7 +4391,17 @@ _(Points will be credited upon bill settlement)_`;
     let totalRev = 0;
 
     for (const item of (items || [])) {
-      const bill = item.bills as { id?: string; bill_number?: string; created_at?: string; customer_id?: string; customers?: { name?: string }; customer_name?: string } | null;
+      const bill = item.bills as { 
+        id?: string; 
+        bill_number?: string; 
+        created_at?: string; 
+        customer_id?: string; 
+        customers?: { name?: string }; 
+        customer_name?: string;
+        total?: number;
+        grand_total?: number;
+        discount?: number;
+      } | null;
       const createdAt = bill?.created_at || item.created_at || new Date().toISOString();
       const itemTime = new Date(createdAt).getTime();
 
@@ -4400,7 +4410,14 @@ _(Points will be credited upon bill settlement)_`;
 
       const qty = Number(item.quantity || 0);
       const price = Number(item.price || 0);
-      const total = Number(item.total || (qty * price));
+      const rawTotal = Number(item.total || (qty * price));
+
+      // Calculate net earned total after proportional bill discount deduction
+      const billSubtotal = Number(bill?.total || 0);
+      const billGrandTotal = Number(bill?.grand_total || 0);
+      const factor = (billSubtotal > 0 && billGrandTotal > 0) ? (billGrandTotal / billSubtotal) : 1;
+      const total = Number((rawTotal * factor).toFixed(2));
+
       const isCustomRate = isCustom ? false : Math.abs(price - product.price) > 0.001;
 
       const billId = bill?.id || item.bill_id || '';

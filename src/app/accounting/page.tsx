@@ -11,10 +11,12 @@ import {
   ExpenseCategory,
   ReconciliationCalculation,
   UnpaidSessionBill,
-  Bill
+  Bill,
+  Payment
 } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { AccountingStatementGenerator } from '@/lib/services/accountingStatementGenerator';
+import { CashBankBookPdfGenerator } from '@/lib/services/cashBankBookPdfGenerator';
 import { ACCOUNTING_DATE_FILTER_BUTTONS } from '@/lib/constants/filters';
 import { downloadCSV } from '@/lib/utils/csv';
 import { 
@@ -182,37 +184,73 @@ export default function AccountingPage() {
       const activePayments = paymentsData.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
       const billsMap = new Map<string, Bill>(billsData.map(b => [b.id, b]));
 
-      // Add Bills:
-      // Mark as duplicate voucher if this bill's payment is already represented by a payment voucher in paymentsData,
-      // or if it was paid later via account dues payments (so money inflow is already accounted for under PAY-xxxx).
-      const paymentBillIds = new Set(activePayments.map(p => p.bill_id).filter(Boolean));
-      billsData.forEach(b => {
-        const cashAmt = Number(b.cash_paid || 0);
-        const upiAmt = Number(b.upi_paid || 0);
-        const isHandledByPaymentVoucher = paymentBillIds.has(b.id);
-
-        if (cashAmt > 0 || upiAmt > 0) {
-          rows.push({
-            id: `bill_${b.id}`,
-            date: b.created_at,
-            type: 'BILL',
-            refNumber: b.bill_number,
-            description: `Sales Bill - ${b.customer_name || 'Counter Customer'}`,
-            mode: cashAmt > 0 && upiAmt > 0 ? 'Split' : (cashAmt > 0 ? 'Cash' : 'UPI'),
-            cashIn: cashAmt,
-            cashOut: 0,
-            upiIn: upiAmt,
-            upiOut: 0,
-            isDuplicateVoucher: isHandledByPaymentVoucher
-          });
+      // Identify initial checkout payment vouchers created automatically with bills
+      const initialPaymentByBillId = new Map<string, Payment>();
+      activePayments.forEach(p => {
+        if (p.bill_id && p.notes && p.notes.toLowerCase().includes('initial')) {
+          initialPaymentByBillId.set(p.bill_id, p);
         }
       });
 
-      // Add Customer Payments (each representing an authentic Cash or UPI inflow voucher)
+      // Add Bills:
+      // When a bill is paid at checkout (via initial payment voucher or walk-in payment),
+      // the bill row directly displays its inflow (Cash In / UPI In).
+      // Credit sales display as "Pay Later" with 0 inflow, whose settlements later appear under PAY-xxxx vouchers.
+      billsData.forEach(b => {
+        const initialPay = initialPaymentByBillId.get(b.id);
+        const isWalkIn = !b.customer_id && Number(b.paid_total || 0) > 0;
+
+        let cashIn = 0;
+        let upiIn = 0;
+        let mode = b.payment_method || 'Pay Later';
+
+        if (initialPay) {
+          if (initialPay.payment_method === 'Cash') {
+            cashIn = Number(initialPay.amount);
+            mode = 'Cash';
+          } else if (initialPay.payment_method === 'UPI') {
+            upiIn = Number(initialPay.amount);
+            mode = 'UPI';
+          } else if (initialPay.payment_method === 'Split Payment') {
+            cashIn = Number(b.cash_paid || 0);
+            upiIn = Number(b.upi_paid || 0);
+            mode = 'Split';
+          }
+        } else if (isWalkIn) {
+          cashIn = Number(b.cash_paid || 0);
+          upiIn = Number(b.upi_paid || 0);
+          mode = cashIn > 0 && upiIn > 0 ? 'Split' : (cashIn > 0 ? 'Cash' : (upiIn > 0 ? 'UPI' : 'Pay Later'));
+        } else {
+          mode = 'Pay Later';
+        }
+
+        const desc = b.customer_name
+          ? `Sales Bill - ${b.customer_name}`
+          : 'Sales Bill - Walk-in Customer';
+
+        rows.push({
+          id: `bill_${b.id}`,
+          date: b.created_at,
+          type: 'BILL',
+          refNumber: b.bill_number,
+          description: desc,
+          mode,
+          cashIn,
+          cashOut: 0,
+          upiIn,
+          upiOut: 0,
+          isDuplicateVoucher: false
+        });
+      });
+
+      // Add Payments:
+      // Initial checkout receipts are marked as duplicate vouchers so they don't double-count in ALL view (since the Bill already records the checkout inflow).
+      // Dues settlements and standalone receipts are primary inflow vouchers.
       activePayments.forEach(p => {
         const amt = Number(p.amount || 0);
         const linkedBill = p.bill_id ? billsMap.get(p.bill_id) : null;
-        
+        const isInitialCheckoutReceipt = Boolean(p.bill_id && p.notes && p.notes.toLowerCase().includes('initial'));
+
         let desc = p.notes;
         if (!desc || desc.startsWith('[')) {
           desc = linkedBill 
@@ -244,7 +282,7 @@ export default function AccountingPage() {
           cashOut: 0,
           upiIn: payUpiIn,
           upiOut: 0,
-          isDuplicateVoucher: false
+          isDuplicateVoucher: isInitialCheckoutReceipt
         });
       });
 
@@ -313,7 +351,7 @@ export default function AccountingPage() {
       // Compute running balances chronologically ascending (skipping duplicate vouchers to keep true drawer/bank balances).
       // Prior closed session rows accumulate from 0; active open session rows start cleanly at opening_cash / opening_upi
       // so the active session running balance always matches Cash in Drawer & UPI / Bank Balance 100%.
-      const ascending = [...rows].reverse();
+      const ascending = [...rows].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
       const activeSessionStartMs = new Date(currentStatus.session_start_date).getTime();
       let runningCash = 0;
       let runningUpi = 0;
@@ -372,14 +410,23 @@ export default function AccountingPage() {
     }
   };
 
+  // Helper to compute exact ISO cutoff: current time if today, or local shop midnight (23:59:59.999) if past date
+  const computeCutoffIso = (dateStr: string, isCustom: boolean) => {
+    const todayDatePart = new Date().toISOString().slice(0, 10);
+    if (!isCustom || dateStr === todayDatePart) {
+      return new Date().toISOString();
+    }
+    const [y, m, d] = dateStr.split('-').map(Number);
+    return new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
+  };
+
   // Re-calculate when closing date range changes
   const handleRecalculateCloseRange = async (from: string, to: string, isCustom = true) => {
     try {
       setCustomReconcileRange(isCustom);
-      const todayDatePart = new Date().toISOString().slice(0, 10);
       const sessionStartIso = sessionStatus?.session_start_date || `${from}T00:00:00.000Z`;
       const fromIso = (!isCustom || from === sessionStartIso.slice(0, 10)) ? sessionStartIso : `${from}T00:00:00.000Z`;
-      const toIso = (!isCustom || to === todayDatePart) ? new Date().toISOString() : `${to}T23:59:59.999Z`;
+      const toIso = computeCutoffIso(to, isCustom);
       const calc = await ApiService.calculateReconciliationForRange(fromIso, toIso);
       setReconcileCalc(calc);
       setActualCash(calc.expected_cash);
@@ -393,6 +440,14 @@ export default function AccountingPage() {
   const handleConfirmClosePeriod = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!reconcileCalc) return;
+
+    if (reconcileCalc.pending_session_dues > 0.01) {
+      setFeedback({ 
+        type: 'error', 
+        message: `Cannot close accounting session: ${reconcileCalc.unpaid_bills.length} bill(s) up to ${reconcileToDate} have outstanding dues totaling ₹${reconcileCalc.pending_session_dues.toFixed(2)}. All dues up to the closing cutoff date must be cleared in Sales/Billing before closing.` 
+      });
+      return;
+    }
 
     if (!closeAdminPin.trim()) {
       setFeedback({ type: 'error', message: 'Super Admin Security PIN is required to close and lock the period.' });
@@ -408,14 +463,11 @@ export default function AccountingPage() {
     setFeedback(null);
 
     try {
-      const todayDatePart = new Date().toISOString().slice(0, 10);
       const sessionStartIso = sessionStatus?.session_start_date || `${reconcileFromDate}T00:00:00.000Z`;
       const fromIso = (!customReconcileRange || reconcileFromDate === sessionStartIso.slice(0, 10))
         ? sessionStartIso
         : `${reconcileFromDate}T00:00:00.000Z`;
-      const toIso = (!customReconcileRange || reconcileToDate === todayDatePart)
-        ? new Date().toISOString()
-        : `${reconcileToDate}T23:59:59.999Z`;
+      const toIso = computeCutoffIso(reconcileToDate, customReconcileRange);
 
       await ApiService.createAccountingClosing({
         from_date: fromIso,
@@ -840,7 +892,7 @@ export default function AccountingPage() {
         if (rowMs < fromMs || rowMs > toMs) return false;
       }
 
-      // In ALL view, hide duplicate vouchers so each checkout collection appears once
+      // In ALL view, hide duplicate checkout receipt vouchers so the sales bill represents the checkout event cleanly
       if (ledgerTypeFilter === 'ALL' && row.isDuplicateVoucher) {
         return false;
       }
@@ -866,6 +918,94 @@ export default function AccountingPage() {
       return true;
     });
   }, [ledgerRows, sessionStatus, dateFilter, customFrom, customTo, ledgerTypeFilter, searchQuery]);
+
+  // Export Cash Book PDF
+  const handleExportCashBookPdf = () => {
+    try {
+      const entries = filteredLedger
+        .filter(r => (r.cashIn > 0 || r.cashOut > 0))
+        .map(r => ({
+          date: r.date,
+          ref_number: r.refNumber,
+          description: r.description,
+          inflow: r.cashIn,
+          outflow: r.cashOut,
+          running_balance: r.runningCash !== undefined ? r.runningCash : 0
+        }));
+
+      let openingBalance = 0;
+      if (entries.length > 0) {
+        openingBalance = Number((entries[0].running_balance - entries[0].inflow + entries[0].outflow).toFixed(2));
+      } else if (sessionStatus) {
+        openingBalance = sessionStatus.last_closed_session?.actual_cash ?? sessionStatus.expected_cash_in_hand;
+      }
+      const closingBalance = entries.length > 0 ? entries[entries.length - 1].running_balance : openingBalance;
+
+      const filterLabel = dateFilter === 'current_session' 
+        ? 'Active Accounting Session' 
+        : dateFilter === 'custom' && customFrom && customTo
+        ? `${customFrom} to ${customTo}`
+        : dateFilter.toUpperCase();
+
+      const doc = CashBankBookPdfGenerator.generateBookPdf({
+        book_type: 'CASH',
+        shop_settings: settings?.shop || {},
+        period_label: filterLabel,
+        opening_balance: openingBalance,
+        closing_balance: closingBalance,
+        entries
+      });
+
+      doc.save(`Cash-Book-${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (err) {
+      console.error('Failed to generate Cash Book PDF:', err);
+      setFeedback({ type: 'error', message: 'Failed to generate Cash Book PDF' });
+    }
+  };
+
+  // Export Bank/UPI Book PDF
+  const handleExportBankBookPdf = () => {
+    try {
+      const entries = filteredLedger
+        .filter(r => (r.upiIn > 0 || r.upiOut > 0))
+        .map(r => ({
+          date: r.date,
+          ref_number: r.refNumber,
+          description: r.description,
+          inflow: r.upiIn,
+          outflow: r.upiOut,
+          running_balance: r.runningUpi !== undefined ? r.runningUpi : 0
+        }));
+
+      let openingBalance = 0;
+      if (entries.length > 0) {
+        openingBalance = Number((entries[0].running_balance - entries[0].inflow + entries[0].outflow).toFixed(2));
+      } else if (sessionStatus) {
+        openingBalance = sessionStatus.last_closed_session?.actual_upi ?? sessionStatus.expected_upi_in_hand;
+      }
+      const closingBalance = entries.length > 0 ? entries[entries.length - 1].running_balance : openingBalance;
+
+      const filterLabel = dateFilter === 'current_session' 
+        ? 'Active Accounting Session' 
+        : dateFilter === 'custom' && customFrom && customTo
+        ? `${customFrom} to ${customTo}`
+        : dateFilter.toUpperCase();
+
+      const doc = CashBankBookPdfGenerator.generateBookPdf({
+        book_type: 'BANK',
+        shop_settings: settings?.shop || {},
+        period_label: filterLabel,
+        opening_balance: openingBalance,
+        closing_balance: closingBalance,
+        entries
+      });
+
+      doc.save(`Bank-UPI-Book-${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (err) {
+      console.error('Failed to generate Bank/UPI Book PDF:', err);
+      setFeedback({ type: 'error', message: 'Failed to generate Bank/UPI Book PDF' });
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 pb-16">
@@ -1126,8 +1266,8 @@ export default function AccountingPage() {
                 )}
               </div>
 
-              {/* Search & Type Select */}
-              <div className="flex items-center gap-2">
+              {/* Search, Type Select & Book PDFs */}
+              <div className="flex flex-wrap items-center gap-2">
                 <div className="relative">
                   <Search size={14} className="absolute left-2.5 top-2.5 text-slate-400" />
                   <input
@@ -1135,7 +1275,7 @@ export default function AccountingPage() {
                     placeholder="Search ledger..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 w-44"
+                    className="pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 w-40"
                   />
                 </div>
 
@@ -1150,6 +1290,28 @@ export default function AccountingPage() {
                   <option value="EXPENSES">Expenses Only</option>
                   <option value="TRANSFERS">Transfers Only</option>
                 </select>
+
+                <div className="flex items-center gap-1.5 sm:border-l sm:border-slate-200 sm:pl-2">
+                  <button
+                    type="button"
+                    onClick={handleExportCashBookPdf}
+                    className="px-2.5 py-1.5 text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg shadow-xs flex items-center gap-1 cursor-pointer transition"
+                    title="Export & Print Official Cash Book Ledger PDF"
+                  >
+                    <Printer size={13} className="text-emerald-700" />
+                    <span>Cash Book PDF</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleExportBankBookPdf}
+                    className="px-2.5 py-1.5 text-xs font-bold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-300 rounded-lg shadow-xs flex items-center gap-1 cursor-pointer transition"
+                    title="Export & Print Official Bank / UPI Book Ledger PDF"
+                  >
+                    <Printer size={13} className="text-indigo-700" />
+                    <span>Bank Book PDF</span>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -1602,15 +1764,84 @@ export default function AccountingPage() {
                     <p className="text-[10px] text-slate-500 mt-1">Guarantees zero gaps and no overlapping sessions.</p>
                   </div>
 
-                  <div className="p-2.5 bg-white rounded-lg border border-indigo-200 shadow-xs">
-                    <div className="flex items-center justify-between mb-1">
+                  <div className="p-2.5 bg-white rounded-lg border border-indigo-200 shadow-xs space-y-1.5">
+                    <div className="flex items-center justify-between">
                       <label className="text-[11px] font-bold text-indigo-900">
                         To Date (Closing Cutoff) *
                       </label>
                       <span className="text-[10px] font-semibold text-indigo-600">
-                        {reconcileToDate === new Date().toISOString().slice(0, 10) ? 'Cutoff: Right Now' : 'Cutoff: 23:59:59'}
+                        {reconcileToDate === new Date().toISOString().slice(0, 10) ? 'Cutoff: Current Moment' : 'Cutoff: 11:59:59 PM (Shop Time)'}
                       </span>
                     </div>
+
+                    {/* Quick Preset Buttons */}
+                    <div className="flex flex-wrap items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const today = new Date().toISOString().slice(0, 10);
+                          setReconcileToDate(today);
+                          handleRecalculateCloseRange(reconcileFromDate, today, false);
+                        }}
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
+                          reconcileToDate === new Date().toISOString().slice(0, 10)
+                            ? 'bg-indigo-600 text-white shadow-xs'
+                            : 'bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100'
+                        }`}
+                      >
+                        Today
+                      </button>
+
+                      {(() => {
+                        const yest = new Date();
+                        yest.setDate(yest.getDate() - 1);
+                        const yestStr = yest.toISOString().slice(0, 10);
+                        if (yestStr < reconcileFromDate) return null;
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReconcileToDate(yestStr);
+                              handleRecalculateCloseRange(reconcileFromDate, yestStr, true);
+                            }}
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
+                              reconcileToDate === yestStr
+                                ? 'bg-indigo-600 text-white shadow-xs'
+                                : 'bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200'
+                            }`}
+                          >
+                            Yesterday
+                          </button>
+                        );
+                      })()}
+
+                      {(() => {
+                        const now = new Date();
+                        const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+                        const year = lastMonthEnd.getFullYear();
+                        const month = String(lastMonthEnd.getMonth() + 1).padStart(2, '0');
+                        const day = String(lastMonthEnd.getDate()).padStart(2, '0');
+                        const lastMonthEndStr = `${year}-${month}-${day}`;
+                        if (lastMonthEndStr < reconcileFromDate || lastMonthEndStr > new Date().toISOString().slice(0, 10)) return null;
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReconcileToDate(lastMonthEndStr);
+                              handleRecalculateCloseRange(reconcileFromDate, lastMonthEndStr, true);
+                            }}
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
+                              reconcileToDate === lastMonthEndStr
+                                ? 'bg-indigo-600 text-white shadow-xs'
+                                : 'bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200'
+                            }`}
+                          >
+                            End of Last Month ({day}/{month})
+                          </button>
+                        );
+                      })()}
+                    </div>
+
                     <input
                       type="date"
                       required
@@ -1619,11 +1850,13 @@ export default function AccountingPage() {
                       value={reconcileToDate}
                       onChange={(e) => {
                         setReconcileToDate(e.target.value);
-                        handleRecalculateCloseRange(reconcileFromDate, e.target.value);
+                        handleRecalculateCloseRange(reconcileFromDate, e.target.value, true);
                       }}
                       className="w-full bg-slate-50 border border-indigo-300 rounded-lg px-3 py-1 text-xs font-bold font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     />
-                    <p className="text-[10px] text-slate-500 mt-1">Select the period closing cutoff date.</p>
+                    <p className="text-[10px] text-slate-500">
+                      Select any date on the calendar to close all transactions up to that date (e.g. 15/10/2026, 30/10/2026, or today).
+                    </p>
                   </div>
                 </div>
               </div>

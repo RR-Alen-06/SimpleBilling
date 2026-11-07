@@ -23,6 +23,9 @@ export interface BusinessReportData {
   item_sales: { name: string; qty: number; total: number }[];
   due_customers: CustomerSummary[];
   expenses?: Expense[];
+  cash_payers?: { customer_name: string; ref: string; date: string; amount: number }[];
+  upi_payers?: { customer_name: string; ref: string; date: string; amount: number }[];
+  transfers?: { transfer_number?: string | null; direction: string; amount: number; reason: string; created_at: string }[];
 }
 
 export class BusinessReportGenerator {
@@ -455,6 +458,182 @@ export class BusinessReportGenerator {
         doc.setFont('helvetica', 'bold');
         doc.setTextColor(220, 38, 38);
         doc.text(Number(exp.amount).toFixed(2), pageWidth - margin - 2, y + 3.2, { align: 'right' });
+
+        y += 5;
+      });
+      y += 3;
+    }
+
+    // =========================================================================
+    // 6. CASH PAYERS REGISTER
+    // =========================================================================
+    if (data.cash_payers && data.cash_payers.length > 0) {
+      checkPageBreak(30);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9.5);
+      doc.setTextColor(15, 23, 42);
+      const totalCashAmount = data.cash_payers.reduce((s, c) => s + Number(c.amount || 0), 0);
+      doc.text(`6. CASH PAYMENTS BREAKDOWN (${data.cash_payers.length} Payers — Total: INR ${totalCashAmount.toFixed(2)})`, margin, y);
+      y += 4;
+
+      doc.setFillColor(241, 245, 249);
+      doc.rect(margin, y, contentWidth, 5.5, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7);
+      doc.setTextColor(71, 85, 105);
+      doc.text('CUSTOMER NAME', margin + 2, y + 3.8);
+      doc.text('REF / BILL #', margin + 70, y + 3.8);
+      doc.text('DATE', margin + 115, y + 3.8);
+      doc.text('CASH RECEIVED (INR)', pageWidth - margin - 2, y + 3.8, { align: 'right' });
+
+      y += 6.5;
+
+      data.cash_payers.forEach((cp, idx) => {
+        checkPageBreak(6);
+
+        if (idx % 2 === 1) {
+          doc.setFillColor(248, 250, 252);
+          doc.rect(margin, y - 0.5, contentWidth, 5, 'F');
+        }
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.5);
+        doc.setTextColor(15, 23, 42);
+        doc.text(cp.customer_name.slice(0, 32), margin + 2, y + 3.2);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.5);
+        doc.setTextColor(80, 80, 80);
+        doc.text(cp.ref, margin + 70, y + 3.2);
+
+        let dateDisplay = cp.date;
+        try {
+          dateDisplay = new Date(cp.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+        } catch {}
+        doc.text(dateDisplay, margin + 115, y + 3.2);
+
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(16, 185, 129); // green
+        doc.text(Number(cp.amount).toFixed(2), pageWidth - margin - 2, y + 3.2, { align: 'right' });
+
+        y += 5;
+      });
+      y += 3;
+    }
+
+    // =========================================================================
+    // 7. UPI PAYERS REGISTER
+    // =========================================================================
+    if (data.upi_payers && data.upi_payers.length > 0) {
+      checkPageBreak(30);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9.5);
+      doc.setTextColor(15, 23, 42);
+      const totalUpiAmount = data.upi_payers.reduce((s, u) => s + Number(u.amount || 0), 0);
+      doc.text(`7. UPI / BANK PAYMENTS BREAKDOWN (${data.upi_payers.length} Payers — Total: INR ${totalUpiAmount.toFixed(2)})`, margin, y);
+      y += 4;
+
+      doc.setFillColor(241, 245, 249);
+      doc.rect(margin, y, contentWidth, 5.5, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7);
+      doc.setTextColor(71, 85, 105);
+      doc.text('CUSTOMER NAME', margin + 2, y + 3.8);
+      doc.text('REF / BILL #', margin + 70, y + 3.8);
+      doc.text('DATE', margin + 115, y + 3.8);
+      doc.text('UPI RECEIVED (INR)', pageWidth - margin - 2, y + 3.8, { align: 'right' });
+
+      y += 6.5;
+
+      data.upi_payers.forEach((up, idx) => {
+        checkPageBreak(6);
+
+        if (idx % 2 === 1) {
+          doc.setFillColor(248, 250, 252);
+          doc.rect(margin, y - 0.5, contentWidth, 5, 'F');
+        }
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.5);
+        doc.setTextColor(15, 23, 42);
+        doc.text(up.customer_name.slice(0, 32), margin + 2, y + 3.2);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.5);
+        doc.setTextColor(80, 80, 80);
+        doc.text(up.ref, margin + 70, y + 3.2);
+
+        let dateDisplay = up.date;
+        try {
+          dateDisplay = new Date(up.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+        } catch {}
+        doc.text(dateDisplay, margin + 115, y + 3.2);
+
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(79, 70, 229); // indigo
+        doc.text(Number(up.amount).toFixed(2), pageWidth - margin - 2, y + 3.2, { align: 'right' });
+
+        y += 5;
+      });
+      y += 3;
+    }
+
+    // =========================================================================
+    // 8. CONTRA TRANSFERS & CONVERSIONS (UPI ⇄ CASH)
+    // =========================================================================
+    if (data.transfers && data.transfers.length > 0) {
+      checkPageBreak(30);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9.5);
+      doc.setTextColor(15, 23, 42);
+      doc.text(`8. INTERNAL TRANSFERS & CONVERSIONS (${data.transfers.length} Records)`, margin, y);
+      y += 4;
+
+      doc.setFillColor(241, 245, 249);
+      doc.rect(margin, y, contentWidth, 5.5, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7);
+      doc.setTextColor(71, 85, 105);
+      doc.text('TRANSFER # / REASON', margin + 2, y + 3.8);
+      doc.text('CONVERSION DIRECTION', margin + 75, y + 3.8);
+      doc.text('DATE', margin + 125, y + 3.8);
+      doc.text('AMOUNT (INR)', pageWidth - margin - 2, y + 3.8, { align: 'right' });
+
+      y += 6.5;
+
+      data.transfers.forEach((tr, idx) => {
+        checkPageBreak(6);
+
+        if (idx % 2 === 1) {
+          doc.setFillColor(248, 250, 252);
+          doc.rect(margin, y - 0.5, contentWidth, 5, 'F');
+        }
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.5);
+        doc.setTextColor(15, 23, 42);
+        const tTitle = `${tr.transfer_number ? tr.transfer_number + ' - ' : ''}${tr.reason}`.slice(0, 36);
+        doc.text(tTitle, margin + 2, y + 3.2);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.5);
+        const dirLabel = tr.direction === 'CASH_TO_UPI' ? 'Cash -> UPI (Deposit)' : 'UPI -> Cash (Withdrawal)';
+        doc.setTextColor(tr.direction === 'CASH_TO_UPI' ? 79 : 16, tr.direction === 'CASH_TO_UPI' ? 70 : 185, tr.direction === 'CASH_TO_UPI' ? 229 : 129);
+        doc.text(dirLabel, margin + 75, y + 3.2);
+
+        let dateDisplay = tr.created_at;
+        try {
+          dateDisplay = new Date(tr.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+        } catch {}
+        doc.setTextColor(80, 80, 80);
+        doc.text(dateDisplay, margin + 125, y + 3.2);
+
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(15, 23, 42);
+        doc.text(Number(tr.amount).toFixed(2), pageWidth - margin - 2, y + 3.2, { align: 'right' });
 
         y += 5;
       });
