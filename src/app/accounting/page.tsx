@@ -394,7 +394,7 @@ export default function AccountingPage() {
 
     const now = new Date();
     const defaultTo = now.toISOString();
-    const defaultFrom = sessionStatus?.session_start_date || '2026-01-01T00:00:00.000Z';
+    const defaultFrom = sessionStatus?.session_start_date || new Date().toISOString();
 
     setReconcileFromDate(defaultFrom.slice(0, 10));
     setReconcileToDate(defaultTo.slice(0, 10));
@@ -1754,14 +1754,35 @@ export default function AccountingPage() {
                     <div className="flex items-center justify-between mb-1">
                       <label className="text-[11px] font-bold text-slate-700 flex items-center gap-1">
                         <Lock size={12} className="text-slate-500" />
-                        <span>From Date (Strictly Locked)</span>
+                        <span>From Date {sessionStatus?.last_closed_session ? '(Strictly Locked)' : '(Inception Date)'}</span>
                       </label>
-                      <span className="text-[10px] font-bold text-slate-500">Pinned to Last Cutoff</span>
+                      <span className="text-[10px] font-bold text-slate-500">
+                        {sessionStatus?.last_closed_session ? 'Pinned to Last Cutoff' : 'Store First Transaction'}
+                      </span>
                     </div>
-                    <div className="text-xs font-mono font-bold text-slate-900 bg-white py-1 px-2.5 rounded border border-slate-300">
-                      {reconcileFromDate}
-                    </div>
-                    <p className="text-[10px] text-slate-500 mt-1">Guarantees zero gaps and no overlapping sessions.</p>
+
+                    {sessionStatus?.last_closed_session ? (
+                      <div className="text-xs font-mono font-bold text-slate-900 bg-white py-1 px-2.5 rounded border border-slate-300">
+                        {reconcileFromDate}
+                      </div>
+                    ) : (
+                      <input
+                        type="date"
+                        value={reconcileFromDate}
+                        max={reconcileToDate}
+                        onChange={(e) => {
+                          setReconcileFromDate(e.target.value);
+                          handleRecalculateCloseRange(e.target.value, reconcileToDate, true);
+                        }}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1 text-xs font-bold font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    )}
+
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      {sessionStatus?.last_closed_session
+                        ? 'Guarantees zero gaps and no overlapping sessions.'
+                        : 'First session ever: starting from your store\'s first transaction.'}
+                    </p>
                   </div>
 
                   <div className="p-2.5 bg-white rounded-lg border border-indigo-200 shadow-xs space-y-1.5">

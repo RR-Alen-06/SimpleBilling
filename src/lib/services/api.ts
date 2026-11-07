@@ -5618,10 +5618,6 @@ _(Points will be credited upon bill settlement)_`;
 
   static async getCurrentSessionStatus(): Promise<CurrentSessionStatus> {
     const latestClosing = await this.getLatestAccountingClosing();
-    const session_start_date = latestClosing?.to_date || '2000-01-01T00:00:00.000Z';
-    const opening_cash = latestClosing ? Number(latestClosing.actual_cash !== undefined ? latestClosing.actual_cash : (latestClosing.expected_cash || 0)) : 0;
-    const opening_upi = latestClosing ? Number(latestClosing.actual_upi !== undefined ? latestClosing.actual_upi : (latestClosing.expected_upi || 0)) : 0;
-
     const [allBills, allPayments, allExpenses, allTransfers, allCustomers] = await Promise.all([
       this.getBills(),
       this.getPayments(),
@@ -5630,12 +5626,40 @@ _(Points will be credited upon bill settlement)_`;
       this.getCustomers()
     ]);
 
+    let session_start_date = latestClosing?.to_date;
+    if (!session_start_date) {
+      const allTimestamps = [
+        ...allBills.map(b => new Date(b.created_at).getTime()),
+        ...allPayments.map(p => new Date(p.created_at).getTime()),
+        ...allExpenses.map(e => new Date(e.created_at).getTime()),
+        ...allTransfers.map(t => new Date(t.created_at).getTime())
+      ].filter(t => !isNaN(t) && t > 0);
+
+      if (allTimestamps.length > 0) {
+        const minDate = new Date(Math.min(...allTimestamps));
+        session_start_date = new Date(minDate.getFullYear(), minDate.getMonth(), minDate.getDate(), 0, 0, 0, 0).toISOString();
+      } else {
+        session_start_date = new Date().toISOString();
+      }
+    }
+
+    const opening_cash = latestClosing ? Number(latestClosing.actual_cash !== undefined ? latestClosing.actual_cash : (latestClosing.expected_cash || 0)) : 0;
+    const opening_upi = latestClosing ? Number(latestClosing.actual_upi !== undefined ? latestClosing.actual_upi : (latestClosing.expected_upi || 0)) : 0;
+
     const sessionStartMs = new Date(session_start_date).getTime();
 
-    const bills = allBills.filter(b => new Date(b.created_at).getTime() > sessionStartMs);
-    const payments = allPayments.filter(p => new Date(p.created_at).getTime() > sessionStartMs && p.status !== 'CANCELLED' && p.status !== 'REVERSED');
-    const expenses = allExpenses.filter(e => new Date(e.created_at).getTime() > sessionStartMs);
-    const transfers = allTransfers.filter(t => new Date(t.created_at).getTime() > sessionStartMs);
+    const bills = latestClosing
+      ? allBills.filter(b => new Date(b.created_at).getTime() > sessionStartMs)
+      : allBills;
+    const payments = latestClosing
+      ? allPayments.filter(p => new Date(p.created_at).getTime() > sessionStartMs && p.status !== 'CANCELLED' && p.status !== 'REVERSED')
+      : allPayments.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
+    const expenses = latestClosing
+      ? allExpenses.filter(e => new Date(e.created_at).getTime() > sessionStartMs)
+      : allExpenses;
+    const transfers = latestClosing
+      ? allTransfers.filter(t => new Date(t.created_at).getTime() > sessionStartMs)
+      : allTransfers;
 
     let pending_dues_total = 0;
     let unpaid_bills_count = 0;
