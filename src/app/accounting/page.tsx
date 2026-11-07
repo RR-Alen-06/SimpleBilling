@@ -1723,7 +1723,7 @@ export default function AccountingPage() {
 
       {/* MODAL 2: CLOSE SESSION (RECONCILIATION & CROSS-CHECKING WIZARD) */}
       {showCloseModal && reconcileCalc && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-start justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-6 space-y-5 my-8">
             <div className="flex justify-between items-center border-b border-slate-100 pb-3">
               <div>
@@ -2199,7 +2199,7 @@ export default function AccountingPage() {
         const toIso = editingClosing.to_date ? new Date(editingClosing.to_date).toISOString().slice(0, 16) : '';
 
         return (
-          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-start justify-center p-4 overflow-y-auto">
             <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-6 space-y-5 my-8">
               {/* MODAL HEADER */}
               <div className="flex justify-between items-start border-b border-slate-100 pb-3">
