@@ -1086,9 +1086,11 @@ export default function BillingPage() {
                     <span>Loyalty Engine</span>
                   </span>
                   <span className={`font-mono font-bold ${remainingBillBalance === 0 ? 'text-emerald-400' : 'text-amber-300'}`}>
-                    {remainingBillBalance === 0
-                      ? `🎁 +${estimatedPointsEarned} pts Earned`
-                      : `⏳ +${estimatedPointsEarned} pts On Full Pay`}
+                    {cart.length === 0 || roundedTotal === 0
+                      ? '🎁 +0 pts'
+                      : (remainingBillBalance === 0
+                        ? `🎁 +${estimatedPointsEarned} pts Earned`
+                        : `⏳ +${estimatedPointsEarned} pts On Full Pay`)}
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-[11px]">

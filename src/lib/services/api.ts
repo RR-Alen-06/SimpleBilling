@@ -987,10 +987,12 @@ export class ApiService {
 
     const [
       { data: bills },
-      { data: payments }
+      { data: payments },
+      { data: loyaltyTxs }
     ] = await Promise.all([
       supabase.from('bills').select('id, customer_id, grand_total, paid_total, cash_paid, upi_paid, advance_used, payment_method, created_at'),
-      supabase.from('payments').select('id, customer_id, bill_id, amount, status, created_at')
+      supabase.from('payments').select('id, customer_id, bill_id, amount, status, created_at'),
+      supabase.from('loyalty_transactions').select('customer_id, points, type')
     ]);
 
     const activePayments = (payments || []).filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
@@ -1019,14 +1021,26 @@ export class ApiService {
       };
     };
 
-    // Auto-sync any discrepant advance balances directly to Supabase and keep live customer objects accurate
+    // Auto-sync any discrepant advance & loyalty balances directly to Supabase and keep live customer objects accurate
     let discrepanciesFixedCount = 0;
     for (const cust of customers) {
       const net = computeCustomerNetLedger(cust);
-      if (Math.abs(Number(cust.advance_balance || 0) - net.trueAdvance) > 0.001) {
+      const custTxs = (loyaltyTxs || []).filter(t => t.customer_id === cust.id);
+      const trueLoyalty = Math.max(0, custTxs.reduce((sum, t) => sum + (t.type === 'REDEEM' ? -Math.abs(Number(t.points || 0)) : Number(t.points || 0)), 0));
+
+      const needAdvUpdate = Math.abs(Number(cust.advance_balance || 0) - net.trueAdvance) > 0.001;
+      const needLoyUpdate = custTxs.length > 0 && Number(cust.loyalty_points || 0) !== trueLoyalty;
+
+      if (needAdvUpdate || needLoyUpdate) {
         cust.advance_balance = net.trueAdvance;
+        if (needLoyUpdate) {
+          cust.loyalty_points = trueLoyalty;
+        }
         discrepanciesFixedCount++;
-        await supabase.from('customers').update({ advance_balance: net.trueAdvance }).eq('id', cust.id);
+        const updatePayload: Record<string, number> = {};
+        if (needAdvUpdate) updatePayload.advance_balance = net.trueAdvance;
+        if (needLoyUpdate) updatePayload.loyalty_points = trueLoyalty;
+        await supabase.from('customers').update(updatePayload).eq('id', cust.id);
       }
     }
 
@@ -3353,23 +3367,26 @@ export class ApiService {
   }> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
 
-    // 1. Fetch all customers, bills, and payments
+    // 1. Fetch all customers, bills, payments, and loyalty transactions
     const custQ = supabase.from('customers').select('*');
     const billsQ = supabase
       .from('bills')
       .select('id, bill_number, customer_id, grand_total, paid_total, cash_paid, upi_paid, advance_used, advance_earned, payment_method, loyalty_points_earned, created_at')
       .order('created_at', { ascending: true });
     const payQ = supabase.from('payments').select('id, payment_number, customer_id, bill_id, amount, status, notes, created_at');
+    const loyQ = supabase.from('loyalty_transactions').select('customer_id, points, type');
 
     const [
       { data: rawCustomers, error: custErr },
       { data: rawBills, error: billsErr },
-      { data: rawPayments, error: payErr }
-    ] = await Promise.all([custQ, billsQ, payQ]);
+      { data: rawPayments, error: payErr },
+      { data: rawLoyalty, error: loyErr }
+    ] = await Promise.all([custQ, billsQ, payQ, loyQ]);
 
     if (custErr) throw new Error(custErr.message);
     if (billsErr) throw new Error(billsErr.message);
     if (payErr) throw new Error(payErr.message);
+    if (loyErr) throw new Error(loyErr.message);
 
     let custList = rawCustomers || [];
     const billList = rawBills || [];
@@ -3491,12 +3508,20 @@ export class ApiService {
 
       totalAdvanceAfter += calculatedAdvance;
 
-      if (Math.abs(calculatedAdvance - storedAdvance) > 0.001) {
+      const custTxs = (rawLoyalty || []).filter(t => t.customer_id === cust.id);
+      const calculatedLoyalty = custTxs.length > 0
+        ? Math.max(0, custTxs.reduce((sum, t) => sum + (t.type === 'REDEEM' ? -Math.abs(Number(t.points || 0)) : Number(t.points || 0)), 0))
+        : custLoyaltyPoints;
+
+      const advDiff = Math.abs(calculatedAdvance - storedAdvance) > 0.001;
+      const loyDiff = custTxs.length > 0 && Math.abs(custLoyaltyPoints - calculatedLoyalty) > 0.001;
+
+      if (advDiff || loyDiff) {
         await supabase
           .from('customers')
           .update({
             advance_balance: calculatedAdvance,
-            loyalty_points: custLoyaltyPoints
+            loyalty_points: calculatedLoyalty
           })
           .eq('id', cust.id);
 
@@ -5728,10 +5753,11 @@ _(Points will be credited upon bill settlement)_`;
     const opening_advance_pool = latestClosing && latestClosing.closing_advance_pool !== undefined
       ? Number(latestClosing.closing_advance_pool || 0)
       : 0;
-    const current_advance_received = payments
-      .filter(p => !p.bill_id && (p.notes?.toLowerCase().includes('advance') || p.payment_method?.toLowerCase().includes('advance')))
-      .reduce((sum, p) => sum + Number(p.amount || 0), 0);
-    const current_advance_utilized = Math.max(0, Number((opening_advance_pool + current_advance_received - customer_advances_total).toFixed(2)));
+    const current_advance_utilized = bills.reduce((sum, b) => sum + Number(b.advance_used || 0), 0);
+    const current_advance_received = bills.reduce((sum, b) => sum + Number(b.advance_earned || 0), 0) +
+      payments
+        .filter(p => !p.bill_id && (p.notes?.toLowerCase().includes('advance') || p.payment_method?.toLowerCase().includes('advance')))
+        .reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
     return {
       last_closed_session: latestClosing,
@@ -5865,12 +5891,13 @@ _(Points will be credited upon bill settlement)_`;
       ? Number(priorClosing.closing_advance_pool || 0)
       : 0;
 
-    const advance_received = rangePayments
-      .filter(p => !p.bill_id && (p.notes?.toLowerCase().includes('advance') || p.payment_method?.toLowerCase().includes('advance')))
-      .reduce((s, p) => s + Number(p.amount || 0), 0);
+    const advance_utilized = rangeBills.reduce((s, b) => s + Number(b.advance_used || 0), 0);
+    const advance_received = rangeBills.reduce((s, b) => s + Number(b.advance_earned || 0), 0) +
+      rangePayments
+        .filter(p => !p.bill_id && (p.notes?.toLowerCase().includes('advance') || p.payment_method?.toLowerCase().includes('advance')))
+        .reduce((s, p) => s + Number(p.amount || 0), 0);
 
     const closing_advance_pool = totalCurrentCustomerAdvance;
-    const advance_utilized = Math.max(0, Number((opening_advance_pool + advance_received - closing_advance_pool).toFixed(2)));
 
     return {
       from_date: fromDate,

@@ -22,12 +22,17 @@ import {
   Trash2,
   RefreshCw,
   X,
-  ChevronDown
+  ChevronDown,
+  ArrowLeft,
+  Lock
 } from 'lucide-react';
 
 function PaymentsContent() {
   const searchParams = useSearchParams();
   const initialCustomerId = searchParams.get('customerId') || '';
+  const returnTo = searchParams.get('returnTo');
+  const billId = searchParams.get('billId');
+  const billNumber = searchParams.get('billNumber');
 
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
@@ -232,6 +237,7 @@ function PaymentsContent() {
           customer_id: selectedCustomer.id,
           amount: cashVal,
           payment_method: 'Cash',
+          bill_id: billId || undefined,
           notes: combinedNotes
         });
       }
@@ -242,6 +248,7 @@ function PaymentsContent() {
           customer_id: selectedCustomer.id,
           amount: upiVal,
           payment_method: 'UPI',
+          bill_id: billId || undefined,
           notes: combinedNotes
         });
       }
@@ -350,6 +357,41 @@ function PaymentsContent() {
         </div>
       </div>
 
+      {/* Session Closing Due Clearance Notice */}
+      {returnTo === 'accounting' && (
+        <div className="bg-amber-50/90 border border-amber-300 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
+          <div className="flex items-start sm:items-center gap-3">
+            <div className="p-2 bg-amber-500 text-white rounded-lg shrink-0 mt-0.5 sm:mt-0">
+              <Lock size={16} />
+            </div>
+            <div>
+              <p className="font-bold text-amber-950 text-sm">
+                Session Closing Due Clearance
+              </p>
+              <p className="text-amber-800 mt-0.5">
+                {selectedCustomer ? (
+                  <>
+                    Clearing pending due for <strong className="text-amber-950 font-bold">{selectedCustomer.name}</strong> {billNumber ? `(Bill #${billNumber})` : ''}.
+                    Enter received Cash or UPI below to settle dues before completing your accounting session.
+                  </>
+                ) : (
+                  <>
+                    Select the customer below to collect payment and clear dues before completing your accounting session.
+                  </>
+                )}
+              </p>
+            </div>
+          </div>
+          <Link
+            href="/accounting?reopenClose=true"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-white border border-amber-300 hover:bg-amber-100 text-amber-950 font-bold rounded-lg text-xs shrink-0 transition shadow-2xs"
+          >
+            <ArrowLeft size={14} />
+            <span>Return to Accounting</span>
+          </Link>
+        </div>
+      )}
+
       {/* Status Alerts */}
       {errorMsg && (
         <div className="bg-rose-50 border-l-4 border-rose-500 p-4 rounded-r-lg flex items-center space-x-2 text-rose-800 text-xs font-medium">
@@ -359,9 +401,19 @@ function PaymentsContent() {
       )}
 
       {successMsg && (
-        <div className="bg-emerald-50 border-l-4 border-emerald-500 p-4 rounded-r-lg flex items-center space-x-2 text-emerald-800 text-xs font-medium">
-          <CheckCircle2 size={16} className="text-emerald-600 flex-shrink-0" />
-          <span>{successMsg}</span>
+        <div className="bg-emerald-50 border-l-4 border-emerald-500 p-4 rounded-r-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-emerald-800 text-xs font-medium">
+          <div className="flex items-center space-x-2">
+            <CheckCircle2 size={16} className="text-emerald-600 flex-shrink-0" />
+            <span>{successMsg}</span>
+          </div>
+          {returnTo === 'accounting' && (
+            <Link
+              href="/accounting?reopenClose=true"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs shrink-0 transition shadow-xs"
+            >
+              <span>Return to Session Closing →</span>
+            </Link>
+          )}
         </div>
       )}
 

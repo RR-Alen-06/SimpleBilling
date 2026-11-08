@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { ApiService } from '@/lib/services/api';
 import { 
   InternalTransfer, 
@@ -59,8 +60,10 @@ interface LedgerRow {
 }
 
 export default function AccountingPage() {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<'daybook' | 'transfers' | 'closings'>('daybook');
   const [loading, setLoading] = useState(true);
+  const [shouldAutoOpenClose, setShouldAutoOpenClose] = useState(false);
   const [sessionStatus, setSessionStatus] = useState<CurrentSessionStatus | null>(null);
   const [closings, setClosings] = useState<AccountingClosing[]>([]);
   const [transfers, setTransfers] = useState<InternalTransfer[]>([]);
@@ -386,7 +389,7 @@ export default function AccountingPage() {
   }, [dateFilter, customFrom, customTo]);
 
   // Open Close Session Modal
-  const handleOpenCloseModal = async () => {
+  const handleOpenCloseModal = useCallback(async () => {
     setCloseAdminPin('');
     setDiscrepancyNote('');
     setFeedback(null);
@@ -408,7 +411,25 @@ export default function AccountingPage() {
     } catch (err) {
       console.error('Failed to calculate reconciliation:', err);
     }
-  };
+  }, [sessionStatus]);
+
+  // Handle return from Payment Collection workflow
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('reopenClose') === 'true') {
+        setShouldAutoOpenClose(true);
+        window.history.replaceState({}, '', '/accounting');
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (shouldAutoOpenClose && !loading && sessionStatus) {
+      setShouldAutoOpenClose(false);
+      handleOpenCloseModal();
+    }
+  }, [shouldAutoOpenClose, loading, sessionStatus, handleOpenCloseModal]);
 
   // Helper to compute exact ISO cutoff: current time if today, or local shop midnight (23:59:59.999) if past date
   const computeCutoffIso = (dateStr: string, isCustom: boolean) => {
@@ -622,6 +643,48 @@ export default function AccountingPage() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  // Navigate to Payment tab to clear due for selected customer
+  const handleGoToCustomerPayment = async (ub: UnpaidSessionBill) => {
+    let targetCustomerId = ub.customer_id;
+
+    if (!targetCustomerId && ub.customer_name && ub.customer_name !== 'Walk-in' && ub.customer_name !== 'Counter Customer') {
+      try {
+        const customers = await ApiService.getCustomers();
+        const match = customers.find(c =>
+          (ub.customer_mobile && c.mobile === ub.customer_mobile) ||
+          c.name.trim().toLowerCase() === ub.customer_name?.trim().toLowerCase()
+        );
+        if (match) {
+          targetCustomerId = match.id;
+        } else {
+          const created = await ApiService.addCustomer({
+            name: ub.customer_name.trim(),
+            mobile: ub.customer_mobile || undefined
+          });
+          targetCustomerId = created.id;
+        }
+      } catch (e) {
+        console.error('Error finding/creating customer for due payment:', e);
+      }
+    }
+
+    setShowCloseModal(false);
+
+    const params = new URLSearchParams();
+    if (targetCustomerId) {
+      params.set('customerId', targetCustomerId);
+    }
+    if (ub.id) {
+      params.set('billId', ub.id);
+    }
+    if (ub.bill_number) {
+      params.set('billNumber', ub.bill_number);
+    }
+    params.set('returnTo', 'accounting');
+
+    router.push(`/payments?${params.toString()}`);
   };
 
   // Quick Settle Bill Due inside Close Session Modal
@@ -1939,10 +2002,23 @@ export default function AccountingPage() {
                               <span className="font-mono font-extrabold text-rose-600 text-sm">₹{ub.due_amount.toFixed(2)}</span>
                             </div>
 
+                            {Number(ub.customer_advance || 0) > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenSettleBill(ub)}
+                                className="px-2 py-1 text-xs font-bold text-teal-800 bg-teal-100 hover:bg-teal-200 border border-teal-300 rounded-lg shadow-2xs flex items-center gap-1 cursor-pointer transition"
+                                title="Apply customer unspent advance balance directly to settle this bill"
+                              >
+                                <Wallet size={12} />
+                                <span>Use Advance</span>
+                              </button>
+                            )}
+
                             <button
                               type="button"
-                              onClick={() => handleOpenSettleBill(ub)}
+                              onClick={() => handleGoToCustomerPayment(ub)}
                               className="px-2.5 py-1 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg shadow-xs flex items-center gap-1 cursor-pointer transition"
+                              title="Go to Payment Collection page to collect cash or UPI"
                             >
                               <CheckCircle2 size={12} />
                               <span>Clear Due</span>
