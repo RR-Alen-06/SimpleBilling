@@ -19,16 +19,20 @@ import {
   Clock, 
   History,
   Eye,
-  RotateCcw,
   Trash2,
   RefreshCw,
   X,
-  ChevronDown
+  ChevronDown,
+  ArrowLeft,
+  Lock
 } from 'lucide-react';
 
 function PaymentsContent() {
   const searchParams = useSearchParams();
   const initialCustomerId = searchParams.get('customerId') || '';
+  const returnTo = searchParams.get('returnTo');
+  const billId = searchParams.get('billId');
+  const billNumber = searchParams.get('billNumber');
 
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
@@ -55,6 +59,7 @@ function PaymentsContent() {
 
   // Custom Dropdown State
   const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false);
+  const [customerDropdownSearch, setCustomerDropdownSearch] = useState('');
   const customerDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -72,6 +77,7 @@ function PaymentsContent() {
   const [successMsg, setSuccessMsg] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [paymentStatusTab, setPaymentStatusTab] = useState<'ALL' | 'ACTIVE' | 'REVERSED'>('ALL');
+  const [showAllPayments, setShowAllPayments] = useState(true);
 
   const loadData = async () => {
     setLoading(true);
@@ -97,6 +103,7 @@ function PaymentsContent() {
     setDeletePin('');
     setOverride48h(false);
     const reversalWindowHours = Number(settings?.security?.payment_reversal_window_hours) || 72;
+    // eslint-disable-next-line react-hooks/purity
     setIsDeletionPastLimit((Date.now() - new Date(payment.created_at).getTime()) > reversalWindowHours * 3600 * 1000);
     setErrorMsg('');
     setSuccessMsg('');
@@ -157,13 +164,11 @@ function PaymentsContent() {
   };
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadData();
   }, []);
 
   useEffect(() => {
     if (initialCustomerId) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedCustomerId(initialCustomerId);
     }
   }, [initialCustomerId]);
@@ -232,6 +237,7 @@ function PaymentsContent() {
           customer_id: selectedCustomer.id,
           amount: cashVal,
           payment_method: 'Cash',
+          bill_id: billId || undefined,
           notes: combinedNotes
         });
       }
@@ -242,6 +248,7 @@ function PaymentsContent() {
           customer_id: selectedCustomer.id,
           amount: upiVal,
           payment_method: 'UPI',
+          bill_id: billId || undefined,
           notes: combinedNotes
         });
       }
@@ -270,8 +277,13 @@ function PaymentsContent() {
     }
   };
 
-  // Customers with pending dues
-  const customersWithDues = customers.filter(c => c.balance_due > 0);
+  // Customers with pending dues (and filtered for dropdown search)
+  const dropdownFilteredCustomers = customers.filter(c =>
+    c.name.toLowerCase().includes(customerDropdownSearch.trim().toLowerCase()) ||
+    (c.mobile && c.mobile.includes(customerDropdownSearch.trim()))
+  );
+  const customersWithDues = dropdownFilteredCustomers.filter(c => c.balance_due > 0);
+  const otherDropdownCustomers = dropdownFilteredCustomers.filter(c => c.balance_due <= 0);
 
   // Counts
   const totalPaymentsCount = payments.length;
@@ -299,6 +311,8 @@ function PaymentsContent() {
       (p.cancellation_reason && p.cancellation_reason.toLowerCase().includes(term))
     );
   });
+
+  const displayedPayments = showAllPayments ? filteredPayments : filteredPayments.slice(0, 30);
 
   return (
     <div className="space-y-6">
@@ -343,6 +357,41 @@ function PaymentsContent() {
         </div>
       </div>
 
+      {/* Session Closing Due Clearance Notice */}
+      {returnTo === 'accounting' && (
+        <div className="bg-amber-50/90 border border-amber-300 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
+          <div className="flex items-start sm:items-center gap-3">
+            <div className="p-2 bg-amber-500 text-white rounded-lg shrink-0 mt-0.5 sm:mt-0">
+              <Lock size={16} />
+            </div>
+            <div>
+              <p className="font-bold text-amber-950 text-sm">
+                Session Closing Due Clearance
+              </p>
+              <p className="text-amber-800 mt-0.5">
+                {selectedCustomer ? (
+                  <>
+                    Clearing pending due for <strong className="text-amber-950 font-bold">{selectedCustomer.name}</strong> {billNumber ? `(Bill #${billNumber})` : ''}.
+                    Enter received Cash or UPI below to settle dues before completing your accounting session.
+                  </>
+                ) : (
+                  <>
+                    Select the customer below to collect payment and clear dues before completing your accounting session.
+                  </>
+                )}
+              </p>
+            </div>
+          </div>
+          <Link
+            href="/accounting?reopenClose=true"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-white border border-amber-300 hover:bg-amber-100 text-amber-950 font-bold rounded-lg text-xs shrink-0 transition shadow-2xs"
+          >
+            <ArrowLeft size={14} />
+            <span>Return to Accounting</span>
+          </Link>
+        </div>
+      )}
+
       {/* Status Alerts */}
       {errorMsg && (
         <div className="bg-rose-50 border-l-4 border-rose-500 p-4 rounded-r-lg flex items-center space-x-2 text-rose-800 text-xs font-medium">
@@ -352,9 +401,19 @@ function PaymentsContent() {
       )}
 
       {successMsg && (
-        <div className="bg-emerald-50 border-l-4 border-emerald-500 p-4 rounded-r-lg flex items-center space-x-2 text-emerald-800 text-xs font-medium">
-          <CheckCircle2 size={16} className="text-emerald-600 flex-shrink-0" />
-          <span>{successMsg}</span>
+        <div className="bg-emerald-50 border-l-4 border-emerald-500 p-4 rounded-r-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-emerald-800 text-xs font-medium">
+          <div className="flex items-center space-x-2">
+            <CheckCircle2 size={16} className="text-emerald-600 flex-shrink-0" />
+            <span>{successMsg}</span>
+          </div>
+          {returnTo === 'accounting' && (
+            <Link
+              href="/accounting?reopenClose=true"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs shrink-0 transition shadow-xs"
+            >
+              <span>Return to Session Closing →</span>
+            </Link>
+          )}
         </div>
       )}
 
@@ -390,7 +449,20 @@ function PaymentsContent() {
                   </button>
 
                   {customerDropdownOpen && (
-                    <div className="absolute top-full left-0 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto divide-y divide-slate-100 animate-in fade-in duration-100">
+                    <div className="absolute top-full left-0 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 max-h-72 overflow-y-auto divide-y divide-slate-100 animate-in fade-in duration-100">
+                      <div className="sticky top-0 bg-white p-2 border-b border-slate-100 z-10">
+                        <div className="flex items-center space-x-2 bg-slate-50 border border-slate-200 rounded-md px-2.5 py-1.5">
+                          <Search size={14} className="text-slate-400 shrink-0" />
+                          <input
+                            type="text"
+                            autoFocus
+                            placeholder="Search customer name or mobile..."
+                            value={customerDropdownSearch}
+                            onChange={(e) => setCustomerDropdownSearch(e.target.value)}
+                            className="w-full bg-transparent text-xs text-slate-800 focus:outline-none"
+                          />
+                        </div>
+                      </div>
                       <button
                         type="button"
                         onClick={() => {
@@ -401,6 +473,12 @@ function PaymentsContent() {
                       >
                         -- Choose Customer --
                       </button>
+
+                      {dropdownFilteredCustomers.length === 0 && (
+                        <div className="p-4 text-center text-xs text-slate-500">
+                          No customer matching &ldquo;{customerDropdownSearch}&rdquo;.
+                        </div>
+                      )}
 
                       {customersWithDues.length > 0 && (
                         <div>
@@ -414,6 +492,7 @@ function PaymentsContent() {
                               onClick={() => {
                                 setSelectedCustomerId(c.id);
                                 setCustomerDropdownOpen(false);
+                                setCustomerDropdownSearch('');
                               }}
                               className={`w-full text-left px-3 py-2.5 text-xs transition flex items-center justify-between cursor-pointer ${
                                 selectedCustomerId === c.id
@@ -430,18 +509,19 @@ function PaymentsContent() {
                         </div>
                       )}
 
-                      {customers.filter(c => c.balance_due <= 0).length > 0 && (
+                      {otherDropdownCustomers.length > 0 && (
                         <div>
                           <div className="bg-slate-100 px-3 py-1 text-[10px] font-bold text-slate-600 uppercase tracking-wider">
                             All Other Customers
                           </div>
-                          {customers.filter(c => c.balance_due <= 0).map((c) => (
+                          {otherDropdownCustomers.map((c) => (
                             <button
                               key={c.id}
                               type="button"
                               onClick={() => {
                                 setSelectedCustomerId(c.id);
                                 setCustomerDropdownOpen(false);
+                                setCustomerDropdownSearch('');
                               }}
                               className={`w-full text-left px-3 py-2.5 text-xs transition flex items-center justify-between cursor-pointer ${
                                 selectedCustomerId === c.id
@@ -725,8 +805,9 @@ function PaymentsContent() {
                 <p>No payment records found.</p>
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse">
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
                   <thead>
                     <tr className="bg-slate-50 text-slate-600 uppercase font-bold border-b border-slate-200 text-[11px]">
                       <th className="py-2.5 px-3">Receipt / Payment ID</th>
@@ -740,7 +821,7 @@ function PaymentsContent() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {filteredPayments.slice(0, 30).map((pay) => {
+                    {displayedPayments.map((pay) => {
                       const isCancelled = pay.status === 'CANCELLED';
                       const isReversed = pay.status === 'REVERSED';
                       const isInactive = isCancelled || isReversed;
@@ -848,6 +929,24 @@ function PaymentsContent() {
                   </tbody>
                 </table>
               </div>
+
+                {filteredPayments.length > 0 && (
+                  <div className="flex items-center justify-between pt-3 border-t border-slate-100 text-xs text-slate-500">
+                    <span>
+                      Showing <strong className="text-slate-900 font-mono">{displayedPayments.length}</strong> of <strong className="text-slate-900 font-mono">{filteredPayments.length}</strong> payment transactions
+                    </span>
+                    {filteredPayments.length > 30 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowAllPayments(!showAllPayments)}
+                        className="font-bold text-blue-600 hover:text-blue-800 transition cursor-pointer"
+                      >
+                        {showAllPayments ? 'Show Compact (30)' : `Show All (${filteredPayments.length})`}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>

@@ -23,10 +23,7 @@ import {
   Smartphone,
   Wallet,
   CheckCircle2,
-  Lock,
-  BookOpen,
-  Clock,
-  ArrowRightLeft
+  BookOpen
 } from 'lucide-react';
 
 const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444'];
@@ -61,7 +58,7 @@ export default function DashboardPage() {
   });
   const [recentBills, setRecentBills] = useState<Bill[]>([]);
   const [settings, setSettings] = useState<AllSettings | null>(null);
-  const [sessionStatus, setSessionStatus] = useState<CurrentSessionStatus | null>(null);
+  const [_sessionStatus, setSessionStatus] = useState<CurrentSessionStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedBill, setSelectedBill] = useState<Bill | null>(null);
 
@@ -91,7 +88,6 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadDashboardData();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFilter, customFrom, customTo]);

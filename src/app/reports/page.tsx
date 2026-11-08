@@ -2,7 +2,15 @@
 
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '@/lib/services/api';
-import { Bill, CustomerSummary, DateFilterOption, AllSettings, Expense } from '@/lib/types';
+import { 
+  Bill, 
+  CustomerSummary, 
+  DateFilterOption, 
+  AllSettings, 
+  Expense, 
+  Payment, 
+  InternalTransfer 
+} from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { downloadCSV } from '@/lib/utils/csv';
 import { REPORTS_DATE_FILTER_BUTTONS } from '@/lib/constants/filters';
@@ -23,14 +31,17 @@ import {
   FileText,
   Loader2,
   DollarSign,
-  Sparkles
+  Sparkles,
+  ArrowRightLeft
 } from 'lucide-react';
 
 export default function ReportsPage() {
-  const [activeTab, setActiveTab] = useState<'sales' | 'dues' | 'items' | 'expenses'>('sales');
+  const [activeTab, setActiveTab] = useState<'sales' | 'dues' | 'items' | 'expenses' | 'cash_payers' | 'upi_payers' | 'transfers'>('sales');
   const [bills, setBills] = useState<Bill[]>([]);
   const [customers, setCustomers] = useState<CustomerSummary[]>([]);
   const [allExpenses, setAllExpenses] = useState<Expense[]>([]);
+  const [allPayments, setAllPayments] = useState<Payment[]>([]);
+  const [allTransfers, setAllTransfers] = useState<InternalTransfer[]>([]);
   const [settings, setSettings] = useState<AllSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [generatingPdf, setGeneratingPdf] = useState(false);
@@ -44,16 +55,20 @@ export default function ReportsPage() {
   const loadReportData = async () => {
     setLoading(true);
     try {
-      const [filteredBills, custSummaries, fetchedSettings, expensesData] = await Promise.all([
+      const [filteredBills, custSummaries, fetchedSettings, expensesData, paymentsData, transfersData] = await Promise.all([
         ApiService.getBillsByDateRange(dateFilter, { from: customFrom, to: customTo }),
         ApiService.getCustomerSummaries(),
         ApiService.getSettings(),
-        ApiService.getExpenses()
+        ApiService.getExpenses(),
+        ApiService.getPayments(),
+        ApiService.getInternalTransfers()
       ]);
       setBills(filteredBills);
       setCustomers(custSummaries);
       setSettings(fetchedSettings);
       setAllExpenses(expensesData || []);
+      setAllPayments(paymentsData || []);
+      setAllTransfers(transfersData || []);
     } catch (err) {
       console.error('Error fetching report data:', err);
     } finally {
@@ -62,17 +77,16 @@ export default function ReportsPage() {
   };
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadReportData();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFilter, customFrom, customTo]);
 
-  // Helper to filter expenses by the active date range
-  const filterExpenses = (items: Expense[], filter: DateFilterOption, range?: { from?: string; to?: string }) => {
+  // Helper to filter any time-stamped array by the active date range
+  const filterByDate = <T extends { created_at: string }>(items: T[], filter: DateFilterOption, range?: { from?: string; to?: string }) => {
     if (filter === 'all_time') return items;
     const now = new Date();
-    return items.filter(exp => {
-      const d = new Date(exp.created_at);
+    return items.filter(it => {
+      const d = new Date(it.created_at);
       if (isNaN(d.getTime())) return true;
       if (filter === 'today') return d.toDateString() === now.toDateString();
       if (filter === 'yesterday') {
@@ -114,13 +128,64 @@ export default function ReportsPage() {
     });
   };
 
-  const periodExpenses = filterExpenses(allExpenses, dateFilter, { from: customFrom, to: customTo });
+  const periodExpenses = filterByDate(allExpenses, dateFilter, { from: customFrom, to: customTo });
+  const periodPayments = filterByDate(allPayments.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED'), dateFilter, { from: customFrom, to: customTo });
+  const periodTransfers = filterByDate(allTransfers, dateFilter, { from: customFrom, to: customTo });
+
+  // Cash Payers: customer bills paid in cash + standalone / dues payments in cash
+  const cashPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
+  bills.forEach(b => {
+    if (Number(b.cash_paid || 0) > 0) {
+      cashPayers.push({
+        customer_name: b.customer_name || 'Walk-in Customer',
+        ref: b.bill_number,
+        date: b.created_at,
+        amount: Number(b.cash_paid || 0)
+      });
+    }
+  });
+  periodPayments.forEach(p => {
+    if (p.payment_method === 'Cash' && !p.notes?.toLowerCase().includes('initial')) {
+      cashPayers.push({
+        customer_name: p.customer_name || 'Customer',
+        ref: p.payment_number || 'PAY-—',
+        date: p.created_at,
+        amount: Number(p.amount || 0)
+      });
+    }
+  });
+  cashPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  // UPI Payers: customer bills paid via UPI + standalone / dues payments via UPI
+  const upiPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
+  bills.forEach(b => {
+    if (Number(b.upi_paid || 0) > 0) {
+      upiPayers.push({
+        customer_name: b.customer_name || 'Walk-in Customer',
+        ref: b.bill_number,
+        date: b.created_at,
+        amount: Number(b.upi_paid || 0)
+      });
+    }
+  });
+  periodPayments.forEach(p => {
+    if (p.payment_method === 'UPI' && !p.notes?.toLowerCase().includes('initial')) {
+      upiPayers.push({
+        customer_name: p.customer_name || 'Customer',
+        ref: p.payment_number || 'PAY-—',
+        date: p.created_at,
+        amount: Number(p.amount || 0)
+      });
+    }
+  });
+  upiPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   // Aggregate Metrics for Current Filter
   const totalSales = bills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
   const totalPaid = bills.reduce((sum, b) => sum + Math.min(Number(b.grand_total || 0), Number(b.paid_total || 0)), 0);
   const cashTotal = bills.reduce((sum, b) => sum + Number(b.cash_paid || 0), 0);
   const upiTotal = bills.reduce((sum, b) => sum + Number(b.upi_paid || 0), 0);
+  const advanceUsedTotal = bills.reduce((sum, b) => sum + Number(b.advance_used || 0), 0);
   const totalTax = bills.reduce((sum, b) => sum + Number(b.gst_amount || 0), 0);
   const totalExpenses = periodExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
   const netProfit = totalSales - totalExpenses;
@@ -137,13 +202,18 @@ export default function ReportsPage() {
   }, 0);
   const avgBill = bills.length > 0 ? totalSales / bills.length : 0;
 
-  // Aggregate Product / Item sales
+  // Aggregate Product / Item sales with proportional discount deduction
   const itemMap = new Map<string, { name: string; qty: number; total: number }>();
   bills.forEach(b => {
+    const rawSubtotal = b.items?.reduce((s, it) => s + Number(it.total || 0), 0) || Number(b.total || 0);
+    const grandTotal = Number(b.grand_total || 0);
+    const factor = rawSubtotal > 0 ? (grandTotal / rawSubtotal) : 1;
+
     b.items?.forEach(it => {
       const existing = itemMap.get(it.product_name) || { name: it.product_name, qty: 0, total: 0 };
+      const netItemTotal = Number(it.total || 0) * factor;
       existing.qty += Number(it.quantity || 0);
-      existing.total += Number(it.total || 0);
+      existing.total += netItemTotal;
       itemMap.set(it.product_name, existing);
     });
   });
@@ -192,7 +262,10 @@ export default function ReportsPage() {
         bills,
         item_sales: itemSales,
         due_customers: dueCustomers,
-        expenses: periodExpenses
+        expenses: periodExpenses,
+        cash_payers: cashPayers,
+        upi_payers: upiPayers,
+        transfers: periodTransfers
       });
 
       const filename = `Business_Report_${dateFilter}_${new Date().toISOString().split('T')[0]}.pdf`;
@@ -226,19 +299,66 @@ export default function ReportsPage() {
         return sum + Math.max(0, g - p);
       }, 0);
 
-      // Aggregate Master Item Sales
+      // Aggregate Master Item Sales with proportional discount deduction
       const masterItemMap = new Map<string, { name: string; qty: number; total: number }>();
       allBills.forEach(b => {
+        const rawSubtotal = b.items?.reduce((s, it) => s + Number(it.total || 0), 0) || Number(b.total || 0);
+        const grandTotal = Number(b.grand_total || 0);
+        const factor = rawSubtotal > 0 ? (grandTotal / rawSubtotal) : 1;
+
         b.items?.forEach(it => {
           const existing = masterItemMap.get(it.product_name) || { name: it.product_name, qty: 0, total: 0 };
+          const netItemTotal = Number(it.total || 0) * factor;
           existing.qty += Number(it.quantity || 0);
-          existing.total += Number(it.total || 0);
+          existing.total += netItemTotal;
           masterItemMap.set(it.product_name, existing);
         });
       });
       const masterItemSales = Array.from(masterItemMap.values()).sort((a, b) => b.total - a.total);
       const masterDueCust = custSummaries.filter(c => c.balance_due > 0);
       const masterTotalDues = masterDueCust.reduce((sum, c) => sum + c.balance_due, 0);
+
+      const masterCashPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
+      const masterUpiPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
+      allBills.forEach(b => {
+        if (Number(b.cash_paid || 0) > 0) {
+          masterCashPayers.push({
+            customer_name: b.customer_name || 'Walk-in Customer',
+            ref: b.bill_number,
+            date: b.created_at,
+            amount: Number(b.cash_paid || 0)
+          });
+        }
+        if (Number(b.upi_paid || 0) > 0) {
+          masterUpiPayers.push({
+            customer_name: b.customer_name || 'Walk-in Customer',
+            ref: b.bill_number,
+            date: b.created_at,
+            amount: Number(b.upi_paid || 0)
+          });
+        }
+      });
+      allPayments.forEach(p => {
+        if (p.status !== 'CANCELLED' && p.status !== 'REVERSED' && !p.notes?.toLowerCase().includes('initial')) {
+          if (p.payment_method === 'Cash') {
+            masterCashPayers.push({
+              customer_name: p.customer_name || 'Customer',
+              ref: p.payment_number || 'PAY-—',
+              date: p.created_at,
+              amount: Number(p.amount || 0)
+            });
+          } else if (p.payment_method === 'UPI') {
+            masterUpiPayers.push({
+              customer_name: p.customer_name || 'Customer',
+              ref: p.payment_number || 'PAY-—',
+              date: p.created_at,
+              amount: Number(p.amount || 0)
+            });
+          }
+        }
+      });
+      masterCashPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      masterUpiPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
       const doc = BusinessReportGenerator.generateReportPdf({
         shop_settings: shopSettings,
@@ -261,7 +381,10 @@ export default function ReportsPage() {
         bills: allBills,
         item_sales: masterItemSales,
         due_customers: custSummaries,
-        expenses: allExp
+        expenses: allExp,
+        cash_payers: masterCashPayers,
+        upi_payers: masterUpiPayers,
+        transfers: allTransfers
       });
 
       doc.save(`MASTER_BUSINESS_REPORT_ALL_TIME_${new Date().toISOString().split('T')[0]}.pdf`);
@@ -273,9 +396,34 @@ export default function ReportsPage() {
   };
 
   // Full Multi-Section Consolidated CSV Export (Active Period or All-Time)
-  const handleExportFullCSV = (isMasterAllTime = false) => {
+  const handleExportFullCSV = async (isMasterAllTime = false) => {
     const filterLabel = isMasterAllTime ? 'ALL TIME (Master Database Export)' : getFilterLabel();
     const dateStr = new Date().toISOString().split('T')[0];
+
+    const exportBills = isMasterAllTime ? await ApiService.getBillsByDateRange('all_time') : bills;
+    const exportExpenses = isMasterAllTime ? allExpenses : periodExpenses;
+    const exportSales = exportBills.reduce((s, b) => s + Number(b.grand_total || 0), 0);
+    const exportPaid = exportBills.reduce((s, b) => s + Number(b.paid_total || 0), 0);
+    const exportTax = exportBills.reduce((s, b) => s + Number(b.gst_amount || 0), 0);
+    const exportCash = exportBills.reduce((s, b) => s + Number(b.cash_paid || 0), 0);
+    const exportUpi = exportBills.reduce((s, b) => s + Number(b.upi_paid || 0), 0);
+    const exportPending = exportBills.reduce((s, b) => s + Math.max(0, Number(b.grand_total || 0) - Number(b.paid_total || 0)), 0);
+    const exportExpTotal = exportExpenses.reduce((s, e) => s + Number(e.amount || 0), 0);
+    const exportNetProfit = exportPaid - exportExpTotal;
+    const exportAvgBill = exportBills.length > 0 ? exportSales / exportBills.length : 0;
+
+    const exportItemSalesMap = new Map<string, { name: string; qty: number; total: number }>();
+    exportBills.forEach(bill => {
+      (bill.items || []).forEach(it => {
+        const existing = exportItemSalesMap.get(it.product_name) || { name: it.product_name, qty: 0, total: 0 };
+        exportItemSalesMap.set(it.product_name, {
+          name: it.product_name,
+          qty: existing.qty + Number(it.quantity || 0),
+          total: existing.total + Number(it.total || 0)
+        });
+      });
+    });
+    const exportItemSales = Array.from(exportItemSalesMap.values()).sort((a, b) => b.total - a.total);
     
     const lines: string[] = [];
     
@@ -287,34 +435,34 @@ export default function ReportsPage() {
     // 1. Executive Summary & Net Profit
     lines.push('"--- 1. EXECUTIVE FINANCIAL SUMMARY & NET PROFIT ---"');
     lines.push('"Metric","Value (INR / Count)"');
-    lines.push(`"Total Revenue / Invoiced (INR)","${totalSales.toFixed(2)}"`);
-    lines.push(`"Total Collected by Shop (INR)","${totalPaid.toFixed(2)}"`);
-    lines.push(`"Total Operating Expenses (INR)","${totalExpenses.toFixed(2)}"`);
-    lines.push(`"Net Operating Profit / Margin (INR)","${netProfit.toFixed(2)}"`);
-    lines.push(`"GST / Tax Collected (INR)","${totalTax.toFixed(2)}"`);
-    lines.push(`"Cash Collections (INR)","${cashTotal.toFixed(2)}"`);
-    lines.push(`"UPI Collections (INR)","${upiTotal.toFixed(2)}"`);
-    lines.push(`"Period Unpaid Dues (INR)","${pendingTotal.toFixed(2)}"`);
-    lines.push(`"Total Invoices Generated","${bills.length}"`);
-    lines.push(`"Average Invoice Value (INR)","${avgBill.toFixed(2)}"`);
+    lines.push(`"Total Revenue / Invoiced (INR)","${exportSales.toFixed(2)}"`);
+    lines.push(`"Total Collected by Shop (INR)","${exportPaid.toFixed(2)}"`);
+    lines.push(`"Total Operating Expenses (INR)","${exportExpTotal.toFixed(2)}"`);
+    lines.push(`"Net Operating Profit / Margin (INR)","${exportNetProfit.toFixed(2)}"`);
+    lines.push(`"GST / Tax Collected (INR)","${exportTax.toFixed(2)}"`);
+    lines.push(`"Cash Collections (INR)","${exportCash.toFixed(2)}"`);
+    lines.push(`"UPI Collections (INR)","${exportUpi.toFixed(2)}"`);
+    lines.push(`"Period Unpaid Dues (INR)","${exportPending.toFixed(2)}"`);
+    lines.push(`"Total Invoices Generated","${exportBills.length}"`);
+    lines.push(`"Average Invoice Value (INR)","${exportAvgBill.toFixed(2)}"`);
     lines.push(`"Customers with Outstanding Dues","${dueCustomers.length}"`);
     lines.push(`"Total Ledger Dues Outstanding (INR)","${totalDuesAmount.toFixed(2)}"`);
     lines.push('');
 
     // 2. Sales Invoices Register
-    lines.push(`"--- 2. SALES INVOICES REGISTER (${bills.length} Records) ---"`);
-    lines.push('"Bill Number","Date Time","Customer Name","Mobile","Payment Mode","Grand Total (INR)","Paid Total (INR)","Pending Balance (INR)","Status"');
-    bills.forEach(b => {
+    lines.push(`"--- 2. SALES INVOICES REGISTER (${exportBills.length} Records) ---"`);
+    lines.push('"Bill Number","Date Time","Customer Name","Mobile","Payment Mode","Grand Total (INR)","Cash Paid (INR)","UPI Paid (INR)","Advance Used (INR)","Paid Total (INR)","Pending Balance (INR)","Status"');
+    exportBills.forEach(b => {
       const isPaid = Number(b.paid_total || 0) >= Number(b.grand_total || 0) - 0.01;
       const pendingAmt = Math.max(0, Number(b.grand_total || 0) - Number(b.paid_total || 0));
-      lines.push(`"${b.bill_number}","${new Date(b.created_at).toLocaleString('en-IN')}","${(b.customer_name || 'Walk-in').replace(/"/g, '""')}","${b.customer_mobile || ''}","${b.payment_method || 'Cash'}","${Number(b.grand_total || 0).toFixed(2)}","${Number(b.paid_total || 0).toFixed(2)}","${pendingAmt.toFixed(2)}","${isPaid ? 'Paid' : 'Pending'}"`);
+      lines.push(`"${b.bill_number}","${new Date(b.created_at).toLocaleString('en-IN')}","${(b.customer_name || 'Walk-in').replace(/"/g, '""')}","${b.customer_mobile || ''}","${b.payment_method || 'Cash'}","${Number(b.grand_total || 0).toFixed(2)}","${Number(b.cash_paid || 0).toFixed(2)}","${Number(b.upi_paid || 0).toFixed(2)}","${Number(b.advance_used || 0).toFixed(2)}","${Number(b.paid_total || 0).toFixed(2)}","${pendingAmt.toFixed(2)}","${isPaid ? 'Paid' : 'Pending'}"`);
     });
     lines.push('');
 
     // 3. Item Sales Volume
-    lines.push(`"--- 3. ITEM & SERVICE SALES VOLUME (${itemSales.length} Products) ---"`);
+    lines.push(`"--- 3. ITEM & SERVICE SALES VOLUME (${exportItemSales.length} Products) ---"`);
     lines.push('"Product / Service Name","Quantity Sold","Revenue Generated (INR)"');
-    itemSales.forEach(it => {
+    exportItemSales.forEach(it => {
       lines.push(`"${it.name.replace(/"/g, '""')}","${it.qty}","${it.total.toFixed(2)}"`);
     });
     lines.push('');
@@ -328,10 +476,10 @@ export default function ReportsPage() {
     lines.push('');
 
     // 5. Operating Expenses Register
-    if (periodExpenses.length > 0) {
-      lines.push(`"--- 5. OPERATING EXPENSES REGISTER (${periodExpenses.length} Records) ---"`);
+    if (exportExpenses.length > 0) {
+      lines.push(`"--- 5. OPERATING EXPENSES REGISTER (${exportExpenses.length} Records) ---"`);
       lines.push('"Expense Number","Date","Title / Description","Category","Payment Mode","Amount (INR)","Notes"');
-      periodExpenses.forEach(exp => {
+      exportExpenses.forEach(exp => {
         lines.push(`"${exp.expense_number || 'EXP'}","${new Date(exp.created_at).toLocaleDateString('en-IN')}","${exp.title.replace(/"/g, '""')}","${exp.category || 'General'}","${exp.payment_mode || 'Cash'}","${Number(exp.amount).toFixed(2)}","${(exp.notes || '').replace(/"/g, '""')}"`);
       });
     }
@@ -346,10 +494,10 @@ export default function ReportsPage() {
   };
 
   // Tab-Specific CSV Export
-  const handleExportTabCSV = () => {
+  const _handleExportTabCSV = () => {
     const filterLabel = dateFilter.replace('_', '-');
     if (activeTab === 'sales') {
-      const headers = ['Bill Number', 'Date Time', 'Customer', 'Customer Mobile', 'Payment Method', 'Cash (INR)', 'UPI (INR)', 'Grand Total (INR)', 'Paid Total (INR)', 'Status'];
+      const headers = ['Bill Number', 'Date Time', 'Customer', 'Customer Mobile', 'Payment Method', 'Cash (INR)', 'UPI (INR)', 'Advance Used (INR)', 'Grand Total (INR)', 'Paid Total (INR)', 'Status'];
       const rows = bills.map(b => [
         b.bill_number,
         new Date(b.created_at).toLocaleString('en-IN'),
@@ -358,6 +506,7 @@ export default function ReportsPage() {
         b.payment_method || 'Cash',
         b.cash_paid || 0,
         b.upi_paid || 0,
+        b.advance_used || 0,
         b.grand_total,
         b.paid_total,
         Number(b.paid_total) >= Number(b.grand_total) ? 'Paid' : 'Pending'
@@ -371,7 +520,7 @@ export default function ReportsPage() {
         it.total.toFixed(2)
       ]);
       downloadCSV(`Item_Sales_Volume_${filterLabel}`, headers, rows);
-    } else {
+    } else if (activeTab === 'dues') {
       const headers = ['Customer Name', 'Mobile Number', 'Email', 'Total Billed (INR)', 'Total Paid (INR)', 'Balance Due (INR)'];
       const rows = dueCustomers.map(c => [
         c.name,
@@ -382,6 +531,34 @@ export default function ReportsPage() {
         c.balance_due
       ]);
       downloadCSV(`Customer_Dues_Ledger_${new Date().toISOString().split('T')[0]}`, headers, rows);
+    } else if (activeTab === 'cash_payers') {
+      const headers = ['Customer / Entity', 'Reference / Bill #', 'Date & Time', 'Cash Received (INR)'];
+      const rows = cashPayers.map(cp => [
+        cp.customer_name,
+        cp.ref,
+        new Date(cp.date).toLocaleString('en-IN'),
+        cp.amount.toFixed(2)
+      ]);
+      downloadCSV(`Cash_Payers_${filterLabel}`, headers, rows);
+    } else if (activeTab === 'upi_payers') {
+      const headers = ['Customer / Entity', 'Reference / Bill #', 'Date & Time', 'UPI Received (INR)'];
+      const rows = upiPayers.map(up => [
+        up.customer_name,
+        up.ref,
+        new Date(up.date).toLocaleString('en-IN'),
+        up.amount.toFixed(2)
+      ]);
+      downloadCSV(`UPI_Payers_${filterLabel}`, headers, rows);
+    } else if (activeTab === 'transfers') {
+      const headers = ['Transfer #', 'Date & Time', 'Direction', 'Reason / Particulars', 'Amount (INR)'];
+      const rows = periodTransfers.map(tr => [
+        tr.transfer_number || 'TRANS-—',
+        new Date(tr.created_at).toLocaleString('en-IN'),
+        tr.direction === 'CASH_TO_UPI' ? 'Cash to UPI' : 'UPI to Cash',
+        tr.reason,
+        Number(tr.amount || 0).toFixed(2)
+      ]);
+      downloadCSV(`Contra_Transfers_${filterLabel}`, headers, rows);
     }
   };
 
@@ -531,7 +708,7 @@ export default function ReportsPage() {
       </div>
 
       {/* METRIC CARDS STRIP */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8 gap-3">
         {/* Total Sales */}
         <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-1">
           <div className="text-slate-500 text-[11px] font-bold uppercase tracking-wider flex items-center space-x-1">
@@ -582,6 +759,16 @@ export default function ReportsPage() {
           </div>
           <div className="text-base sm:text-lg font-extrabold text-indigo-700">₹{upiTotal.toFixed(2)}</div>
           <div className="text-[10px] text-slate-400 font-medium">Digital collections</div>
+        </div>
+
+        {/* Advance Utilized */}
+        <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-1">
+          <div className="text-teal-700 text-[11px] font-bold uppercase tracking-wider flex items-center space-x-1">
+            <Wallet size={13} className="text-teal-600" />
+            <span>Advance Used</span>
+          </div>
+          <div className="text-base sm:text-lg font-extrabold text-teal-700">₹{advanceUsedTotal.toFixed(2)}</div>
+          <div className="text-[10px] text-slate-400 font-medium">Non-cash credit applied</div>
         </div>
 
         {/* Period Pending */}
@@ -654,6 +841,42 @@ export default function ReportsPage() {
           <TrendingUp size={16} className="rotate-180 text-rose-500" />
           <span>Operating Expenses ({periodExpenses.length})</span>
         </button>
+
+        <button
+          onClick={() => setActiveTab('cash_payers')}
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
+            activeTab === 'cash_payers'
+              ? 'bg-emerald-600 text-white shadow'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Wallet size={16} className={activeTab === 'cash_payers' ? 'text-white' : 'text-emerald-600'} />
+          <span>Cash Payers ({cashPayers.length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('upi_payers')}
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
+            activeTab === 'upi_payers'
+              ? 'bg-indigo-600 text-white shadow'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <CreditCard size={16} className={activeTab === 'upi_payers' ? 'text-white' : 'text-indigo-600'} />
+          <span>UPI Payers ({upiPayers.length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('transfers')}
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
+            activeTab === 'transfers'
+              ? 'bg-blue-600 text-white shadow'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <ArrowRightLeft size={16} className={activeTab === 'transfers' ? 'text-white' : 'text-blue-600'} />
+          <span>Contra Transfers ({periodTransfers.length})</span>
+        </button>
       </div>
 
       {/* REPORT CONTENT CARD */}
@@ -691,6 +914,7 @@ export default function ReportsPage() {
                       <th className="py-2.5 px-4">Payment</th>
                       <th className="py-2.5 px-4 text-right">Cash</th>
                       <th className="py-2.5 px-4 text-right">UPI</th>
+                      <th className="py-2.5 px-4 text-right">Advance</th>
                       <th className="py-2.5 px-4 text-right">Total (₹)</th>
                       <th className="py-2.5 px-4 text-center">Status</th>
                     </tr>
@@ -711,6 +935,9 @@ export default function ReportsPage() {
                           </td>
                           <td className="py-3 px-4 text-right text-xs font-mono text-indigo-700 font-semibold">
                             ₹{Number(b.upi_paid || 0).toFixed(2)}
+                          </td>
+                          <td className="py-3 px-4 text-right text-xs font-mono text-teal-700 font-semibold">
+                            {Number(b.advance_used || 0) > 0 ? `₹${Number(b.advance_used).toFixed(2)}` : '-'}
                           </td>
                           <td className="py-3 px-4 text-right font-extrabold text-slate-900">
                             ₹{Number(b.grand_total).toFixed(2)}
@@ -885,6 +1112,172 @@ export default function ReportsPage() {
                         </td>
                         <td className="py-3 px-4 text-xs font-semibold uppercase text-slate-600">{exp.payment_mode || 'Cash'}</td>
                         <td className="py-3 px-4 text-right font-extrabold text-rose-600">₹{Number(exp.amount).toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 5: CASH PAYERS BREAKDOWN */}
+        {activeTab === 'cash_payers' && (
+          <div className="space-y-4">
+            <div className="flex justify-between items-center pb-3 border-b border-slate-200">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">Cash Collections by Customer</h2>
+                <p className="text-xs text-slate-500">Detailed list of all customers and payers who paid in Cash</p>
+              </div>
+              <div className="text-right">
+                <span className="text-xs text-slate-500 uppercase font-semibold">Total Cash Collected</span>
+                <p className="text-xl font-extrabold text-emerald-600">₹{cashPayers.reduce((s, c) => s + c.amount, 0).toFixed(2)}</p>
+              </div>
+            </div>
+
+            {loading ? (
+              <div className="p-8 text-center text-slate-500 text-sm">Loading cash payers...</div>
+            ) : cashPayers.length === 0 ? (
+              <div className="p-12 text-center text-slate-500">
+                <Wallet className="mx-auto text-slate-300 mb-2" size={40} />
+                <p className="font-medium text-slate-700">No cash payments recorded for this period.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-600 uppercase text-xs font-semibold border-b border-slate-200">
+                      <th className="py-2.5 px-4">Customer Name</th>
+                      <th className="py-2.5 px-4">Ref / Bill #</th>
+                      <th className="py-2.5 px-4">Date & Time</th>
+                      <th className="py-2.5 px-4 text-right">Cash Received (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {cashPayers.map((cp, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50 transition">
+                        <td className="py-3 px-4 font-bold text-slate-900">{cp.customer_name}</td>
+                        <td className="py-3 px-4 font-mono text-xs text-slate-700">{cp.ref}</td>
+                        <td className="py-3 px-4 text-xs text-slate-500 font-mono">
+                          {new Date(cp.date).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true })}
+                        </td>
+                        <td className="py-3 px-4 text-right font-extrabold text-emerald-600 font-mono">
+                          +₹{cp.amount.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 6: UPI PAYERS BREAKDOWN */}
+        {activeTab === 'upi_payers' && (
+          <div className="space-y-4">
+            <div className="flex justify-between items-center pb-3 border-b border-slate-200">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">UPI & Bank Collections by Customer</h2>
+                <p className="text-xs text-slate-500">Detailed list of all customers and payers who paid via UPI / Bank</p>
+              </div>
+              <div className="text-right">
+                <span className="text-xs text-slate-500 uppercase font-semibold">Total UPI Collected</span>
+                <p className="text-xl font-extrabold text-indigo-600">₹{upiPayers.reduce((s, u) => s + u.amount, 0).toFixed(2)}</p>
+              </div>
+            </div>
+
+            {loading ? (
+              <div className="p-8 text-center text-slate-500 text-sm">Loading UPI payers...</div>
+            ) : upiPayers.length === 0 ? (
+              <div className="p-12 text-center text-slate-500">
+                <CreditCard className="mx-auto text-slate-300 mb-2" size={40} />
+                <p className="font-medium text-slate-700">No UPI payments recorded for this period.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-600 uppercase text-xs font-semibold border-b border-slate-200">
+                      <th className="py-2.5 px-4">Customer Name</th>
+                      <th className="py-2.5 px-4">Ref / Bill #</th>
+                      <th className="py-2.5 px-4">Date & Time</th>
+                      <th className="py-2.5 px-4 text-right">UPI Received (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {upiPayers.map((up, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50 transition">
+                        <td className="py-3 px-4 font-bold text-slate-900">{up.customer_name}</td>
+                        <td className="py-3 px-4 font-mono text-xs text-slate-700">{up.ref}</td>
+                        <td className="py-3 px-4 text-xs text-slate-500 font-mono">
+                          {new Date(up.date).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true })}
+                        </td>
+                        <td className="py-3 px-4 text-right font-extrabold text-indigo-600 font-mono">
+                          +₹{up.amount.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 7: CONTRA TRANSFERS & CONVERSIONS */}
+        {activeTab === 'transfers' && (
+          <div className="space-y-4">
+            <div className="flex justify-between items-center pb-3 border-b border-slate-200">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">Contra Transfers & Conversions (Cash ⇄ UPI)</h2>
+                <p className="text-xs text-slate-500">Money transferred between cash drawer and UPI / bank accounts</p>
+              </div>
+              <div className="text-right">
+                <span className="text-xs text-slate-500 uppercase font-semibold">Total Transfers</span>
+                <p className="text-xl font-extrabold text-blue-600">{periodTransfers.length} records</p>
+              </div>
+            </div>
+
+            {loading ? (
+              <div className="p-8 text-center text-slate-500 text-sm">Loading transfers...</div>
+            ) : periodTransfers.length === 0 ? (
+              <div className="p-12 text-center text-slate-500">
+                <ArrowRightLeft className="mx-auto text-slate-300 mb-2" size={40} />
+                <p className="font-medium text-slate-700">No transfers recorded for this period.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-600 uppercase text-xs font-semibold border-b border-slate-200">
+                      <th className="py-2.5 px-4">Transfer #</th>
+                      <th className="py-2.5 px-4">Date & Time</th>
+                      <th className="py-2.5 px-4">Conversion Direction</th>
+                      <th className="py-2.5 px-4">Reason / Notes</th>
+                      <th className="py-2.5 px-4 text-right">Amount (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {periodTransfers.map((tr) => (
+                      <tr key={tr.id} className="hover:bg-slate-50 transition">
+                        <td className="py-3 px-4 font-mono font-bold text-slate-900">{tr.transfer_number || 'TRANS-—'}</td>
+                        <td className="py-3 px-4 text-xs text-slate-500 font-mono">
+                          {new Date(tr.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true })}
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${
+                            tr.direction === 'CASH_TO_UPI'
+                              ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                              : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                          }`}>
+                            {tr.direction === 'CASH_TO_UPI' ? 'Cash -> UPI (Deposit)' : 'UPI -> Cash (Withdrawal)'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-xs text-slate-700 font-medium">{tr.reason}</td>
+                        <td className="py-3 px-4 text-right font-extrabold text-slate-900 font-mono">
+                          ₹{Number(tr.amount).toFixed(2)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

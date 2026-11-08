@@ -19,7 +19,6 @@ import {
 } from 'lucide-react';
 import { InvoicePdfGenerator } from '@/lib/services/invoicePdfGenerator';
 import { jsPDF } from 'jspdf';
-import emailjs from '@emailjs/browser';
 
 interface InvoiceModalProps {
   bill: Bill | null;
@@ -56,7 +55,6 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
   useEffect(() => {
     let active = true;
     if (bill && !bill.financial_summary) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoadingSummary(true);
       ApiService.getBillFinancialSummary(bill).then(summary => {
         if (active) {
@@ -210,18 +208,6 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
       return;
     }
 
-    const serviceId = waConfig.email_service_id;
-    const templateId = waConfig.email_template_id;
-    const publicKey = waConfig.email_public_key;
-
-    if (!serviceId || !templateId || !publicKey) {
-      setToastMsg({ 
-        text: 'EmailJS not configured in Settings → Share & Notifications.', 
-        type: 'error' 
-      });
-      return;
-    }
-
     setSendingEmail(true);
     try {
       const result = await generatePdfInstance();
@@ -231,10 +217,10 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
       const emailHtml = ApiService.generateEmailHtmlReceipt(bill, summary, shop);
       const emailText = ApiService.generateDigitalReceiptText(bill, summary, shop);
 
-      await emailjs.send(
-        serviceId,
-        templateId,
-        {
+      const response = await fetch('/api/send-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           to_email: customerEmail,
           bill_number: bill.bill_number,
           customer_name: bill.customer_name || 'Valued Customer',
@@ -242,16 +228,23 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
           shop_name: shop.shop_name || 'Store',
           message_html: emailHtml,
           message_text: emailText,
-          pdf_attachment: pdfBase64
-        },
-        publicKey
-      );
+          pdf_attachment: pdfBase64,
+          customServiceId: waConfig.email_service_id,
+          customTemplateId: waConfig.email_template_id,
+          customPublicKey: waConfig.email_public_key,
+        }),
+      });
+
+      const resData = await response.json();
+      if (!response.ok) {
+        throw new Error(resData.error || 'Failed to dispatch email');
+      }
 
       setToastMsg({ text: `Email with PDF & full invoice sent to ${customerEmail}!`, type: 'success' });
     } catch (err: unknown) {
-      console.error('EmailJS send error:', err);
+      console.error('Email send error:', err);
       setToastMsg({ 
-        text: err instanceof Error ? err.message : 'Failed to send email. Check EmailJS keys in Settings.', 
+        text: err instanceof Error ? err.message : 'Failed to send email. Check Email credentials.', 
         type: 'error' 
       });
     } finally {
@@ -547,10 +540,12 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                   <span>Previous Outstanding:</span>
                   <span>₹{summary.previous_outstanding.toFixed(2)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span>Previous Advance:</span>
-                  <span>₹{summary.previous_advance.toFixed(2)}</span>
-                </div>
+                {summary.previous_advance > 0.009 && (
+                  <div className="flex justify-between text-teal-800">
+                    <span>Previous Advance:</span>
+                    <span>₹{summary.previous_advance.toFixed(2)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span>Current Bill:</span>
                   <span>₹{summary.current_bill_amount.toFixed(2)}</span>
@@ -603,10 +598,12 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                     <span>+₹{Number(bill.advance_earned).toFixed(2)}</span>
                   </div>
                 )}
-                <div className="flex justify-between">
-                  <span>Customer Advance Bal:</span>
-                  <span>₹{summary.remaining_advance_balance.toFixed(2)}</span>
-                </div>
+                {summary.remaining_advance_balance > 0.009 && (
+                  <div className="flex justify-between">
+                    <span>Customer Advance Wallet:</span>
+                    <span className="font-semibold text-teal-800">₹{summary.remaining_advance_balance.toFixed(2)}</span>
+                  </div>
+                )}
               </div>
 
               {/* 4. Loyalty Summary (If Enabled) */}
@@ -850,7 +847,13 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                       3. Balance Summary
                     </p>
                     <div className="flex justify-between items-center text-slate-700">
-                      <span>Remaining Balance:</span>
+                      <span>Current Bill Due:</span>
+                      <span className="font-semibold text-slate-800">
+                        ₹{Math.max(0, summary.current_bill_amount - summary.total_paid).toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center text-slate-700">
+                      <span>Net Account Balance:</span>
                       <span className={`font-extrabold ${isPending ? 'text-amber-700' : 'text-emerald-700'}`}>
                         ₹{summary.remaining_balance.toFixed(2)}
                       </span>
@@ -864,10 +867,12 @@ export function InvoiceModal({ bill, settings: propSettings, customerEmail: prop
                         <span>+₹{Number(bill.advance_earned).toFixed(2)}</span>
                       </div>
                     )}
-                    <div className="flex justify-between text-slate-600 pt-0.5 border-t border-slate-200/60">
-                      <span>Customer Advance:</span>
-                      <span className="font-semibold text-slate-800">₹{summary.remaining_advance_balance.toFixed(2)}</span>
-                    </div>
+                    {summary.remaining_advance_balance > 0.009 && (
+                      <div className="flex justify-between text-slate-600 pt-0.5 border-t border-slate-200/60">
+                        <span>Customer Advance:</span>
+                        <span className="font-semibold text-slate-800">₹{summary.remaining_advance_balance.toFixed(2)}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
 

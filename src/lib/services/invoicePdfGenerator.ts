@@ -263,7 +263,7 @@ export class InvoicePdfGenerator {
 
     // Card 1: Ledger Summary
     doc.setFillColor(248, 250, 252);
-    doc.roundedRect(margin, y, cardWidth, 36, 1.5, 1.5, 'FD');
+    doc.roundedRect(margin, y, cardWidth, 38, 1.5, 1.5, 'FD');
     doc.setFontSize(7);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(100, 116, 139);
@@ -282,7 +282,7 @@ export class InvoicePdfGenerator {
     // Card 2: Payment & Advance Summary
     const card2X = margin + cardWidth + 2;
     doc.setFillColor(248, 250, 252);
-    doc.roundedRect(card2X, y, cardWidth, 36, 1.5, 1.5, 'FD');
+    doc.roundedRect(card2X, y, cardWidth, 38, 1.5, 1.5, 'FD');
     doc.setFontSize(7);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(100, 116, 139);
@@ -291,25 +291,41 @@ export class InvoicePdfGenerator {
     doc.setFontSize(7.5);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(71, 85, 105);
-    doc.text(`Cash: Rs ${summary.cash_paid.toFixed(2)} | UPI: Rs ${summary.upi_paid.toFixed(2)}`, card2X + 3, y + 10);
-    doc.text(`Advance Used: Rs ${summary.advance_used.toFixed(2)}`, card2X + 3, y + 15);
-    doc.text(`Total Paid: Rs ${summary.total_paid.toFixed(2)}`, card2X + 3, y + 20);
+    let card2LineY = y + 9.5;
+    doc.text(`Cash: Rs ${summary.cash_paid.toFixed(2)} | UPI: Rs ${summary.upi_paid.toFixed(2)}`, card2X + 3, card2LineY);
 
+    card2LineY += 4.5;
+    doc.text(`Adv Used: Rs ${summary.advance_used.toFixed(2)} | Total Paid: Rs ${summary.total_paid.toFixed(2)}`, card2X + 3, card2LineY);
+
+    card2LineY += 4.5;
     doc.setFont('helvetica', 'bold');
-    if (summary.remaining_advance_balance > 0) {
-      doc.setTextColor(5, 150, 105);
-      doc.text(`Advance Credited: +Rs ${summary.remaining_advance_balance.toFixed(2)}`, card2X + 3, y + 26);
+    if (summary.remaining_balance > 0) {
+      doc.setTextColor(217, 119, 6);
+      doc.text(`Balance Due: Rs ${summary.remaining_balance.toFixed(2)}`, card2X + 3, card2LineY);
     } else {
-      doc.setTextColor(summary.remaining_balance > 0 ? 217 : 5, summary.remaining_balance > 0 ? 119 : 150, summary.remaining_balance > 0 ? 6 : 105);
-      doc.text(`Balance Due: Rs ${summary.remaining_balance.toFixed(2)}`, card2X + 3, y + 26);
+      doc.setTextColor(5, 150, 105);
+      doc.text(`Balance Due: Rs 0.00 (Cleared)`, card2X + 3, card2LineY);
     }
 
+    if (Number(bill.advance_earned || 0) > 0) {
+      card2LineY += 4.5;
+      doc.setTextColor(13, 148, 136);
+      doc.text(`Advance Credited (This Bill): +Rs ${Number(bill.advance_earned).toFixed(2)}`, card2X + 3, card2LineY);
+    }
+
+    if (summary.remaining_advance_balance > 0) {
+      card2LineY += 4.5;
+      doc.setTextColor(15, 118, 110);
+      doc.text(`Customer Advance Wallet: Rs ${summary.remaining_advance_balance.toFixed(2)}`, card2X + 3, card2LineY);
+    }
+
+    card2LineY += 4.5;
     doc.setFontSize(7);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(100, 116, 139);
-    doc.text(`Status: ${summary.payment_status}`, card2X + 3, y + 31);
+    doc.text(`Status: ${summary.payment_status}`, card2X + 3, card2LineY);
 
-    y += 40;
+    y += 42;
 
     // --- FOOTER & TERMS ---
     doc.setDrawColor(226, 232, 240);
@@ -469,14 +485,33 @@ export class InvoicePdfGenerator {
     doc.text(`Paid (Cash ${summary.cash_paid.toFixed(0)} | UPI ${summary.upi_paid.toFixed(0)}): Rs ${summary.total_paid.toFixed(2)}`, margin, y);
     y += 3.5;
 
+    if (summary.advance_used > 0) {
+      doc.text(`Advance Used: Rs ${summary.advance_used.toFixed(2)}`, margin, y);
+      y += 3.5;
+    }
+
+    if (summary.remaining_balance > 0) {
+      doc.setFont('courier', 'bold');
+      doc.text(`Remaining Due: Rs ${summary.remaining_balance.toFixed(2)}`, margin, y);
+      y += 3.5;
+    } else {
+      doc.setFont('courier', 'normal');
+      doc.text(`Balance Due: Rs 0.00`, margin, y);
+      y += 3.5;
+    }
+
+    if (Number(bill.advance_earned || 0) > 0) {
+      doc.setFont('courier', 'bold');
+      doc.text(`Advance Credited: +Rs ${Number(bill.advance_earned).toFixed(2)}`, margin, y);
+      y += 3.5;
+    }
+
     if (summary.remaining_advance_balance > 0) {
       doc.setFont('courier', 'bold');
-      doc.text(`Advance Credit: +Rs ${summary.remaining_advance_balance.toFixed(2)}`, margin, y);
-    } else {
-      doc.setFont('courier', 'bold');
-      doc.text(`Remaining Balance: Rs ${summary.remaining_balance.toFixed(2)}`, margin, y);
+      doc.text(`Customer Advance Wallet: Rs ${summary.remaining_advance_balance.toFixed(2)}`, margin, y);
+      y += 3.5;
     }
-    y += 4;
+    y += 0.5;
 
     doc.text('-'.repeat(paperWidthMm === 58 ? 26 : 38), paperWidthMm / 2, y, { align: 'center' });
     y += 3.5;

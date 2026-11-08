@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { ApiService } from '@/lib/services/api';
 import { 
   InternalTransfer, 
@@ -10,10 +11,13 @@ import {
   AllSettings,
   ExpenseCategory,
   ReconciliationCalculation,
-  UnpaidSessionBill
+  UnpaidSessionBill,
+  Bill,
+  Payment
 } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { AccountingStatementGenerator } from '@/lib/services/accountingStatementGenerator';
+import { CashBankBookPdfGenerator } from '@/lib/services/cashBankBookPdfGenerator';
 import { ACCOUNTING_DATE_FILTER_BUTTONS } from '@/lib/constants/filters';
 import { downloadCSV } from '@/lib/utils/csv';
 import { 
@@ -35,7 +39,8 @@ import {
   Edit3, 
   X,
   ArrowDownLeft,
-  ArrowUpRight
+  ArrowUpRight,
+  RotateCcw
 } from 'lucide-react';
 
 interface LedgerRow {
@@ -51,11 +56,14 @@ interface LedgerRow {
   upiOut: number;
   runningCash?: number;
   runningUpi?: number;
+  isDuplicateVoucher?: boolean;
 }
 
 export default function AccountingPage() {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<'daybook' | 'transfers' | 'closings'>('daybook');
   const [loading, setLoading] = useState(true);
+  const [shouldAutoOpenClose, setShouldAutoOpenClose] = useState(false);
   const [sessionStatus, setSessionStatus] = useState<CurrentSessionStatus | null>(null);
   const [closings, setClosings] = useState<AccountingClosing[]>([]);
   const [transfers, setTransfers] = useState<InternalTransfer[]>([]);
@@ -111,12 +119,29 @@ export default function AccountingPage() {
 
   // Quick Settle Bill Due Modal (Inside Session Close Wizard)
   const [settlingBill, setSettlingBill] = useState<UnpaidSessionBill | null>(null);
-  const [settlePaymentMethod, setSettlePaymentMethod] = useState<'Cash' | 'UPI'>('Cash');
+  const [settlePaymentMethod, setSettlePaymentMethod] = useState<'Cash' | 'UPI' | 'Advance'>('Cash');
   const [settlingAmount, setSettlingAmount] = useState<number | ''>('');
   const [settlingSubmitting, setSettlingSubmitting] = useState(false);
+  const [customReconcileRange, setCustomReconcileRange] = useState(false);
 
-  // Edit / Re-Audit Session Modal
+  // Edit / Re-Audit Session Modal State
   const [editingClosing, setEditingClosing] = useState<AccountingClosing | null>(null);
+  const [editActionType, setEditActionType] = useState<'EXPENSE' | 'TRANSFER' | 'BALANCES_ONLY'>('EXPENSE');
+  const [editExpenseTitle, setEditExpenseTitle] = useState('');
+  const [editExpenseAmount, setEditExpenseAmount] = useState<number | ''>('');
+  const [editExpenseCategory, setEditExpenseCategory] = useState('Shop Expense');
+  const [editExpensePaymentMode, setEditExpensePaymentMode] = useState<'Cash' | 'UPI' | 'Split'>('Cash');
+  const [editExpenseCashAmount, setEditExpenseCashAmount] = useState<number | ''>('');
+  const [editExpenseUpiAmount, setEditExpenseUpiAmount] = useState<number | ''>('');
+  const [editExpenseNotes, setEditExpenseNotes] = useState('');
+  const [editTransferDirection, setEditTransferDirection] = useState<'UPI_TO_CASH' | 'CASH_TO_UPI'>('UPI_TO_CASH');
+  const [editTransferAmount, setEditTransferAmount] = useState<number | ''>('');
+  const [editTransferReason, setEditTransferReason] = useState('ATM / Bank Cash Withdrawal');
+  const [editTransferRefNo, setEditTransferRefNo] = useState('');
+  const [editTransferNotes, setEditTransferNotes] = useState('');
+  const [editUseCustomTime, setEditUseCustomTime] = useState(false);
+  const [editCustomTimestamp, setEditCustomTimestamp] = useState('');
+  const [editOverrideActual, setEditOverrideActual] = useState(false);
   const [editActualCash, setEditActualCash] = useState<number | ''>('');
   const [editActualUpi, setEditActualUpi] = useState<number | ''>('');
   const [editDiscrepancyNote, setEditDiscrepancyNote] = useState('');
@@ -158,43 +183,110 @@ export default function AccountingPage() {
       // Reconstruct Day Book / Ledger Rows
       const rows: LedgerRow[] = [];
 
-      // Add Bills
-      billsData.forEach(b => {
-        const cashAmt = Number(b.cash_paid || 0);
-        const upiAmt = Number(b.upi_paid || 0);
-        if (cashAmt > 0 || upiAmt > 0) {
-          rows.push({
-            id: `bill_${b.id}`,
-            date: b.created_at,
-            type: 'BILL',
-            refNumber: b.bill_number,
-            description: `Sales Bill - ${b.customer_name || 'Counter Customer'}`,
-            mode: cashAmt > 0 && upiAmt > 0 ? 'Split' : (cashAmt > 0 ? 'Cash' : 'UPI'),
-            cashIn: cashAmt,
-            cashOut: 0,
-            upiIn: upiAmt,
-            upiOut: 0
-          });
+      // Active payments represent actual cash & UPI money received
+      const activePayments = paymentsData.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
+      const billsMap = new Map<string, Bill>(billsData.map(b => [b.id, b]));
+
+      // Identify initial checkout payment vouchers created automatically with bills
+      const initialPaymentByBillId = new Map<string, Payment>();
+      activePayments.forEach(p => {
+        if (p.bill_id && p.notes && p.notes.toLowerCase().includes('initial')) {
+          initialPaymentByBillId.set(p.bill_id, p);
         }
       });
 
-      // Add Customer Payments (excluding reversed/cancelled)
-      paymentsData.forEach(p => {
-        if (p.status !== 'CANCELLED' && p.status !== 'REVERSED') {
-          const amt = Number(p.amount || 0);
-          rows.push({
-            id: `pay_${p.id}`,
-            date: p.created_at,
-            type: 'PAYMENT',
-            refNumber: p.payment_number || 'PAY-—',
-            description: `Customer Dues Payment - ${p.customer_name || 'Customer'}`,
-            mode: p.payment_method || 'Cash',
-            cashIn: p.payment_method === 'Cash' ? amt : 0,
-            cashOut: 0,
-            upiIn: p.payment_method === 'UPI' ? amt : 0,
-            upiOut: 0
-          });
+      // Add Bills:
+      // When a bill is paid at checkout (via initial payment voucher or walk-in payment),
+      // the bill row directly displays its inflow (Cash In / UPI In).
+      // Credit sales display as "Pay Later" with 0 inflow, whose settlements later appear under PAY-xxxx vouchers.
+      billsData.forEach(b => {
+        const initialPay = initialPaymentByBillId.get(b.id);
+        const isWalkIn = !b.customer_id && Number(b.paid_total || 0) > 0;
+
+        let cashIn = 0;
+        let upiIn = 0;
+        let mode = b.payment_method || 'Pay Later';
+
+        if (initialPay) {
+          if (initialPay.payment_method === 'Cash') {
+            cashIn = Number(initialPay.amount);
+            mode = 'Cash';
+          } else if (initialPay.payment_method === 'UPI') {
+            upiIn = Number(initialPay.amount);
+            mode = 'UPI';
+          } else if (initialPay.payment_method === 'Split Payment') {
+            cashIn = Number(b.cash_paid || 0);
+            upiIn = Number(b.upi_paid || 0);
+            mode = 'Split';
+          }
+        } else if (isWalkIn) {
+          cashIn = Number(b.cash_paid || 0);
+          upiIn = Number(b.upi_paid || 0);
+          mode = cashIn > 0 && upiIn > 0 ? 'Split' : (cashIn > 0 ? 'Cash' : (upiIn > 0 ? 'UPI' : 'Pay Later'));
+        } else {
+          mode = 'Pay Later';
         }
+
+        const desc = b.customer_name
+          ? `Sales Bill - ${b.customer_name}`
+          : 'Sales Bill - Walk-in Customer';
+
+        rows.push({
+          id: `bill_${b.id}`,
+          date: b.created_at,
+          type: 'BILL',
+          refNumber: b.bill_number,
+          description: desc,
+          mode,
+          cashIn,
+          cashOut: 0,
+          upiIn,
+          upiOut: 0,
+          isDuplicateVoucher: false
+        });
+      });
+
+      // Add Payments:
+      // Initial checkout receipts are marked as duplicate vouchers so they don't double-count in ALL view (since the Bill already records the checkout inflow).
+      // Dues settlements and standalone receipts are primary inflow vouchers.
+      activePayments.forEach(p => {
+        const amt = Number(p.amount || 0);
+        const linkedBill = p.bill_id ? billsMap.get(p.bill_id) : null;
+        const isInitialCheckoutReceipt = Boolean(p.bill_id && p.notes && p.notes.toLowerCase().includes('initial'));
+
+        let desc = p.notes;
+        if (!desc || desc.startsWith('[')) {
+          desc = linkedBill 
+            ? `Bill Payment (${linkedBill.bill_number}) - ${p.customer_name || 'Customer'}`
+            : (p.notes ? `${p.notes} - ${p.customer_name || 'Customer'}` : `Customer Payment - ${p.customer_name || 'Customer'}`);
+        } else if (!desc.includes(p.customer_name || '')) {
+          desc = `${desc} - ${p.customer_name || 'Customer'}`;
+        }
+
+        let payCashIn = p.payment_method === 'Cash' ? amt : 0;
+        let payUpiIn = p.payment_method === 'UPI' ? amt : 0;
+        if (p.payment_method === 'Split Payment') {
+          if (linkedBill && (Number(linkedBill.cash_paid || 0) + Number(linkedBill.upi_paid || 0) > 0)) {
+            payCashIn = Number(linkedBill.cash_paid || 0);
+            payUpiIn = Number(linkedBill.upi_paid || 0);
+          } else {
+            payCashIn = amt;
+          }
+        }
+
+        rows.push({
+          id: `pay_${p.id}`,
+          date: p.created_at,
+          type: 'PAYMENT',
+          refNumber: p.payment_number || 'PAY-—',
+          description: desc,
+          mode: p.payment_method || 'Cash',
+          cashIn: payCashIn,
+          cashOut: 0,
+          upiIn: payUpiIn,
+          upiOut: 0,
+          isDuplicateVoucher: isInitialCheckoutReceipt
+        });
       });
 
       // Add Expenses
@@ -217,7 +309,8 @@ export default function AccountingPage() {
           cashIn: 0,
           cashOut: cashAmt,
           upiIn: 0,
-          upiOut: upiAmt
+          upiOut: upiAmt,
+          isDuplicateVoucher: false
         });
       });
 
@@ -235,7 +328,8 @@ export default function AccountingPage() {
             cashIn: 0,
             cashOut: amt,
             upiIn: amt,
-            upiOut: 0
+            upiOut: 0,
+            isDuplicateVoucher: false
           });
         } else {
           rows.push({
@@ -248,7 +342,8 @@ export default function AccountingPage() {
             cashIn: amt,
             cashOut: 0,
             upiIn: 0,
-            upiOut: amt
+            upiOut: amt,
+            isDuplicateVoucher: false
           });
         }
       });
@@ -256,14 +351,26 @@ export default function AccountingPage() {
       // Sort rows chronologically descending
       rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-      // Compute running balances chronologically ascending
-      const ascending = [...rows].reverse();
-      let runningCash = currentStatus.opening_cash;
-      let runningUpi = currentStatus.opening_upi;
+      // Compute running balances chronologically ascending (skipping duplicate vouchers to keep true drawer/bank balances).
+      // Prior closed session rows accumulate from 0; active open session rows start cleanly at opening_cash / opening_upi
+      // so the active session running balance always matches Cash in Drawer & UPI / Bank Balance 100%.
+      const ascending = [...rows].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      const activeSessionStartMs = new Date(currentStatus.session_start_date).getTime();
+      let runningCash = 0;
+      let runningUpi = 0;
+      let enteredActiveSession = false;
 
       ascending.forEach(row => {
-        runningCash += row.cashIn - row.cashOut;
-        runningUpi += row.upiIn - row.upiOut;
+        const rowMs = new Date(row.date).getTime();
+        if (!enteredActiveSession && rowMs > activeSessionStartMs) {
+          runningCash = currentStatus.opening_cash;
+          runningUpi = currentStatus.opening_upi;
+          enteredActiveSession = true;
+        }
+        if (!row.isDuplicateVoucher) {
+          runningCash += row.cashIn - row.cashOut;
+          runningUpi += row.upiIn - row.upiOut;
+        }
         row.runningCash = Number(runningCash.toFixed(2));
         row.runningUpi = Number(runningUpi.toFixed(2));
       });
@@ -282,14 +389,15 @@ export default function AccountingPage() {
   }, [dateFilter, customFrom, customTo]);
 
   // Open Close Session Modal
-  const handleOpenCloseModal = async () => {
+  const handleOpenCloseModal = useCallback(async () => {
     setCloseAdminPin('');
     setDiscrepancyNote('');
     setFeedback(null);
+    setCustomReconcileRange(false);
 
     const now = new Date();
     const defaultTo = now.toISOString();
-    const defaultFrom = sessionStatus?.session_start_date || '2026-01-01T00:00:00.000Z';
+    const defaultFrom = sessionStatus?.session_start_date || new Date().toISOString();
 
     setReconcileFromDate(defaultFrom.slice(0, 10));
     setReconcileToDate(defaultTo.slice(0, 10));
@@ -303,13 +411,43 @@ export default function AccountingPage() {
     } catch (err) {
       console.error('Failed to calculate reconciliation:', err);
     }
+  }, [sessionStatus]);
+
+  // Handle return from Payment Collection workflow
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('reopenClose') === 'true') {
+        setShouldAutoOpenClose(true);
+        window.history.replaceState({}, '', '/accounting');
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (shouldAutoOpenClose && !loading && sessionStatus) {
+      setShouldAutoOpenClose(false);
+      handleOpenCloseModal();
+    }
+  }, [shouldAutoOpenClose, loading, sessionStatus, handleOpenCloseModal]);
+
+  // Helper to compute exact ISO cutoff: current time if today, or local shop midnight (23:59:59.999) if past date
+  const computeCutoffIso = (dateStr: string, isCustom: boolean) => {
+    const todayDatePart = new Date().toISOString().slice(0, 10);
+    if (!isCustom || dateStr === todayDatePart) {
+      return new Date().toISOString();
+    }
+    const [y, m, d] = dateStr.split('-').map(Number);
+    return new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
   };
 
   // Re-calculate when closing date range changes
-  const handleRecalculateCloseRange = async (from: string, to: string) => {
+  const handleRecalculateCloseRange = async (from: string, to: string, isCustom = true) => {
     try {
-      const fromIso = `${from}T00:00:00.000Z`;
-      const toIso = `${to}T23:59:59.999Z`;
+      setCustomReconcileRange(isCustom);
+      const sessionStartIso = sessionStatus?.session_start_date || `${from}T00:00:00.000Z`;
+      const fromIso = (!isCustom || from === sessionStartIso.slice(0, 10)) ? sessionStartIso : `${from}T00:00:00.000Z`;
+      const toIso = computeCutoffIso(to, isCustom);
       const calc = await ApiService.calculateReconciliationForRange(fromIso, toIso);
       setReconcileCalc(calc);
       setActualCash(calc.expected_cash);
@@ -323,6 +461,14 @@ export default function AccountingPage() {
   const handleConfirmClosePeriod = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!reconcileCalc) return;
+
+    if (reconcileCalc.pending_session_dues > 0.01) {
+      setFeedback({ 
+        type: 'error', 
+        message: `Cannot close accounting session: ${reconcileCalc.unpaid_bills.length} bill(s) up to ${reconcileToDate} have outstanding dues totaling ₹${reconcileCalc.pending_session_dues.toFixed(2)}. All dues up to the closing cutoff date must be cleared in Sales/Billing before closing.` 
+      });
+      return;
+    }
 
     if (!closeAdminPin.trim()) {
       setFeedback({ type: 'error', message: 'Super Admin Security PIN is required to close and lock the period.' });
@@ -338,16 +484,23 @@ export default function AccountingPage() {
     setFeedback(null);
 
     try {
-      const fromIso = `${reconcileFromDate}T00:00:00.000Z`;
-      const toIso = `${reconcileToDate}T23:59:59.999Z`;
+      const sessionStartIso = sessionStatus?.session_start_date || `${reconcileFromDate}T00:00:00.000Z`;
+      const fromIso = (!customReconcileRange || reconcileFromDate === sessionStartIso.slice(0, 10))
+        ? sessionStartIso
+        : `${reconcileFromDate}T00:00:00.000Z`;
+      const toIso = computeCutoffIso(reconcileToDate, customReconcileRange);
 
       await ApiService.createAccountingClosing({
         from_date: fromIso,
         to_date: toIso,
         opening_cash: reconcileCalc.opening_cash,
         opening_upi: reconcileCalc.opening_upi,
+        opening_advance_pool: reconcileCalc.opening_advance_pool || 0,
         cash_inflow: reconcileCalc.cash_inflow,
         upi_inflow: reconcileCalc.upi_inflow,
+        advance_received: reconcileCalc.advance_received || 0,
+        advance_utilized: reconcileCalc.advance_utilized || 0,
+        closing_advance_pool: reconcileCalc.closing_advance_pool || 0,
         cash_outflow: reconcileCalc.cash_outflow,
         upi_outflow: reconcileCalc.upi_outflow,
         transfers_cash_to_upi: reconcileCalc.transfers_cash_to_upi,
@@ -492,11 +645,58 @@ export default function AccountingPage() {
     }
   };
 
+  // Navigate to Payment tab to clear due for selected customer
+  const handleGoToCustomerPayment = async (ub: UnpaidSessionBill) => {
+    let targetCustomerId = ub.customer_id;
+
+    if (!targetCustomerId && ub.customer_name && ub.customer_name !== 'Walk-in' && ub.customer_name !== 'Counter Customer') {
+      try {
+        const customers = await ApiService.getCustomers();
+        const match = customers.find(c =>
+          (ub.customer_mobile && c.mobile === ub.customer_mobile) ||
+          c.name.trim().toLowerCase() === ub.customer_name?.trim().toLowerCase()
+        );
+        if (match) {
+          targetCustomerId = match.id;
+        } else {
+          const created = await ApiService.addCustomer({
+            name: ub.customer_name.trim(),
+            mobile: ub.customer_mobile || undefined
+          });
+          targetCustomerId = created.id;
+        }
+      } catch (e) {
+        console.error('Error finding/creating customer for due payment:', e);
+      }
+    }
+
+    setShowCloseModal(false);
+
+    const params = new URLSearchParams();
+    if (targetCustomerId) {
+      params.set('customerId', targetCustomerId);
+    }
+    if (ub.id) {
+      params.set('billId', ub.id);
+    }
+    if (ub.bill_number) {
+      params.set('billNumber', ub.bill_number);
+    }
+    params.set('returnTo', 'accounting');
+
+    router.push(`/payments?${params.toString()}`);
+  };
+
   // Quick Settle Bill Due inside Close Session Modal
   const handleOpenSettleBill = (bill: UnpaidSessionBill) => {
     setSettlingBill(bill);
-    setSettlePaymentMethod('Cash');
-    setSettlingAmount(bill.due_amount);
+    if (Number(bill.customer_advance || 0) > 0) {
+      setSettlePaymentMethod('Advance');
+      setSettlingAmount(Math.min(bill.due_amount, Number(bill.customer_advance || 0)));
+    } else {
+      setSettlePaymentMethod('Cash');
+      setSettlingAmount(bill.due_amount);
+    }
   };
 
   const handleConfirmSettleBill = async (e: React.FormEvent) => {
@@ -510,28 +710,34 @@ export default function AccountingPage() {
 
     setSettlingSubmitting(true);
     try {
-      await ApiService.settleBillDue({
-        customer_id: settlingBill.customer_id,
-        bill_id: settlingBill.id,
-        amount: amt,
-        payment_method: settlePaymentMethod,
-        notes: `Settled during accounting session close (${settlingBill.bill_number})`
-      });
+      if (settlePaymentMethod === 'Advance') {
+        if (!settlingBill.customer_id) {
+          throw new Error('Cannot apply advance to a bill without a linked customer.');
+        }
+        await ApiService.applyAdvanceToBill(settlingBill.id, amt);
+        setFeedback({
+          type: 'success',
+          message: `Applied ₹${amt.toFixed(2)} from Customer Advance to ${settlingBill.bill_number}.`
+        });
+      } else {
+        await ApiService.settleBillDue({
+          customer_id: settlingBill.customer_id,
+          bill_id: settlingBill.id,
+          amount: amt,
+          payment_method: settlePaymentMethod,
+          notes: `Settled during accounting session close (${settlingBill.bill_number})`
+        });
 
-      setFeedback({
-        type: 'success',
-        message: `Settlement of ₹${amt.toFixed(2)} via ${settlePaymentMethod} recorded for ${settlingBill.bill_number}.`
-      });
+        setFeedback({
+          type: 'success',
+          message: `Settlement of ₹${amt.toFixed(2)} via ${settlePaymentMethod} recorded for ${settlingBill.bill_number}.`
+        });
+      }
 
       setSettlingBill(null);
 
       // Recalculate reconciliation immediately for active close period
-      const fromIso = `${reconcileFromDate}T00:00:00.000Z`;
-      const toIso = `${reconcileToDate}T23:59:59.999Z`;
-      const calc = await ApiService.calculateReconciliationForRange(fromIso, toIso);
-      setReconcileCalc(calc);
-      setActualCash(calc.expected_cash);
-      setActualUpi(calc.expected_upi);
+      await handleRecalculateCloseRange(reconcileFromDate, reconcileToDate, customReconcileRange);
 
       // Also refresh background data
       loadData();
@@ -545,41 +751,110 @@ export default function AccountingPage() {
     }
   };
 
-  // Submit Edit/Audit for Ended Session
+  // Open Guided Re-open & Adjust Session Modal
+  const handleOpenEditClosing = (c: AccountingClosing) => {
+    setEditingClosing(c);
+    setEditActionType('EXPENSE');
+    setEditExpenseTitle('');
+    setEditExpenseAmount('');
+    setEditExpenseCategory('Shop Expense');
+    setEditExpensePaymentMode('Cash');
+    setEditExpenseCashAmount('');
+    setEditExpenseUpiAmount('');
+    setEditExpenseNotes('');
+    setEditTransferDirection('UPI_TO_CASH');
+    setEditTransferAmount('');
+    setEditTransferReason('ATM / Bank Cash Withdrawal');
+    setEditTransferRefNo('');
+    setEditTransferNotes('');
+    setEditUseCustomTime(false);
+    const toIso = c.to_date ? new Date(c.to_date).toISOString().slice(0, 16) : '';
+    setEditCustomTimestamp(toIso);
+    setEditOverrideActual(false);
+    setEditActualCash(c.actual_cash);
+    setEditActualUpi(c.actual_upi);
+    setEditDiscrepancyNote(c.discrepancy_note || '');
+    setEditAdminPin('');
+  };
+
+  // Submit Guided Re-open, Adjust & Cascade for Closed Session
   const handleSaveAuditSession = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingClosing) return;
 
     if (!editAdminPin.trim()) {
-      setFeedback({ type: 'error', message: 'Super Admin PIN required to save accounting audit adjustments.' });
+      setFeedback({ type: 'error', message: 'Super Admin PIN required to authorize accounting adjustments.' });
       return;
     }
 
-    const actC = Number(editActualCash !== '' ? editActualCash : editingClosing.actual_cash);
-    const actU = Number(editActualUpi !== '' ? editActualUpi : editingClosing.actual_upi);
-    const diffC = Number((actC - Number(editingClosing.expected_cash)).toFixed(2));
-    const diffU = Number((actU - Number(editingClosing.expected_upi)).toFixed(2));
-
     setSubmitting(true);
-    try {
-      await ApiService.updateAccountingClosing(
-        editingClosing.id,
-        {
-          actual_cash: actC,
-          actual_upi: actU,
-          cash_difference: diffC,
-          upi_difference: diffU,
-          discrepancy_note: editDiscrepancyNote.trim() || null,
-          audit_notes: `Audited on ${new Date().toLocaleDateString('en-IN')}: Cash ₹${actC}, UPI ₹${actU}`
-        },
-        editAdminPin.trim()
-      );
+    setFeedback(null);
 
-      setFeedback({ type: 'success', message: `Session ${editingClosing.closing_number || 'CLOSE'} audited and verified successfully.` });
+    try {
+      let expensePayload = undefined;
+      if (editActionType === 'EXPENSE') {
+        const amt = Number(editExpenseAmount);
+        if (isNaN(amt) || amt <= 0) {
+          throw new Error('Expense amount must be greater than zero.');
+        }
+        if (!editExpenseTitle.trim()) {
+          throw new Error('Expense title/description is required.');
+        }
+        expensePayload = {
+          title: editExpenseTitle.trim(),
+          amount: amt,
+          category: editExpenseCategory,
+          payment_mode: editExpensePaymentMode,
+          cash_amount: editExpensePaymentMode === 'Split' ? Number(editExpenseCashAmount || 0) : undefined,
+          upi_amount: editExpensePaymentMode === 'Split' ? Number(editExpenseUpiAmount || 0) : undefined,
+          notes: editExpenseNotes.trim() || undefined,
+          created_at: editUseCustomTime && editCustomTimestamp ? new Date(editCustomTimestamp).toISOString() : undefined
+        };
+      }
+
+      let transferPayload = undefined;
+      if (editActionType === 'TRANSFER') {
+        const amt = Number(editTransferAmount);
+        if (isNaN(amt) || amt <= 0) {
+          throw new Error('Transfer amount must be greater than zero.');
+        }
+        transferPayload = {
+          direction: editTransferDirection,
+          amount: amt,
+          reason: editTransferReason.trim() || 'Internal Transfer',
+          reference_no: editTransferRefNo.trim() || undefined,
+          notes: editTransferNotes.trim() || undefined,
+          created_at: editUseCustomTime && editCustomTimestamp ? new Date(editCustomTimestamp).toISOString() : undefined
+        };
+      }
+
+      const overrideCash = editOverrideActual && editActualCash !== '' ? Number(editActualCash) : undefined;
+      const overrideUpi = editOverrideActual && editActualUpi !== '' ? Number(editActualUpi) : undefined;
+
+      const result = await ApiService.adjustClosedSession({
+        closingId: editingClosing.id,
+        adminPin: editAdminPin.trim(),
+        adjustmentType: editActionType,
+        expense: expensePayload,
+        transfer: transferPayload,
+        overrideActualCash: overrideCash,
+        overrideActualUpi: overrideUpi,
+        discrepancyNote: editDiscrepancyNote.trim() || undefined
+      });
+
+      const cascadeNote = result.cascadedCount > 0
+        ? ` and cascaded forward across ${result.cascadedCount} subsequent session(s)`
+        : ' and current session opening balances updated';
+
+      setFeedback({
+        type: 'success',
+        message: `Session ${editingClosing.closing_number || 'CLOSE'} successfully adjusted${cascadeNote}! Net Cash delta: ${result.cashDelta >= 0 ? '+' : ''}₹${result.cashDelta.toFixed(2)}, UPI delta: ${result.upiDelta >= 0 ? '+' : ''}₹${result.upiDelta.toFixed(2)}.`
+      });
+
       setEditingClosing(null);
-      loadData();
+      await loadData();
     } catch (err: unknown) {
-      setFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed to update audit session' });
+      setFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed to adjust closed session' });
     } finally {
       setSubmitting(false);
     }
@@ -680,6 +955,11 @@ export default function AccountingPage() {
         if (rowMs < fromMs || rowMs > toMs) return false;
       }
 
+      // In ALL view, hide duplicate checkout receipt vouchers so the sales bill represents the checkout event cleanly
+      if (ledgerTypeFilter === 'ALL' && row.isDuplicateVoucher) {
+        return false;
+      }
+
       // Type filter
       if (ledgerTypeFilter !== 'ALL') {
         if (ledgerTypeFilter === 'BILLS' && row.type !== 'BILL') return false;
@@ -701,6 +981,94 @@ export default function AccountingPage() {
       return true;
     });
   }, [ledgerRows, sessionStatus, dateFilter, customFrom, customTo, ledgerTypeFilter, searchQuery]);
+
+  // Export Cash Book PDF
+  const handleExportCashBookPdf = () => {
+    try {
+      const entries = filteredLedger
+        .filter(r => (r.cashIn > 0 || r.cashOut > 0))
+        .map(r => ({
+          date: r.date,
+          ref_number: r.refNumber,
+          description: r.description,
+          inflow: r.cashIn,
+          outflow: r.cashOut,
+          running_balance: r.runningCash !== undefined ? r.runningCash : 0
+        }));
+
+      let openingBalance = 0;
+      if (entries.length > 0) {
+        openingBalance = Number((entries[0].running_balance - entries[0].inflow + entries[0].outflow).toFixed(2));
+      } else if (sessionStatus) {
+        openingBalance = sessionStatus.last_closed_session?.actual_cash ?? sessionStatus.expected_cash_in_hand;
+      }
+      const closingBalance = entries.length > 0 ? entries[entries.length - 1].running_balance : openingBalance;
+
+      const filterLabel = dateFilter === 'current_session' 
+        ? 'Active Accounting Session' 
+        : dateFilter === 'custom' && customFrom && customTo
+        ? `${customFrom} to ${customTo}`
+        : dateFilter.toUpperCase();
+
+      const doc = CashBankBookPdfGenerator.generateBookPdf({
+        book_type: 'CASH',
+        shop_settings: settings?.shop || {},
+        period_label: filterLabel,
+        opening_balance: openingBalance,
+        closing_balance: closingBalance,
+        entries
+      });
+
+      doc.save(`Cash-Book-${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (err) {
+      console.error('Failed to generate Cash Book PDF:', err);
+      setFeedback({ type: 'error', message: 'Failed to generate Cash Book PDF' });
+    }
+  };
+
+  // Export Bank/UPI Book PDF
+  const handleExportBankBookPdf = () => {
+    try {
+      const entries = filteredLedger
+        .filter(r => (r.upiIn > 0 || r.upiOut > 0))
+        .map(r => ({
+          date: r.date,
+          ref_number: r.refNumber,
+          description: r.description,
+          inflow: r.upiIn,
+          outflow: r.upiOut,
+          running_balance: r.runningUpi !== undefined ? r.runningUpi : 0
+        }));
+
+      let openingBalance = 0;
+      if (entries.length > 0) {
+        openingBalance = Number((entries[0].running_balance - entries[0].inflow + entries[0].outflow).toFixed(2));
+      } else if (sessionStatus) {
+        openingBalance = sessionStatus.last_closed_session?.actual_upi ?? sessionStatus.expected_upi_in_hand;
+      }
+      const closingBalance = entries.length > 0 ? entries[entries.length - 1].running_balance : openingBalance;
+
+      const filterLabel = dateFilter === 'current_session' 
+        ? 'Active Accounting Session' 
+        : dateFilter === 'custom' && customFrom && customTo
+        ? `${customFrom} to ${customTo}`
+        : dateFilter.toUpperCase();
+
+      const doc = CashBankBookPdfGenerator.generateBookPdf({
+        book_type: 'BANK',
+        shop_settings: settings?.shop || {},
+        period_label: filterLabel,
+        opening_balance: openingBalance,
+        closing_balance: closingBalance,
+        entries
+      });
+
+      doc.save(`Bank-UPI-Book-${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (err) {
+      console.error('Failed to generate Bank/UPI Book PDF:', err);
+      setFeedback({ type: 'error', message: 'Failed to generate Bank/UPI Book PDF' });
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 pb-16">
@@ -748,6 +1116,18 @@ export default function AccountingPage() {
                 <span>Cash ⇄ UPI Transfer</span>
               </button>
 
+              {sessionStatus?.last_closed_session && (
+                <button
+                  type="button"
+                  onClick={() => handleOpenEditClosing(sessionStatus.last_closed_session!)}
+                  className="px-3.5 py-2 text-xs font-bold text-amber-900 bg-amber-50 hover:bg-amber-100 border border-amber-300 rounded-lg shadow-xs flex items-center space-x-1.5 cursor-pointer transition"
+                  title="Add missed expense or convert UPI to Cash in the closed session"
+                >
+                  <RotateCcw size={14} className="text-amber-600" />
+                  <span>Adjust Previous Session ({sessionStatus.last_closed_session.closing_number || 'Last'})</span>
+                </button>
+              )}
+
               <button
                 onClick={handleOpenCloseModal}
                 className="px-4 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-sm flex items-center space-x-1.5 cursor-pointer transition"
@@ -793,6 +1173,36 @@ export default function AccountingPage() {
                   <span className="text-slate-400 block text-[10px] uppercase font-sans">UPI / Bank Balance</span>
                   <span className="text-cyan-300 font-bold text-sm">₹{sessionStatus.expected_upi_in_hand.toFixed(2)}</span>
                 </div>
+
+                {Number(sessionStatus.opening_advance_pool || 0) > 0 && (
+                  <div className="bg-teal-950/80 px-3 py-1.5 rounded-lg border border-teal-600/50">
+                    <span className="text-teal-300 block text-[10px] uppercase font-sans">Carried-Forward Advance</span>
+                    <span className="text-teal-300 font-bold text-sm">₹{Number(sessionStatus.opening_advance_pool).toFixed(2)}</span>
+                  </div>
+                )}
+
+                {Number(sessionStatus.current_advance_utilized || 0) > 0 && (
+                  <div className="bg-teal-950/80 px-3 py-1.5 rounded-lg border border-teal-600/50">
+                    <span className="text-teal-300 block text-[10px] uppercase font-sans">Advance Utilized</span>
+                    <span className="text-teal-300 font-bold text-sm">₹{Number(sessionStatus.current_advance_utilized).toFixed(2)}</span>
+                  </div>
+                )}
+
+                {Number(sessionStatus.customer_advances_total || 0) > 0 && (
+                  <div className="bg-teal-900/60 px-3 py-1.5 rounded-lg border border-teal-500/40">
+                    <span className="text-teal-200 block text-[10px] uppercase font-sans">Available Advance Pool</span>
+                    <span className="text-teal-300 font-bold text-sm">₹{Number(sessionStatus.customer_advances_total).toFixed(2)}</span>
+                  </div>
+                )}
+
+                {Number(sessionStatus.pending_dues_total || 0) > 0 && (
+                  <div className="bg-rose-950/80 px-3 py-1.5 rounded-lg border border-rose-500/50">
+                    <span className="text-rose-300 block text-[10px] uppercase font-sans">
+                      Pending Customer Dues ({sessionStatus.unpaid_bills_count || 0})
+                    </span>
+                    <span className="text-rose-300 font-bold text-sm">₹{Number(sessionStatus.pending_dues_total).toFixed(2)}</span>
+                  </div>
+                )}
 
                 <div className="bg-indigo-900/60 px-3 py-1.5 rounded-lg border border-indigo-500/40">
                   <span className="text-indigo-200 block text-[10px] uppercase font-sans">Total Liquid Funds</span>
@@ -919,8 +1329,8 @@ export default function AccountingPage() {
                 )}
               </div>
 
-              {/* Search & Type Select */}
-              <div className="flex items-center gap-2">
+              {/* Search, Type Select & Book PDFs */}
+              <div className="flex flex-wrap items-center gap-2">
                 <div className="relative">
                   <Search size={14} className="absolute left-2.5 top-2.5 text-slate-400" />
                   <input
@@ -928,7 +1338,7 @@ export default function AccountingPage() {
                     placeholder="Search ledger..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 w-44"
+                    className="pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 w-40"
                   />
                 </div>
 
@@ -943,6 +1353,28 @@ export default function AccountingPage() {
                   <option value="EXPENSES">Expenses Only</option>
                   <option value="TRANSFERS">Transfers Only</option>
                 </select>
+
+                <div className="flex items-center gap-1.5 sm:border-l sm:border-slate-200 sm:pl-2">
+                  <button
+                    type="button"
+                    onClick={handleExportCashBookPdf}
+                    className="px-2.5 py-1.5 text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg shadow-xs flex items-center gap-1 cursor-pointer transition"
+                    title="Export & Print Official Cash Book Ledger PDF"
+                  >
+                    <Printer size={13} className="text-emerald-700" />
+                    <span>Cash Book PDF</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleExportBankBookPdf}
+                    className="px-2.5 py-1.5 text-xs font-bold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-300 rounded-lg shadow-xs flex items-center gap-1 cursor-pointer transition"
+                    title="Export & Print Official Bank / UPI Book Ledger PDF"
+                  >
+                    <Printer size={13} className="text-indigo-700" />
+                    <span>Bank Book PDF</span>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -1218,18 +1650,12 @@ export default function AccountingPage() {
                           </button>
 
                           <button
-                            onClick={() => {
-                              setEditingClosing(c);
-                              setEditActualCash(c.actual_cash);
-                              setEditActualUpi(c.actual_upi);
-                              setEditDiscrepancyNote(c.discrepancy_note || '');
-                              setEditAdminPin('');
-                            }}
-                            className="px-3 py-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 rounded-lg shadow-xs flex items-center space-x-1 cursor-pointer transition"
-                            title="Audit & Edit Session"
+                            onClick={() => handleOpenEditClosing(c)}
+                            className="px-3 py-1.5 text-xs font-bold text-amber-800 bg-amber-50 border border-amber-300 hover:bg-amber-100 rounded-lg shadow-xs flex items-center space-x-1 cursor-pointer transition"
+                            title="Audit, record missed expense/transfer, and cascade balance changes"
                           >
-                            <Edit3 size={13} />
-                            <span>Audit / Edit</span>
+                            <RotateCcw size={13} className="text-amber-600" />
+                            <span>Audit & Adjust</span>
                           </button>
                         </div>
                       </div>
@@ -1360,7 +1786,7 @@ export default function AccountingPage() {
 
       {/* MODAL 2: CLOSE SESSION (RECONCILIATION & CROSS-CHECKING WIZARD) */}
       {showCloseModal && reconcileCalc && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-start justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-6 space-y-5 my-8">
             <div className="flex justify-between items-center border-b border-slate-100 pb-3">
               <div>
@@ -1387,29 +1813,134 @@ export default function AccountingPage() {
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">From Date</label>
-                    <input
-                      type="date"
-                      value={reconcileFromDate}
-                      onChange={(e) => {
-                        setReconcileFromDate(e.target.value);
-                        handleRecalculateCloseRange(e.target.value, reconcileToDate);
-                      }}
-                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-semibold"
-                    />
+                  <div className="p-2.5 bg-slate-100 rounded-lg border border-slate-200">
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[11px] font-bold text-slate-700 flex items-center gap-1">
+                        <Lock size={12} className="text-slate-500" />
+                        <span>From Date {sessionStatus?.last_closed_session ? '(Strictly Locked)' : '(Inception Date)'}</span>
+                      </label>
+                      <span className="text-[10px] font-bold text-slate-500">
+                        {sessionStatus?.last_closed_session ? 'Pinned to Last Cutoff' : 'Store First Transaction'}
+                      </span>
+                    </div>
+
+                    {sessionStatus?.last_closed_session ? (
+                      <div className="text-xs font-mono font-bold text-slate-900 bg-white py-1 px-2.5 rounded border border-slate-300">
+                        {reconcileFromDate}
+                      </div>
+                    ) : (
+                      <input
+                        type="date"
+                        value={reconcileFromDate}
+                        max={reconcileToDate}
+                        onChange={(e) => {
+                          setReconcileFromDate(e.target.value);
+                          handleRecalculateCloseRange(e.target.value, reconcileToDate, true);
+                        }}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1 text-xs font-bold font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    )}
+
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      {sessionStatus?.last_closed_session
+                        ? 'Guarantees zero gaps and no overlapping sessions.'
+                        : 'First session ever: starting from your store\'s first transaction.'}
+                    </p>
                   </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">To Date (Closing Cutoff)</label>
+
+                  <div className="p-2.5 bg-white rounded-lg border border-indigo-200 shadow-xs space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[11px] font-bold text-indigo-900">
+                        To Date (Closing Cutoff) *
+                      </label>
+                      <span className="text-[10px] font-semibold text-indigo-600">
+                        {reconcileToDate === new Date().toISOString().slice(0, 10) ? 'Cutoff: Current Moment' : 'Cutoff: 11:59:59 PM (Shop Time)'}
+                      </span>
+                    </div>
+
+                    {/* Quick Preset Buttons */}
+                    <div className="flex flex-wrap items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const today = new Date().toISOString().slice(0, 10);
+                          setReconcileToDate(today);
+                          handleRecalculateCloseRange(reconcileFromDate, today, false);
+                        }}
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
+                          reconcileToDate === new Date().toISOString().slice(0, 10)
+                            ? 'bg-indigo-600 text-white shadow-xs'
+                            : 'bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100'
+                        }`}
+                      >
+                        Today
+                      </button>
+
+                      {(() => {
+                        const yest = new Date();
+                        yest.setDate(yest.getDate() - 1);
+                        const yestStr = yest.toISOString().slice(0, 10);
+                        if (yestStr < reconcileFromDate) return null;
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReconcileToDate(yestStr);
+                              handleRecalculateCloseRange(reconcileFromDate, yestStr, true);
+                            }}
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
+                              reconcileToDate === yestStr
+                                ? 'bg-indigo-600 text-white shadow-xs'
+                                : 'bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200'
+                            }`}
+                          >
+                            Yesterday
+                          </button>
+                        );
+                      })()}
+
+                      {(() => {
+                        const now = new Date();
+                        const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+                        const year = lastMonthEnd.getFullYear();
+                        const month = String(lastMonthEnd.getMonth() + 1).padStart(2, '0');
+                        const day = String(lastMonthEnd.getDate()).padStart(2, '0');
+                        const lastMonthEndStr = `${year}-${month}-${day}`;
+                        if (lastMonthEndStr < reconcileFromDate || lastMonthEndStr > new Date().toISOString().slice(0, 10)) return null;
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReconcileToDate(lastMonthEndStr);
+                              handleRecalculateCloseRange(reconcileFromDate, lastMonthEndStr, true);
+                            }}
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
+                              reconcileToDate === lastMonthEndStr
+                                ? 'bg-indigo-600 text-white shadow-xs'
+                                : 'bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200'
+                            }`}
+                          >
+                            End of Last Month ({day}/{month})
+                          </button>
+                        );
+                      })()}
+                    </div>
+
                     <input
                       type="date"
+                      required
+                      min={reconcileFromDate}
+                      max={new Date().toISOString().slice(0, 10)}
                       value={reconcileToDate}
                       onChange={(e) => {
                         setReconcileToDate(e.target.value);
-                        handleRecalculateCloseRange(reconcileFromDate, e.target.value);
+                        handleRecalculateCloseRange(reconcileFromDate, e.target.value, true);
                       }}
-                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-semibold"
+                      className="w-full bg-slate-50 border border-indigo-300 rounded-lg px-3 py-1 text-xs font-bold font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     />
+                    <p className="text-[10px] text-slate-500">
+                      Select any date on the calendar to close all transactions up to that date (e.g. 15/10/2026, 30/10/2026, or today).
+                    </p>
                   </div>
                 </div>
               </div>
@@ -1452,6 +1983,11 @@ export default function AccountingPage() {
                             <div className="flex items-center gap-2">
                               <span className="font-mono font-bold text-slate-900">{ub.bill_number}</span>
                               <span className="text-slate-700 font-semibold truncate">{ub.customer_name}</span>
+                              {Number(ub.customer_advance || 0) > 0 && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-teal-50 text-teal-700 border border-teal-200 font-mono">
+                                  Adv Avail: ₹{Number(ub.customer_advance).toFixed(2)}
+                                </span>
+                              )}
                             </div>
                             <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5 font-mono">
                               <span>Bill Total: ₹{ub.grand_total.toFixed(2)}</span>
@@ -1466,10 +2002,23 @@ export default function AccountingPage() {
                               <span className="font-mono font-extrabold text-rose-600 text-sm">₹{ub.due_amount.toFixed(2)}</span>
                             </div>
 
+                            {Number(ub.customer_advance || 0) > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenSettleBill(ub)}
+                                className="px-2 py-1 text-xs font-bold text-teal-800 bg-teal-100 hover:bg-teal-200 border border-teal-300 rounded-lg shadow-2xs flex items-center gap-1 cursor-pointer transition"
+                                title="Apply customer unspent advance balance directly to settle this bill"
+                              >
+                                <Wallet size={12} />
+                                <span>Use Advance</span>
+                              </button>
+                            )}
+
                             <button
                               type="button"
-                              onClick={() => handleOpenSettleBill(ub)}
+                              onClick={() => handleGoToCustomerPayment(ub)}
                               className="px-2.5 py-1 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg shadow-xs flex items-center gap-1 cursor-pointer transition"
+                              title="Go to Payment Collection page to collect cash or UPI"
                             >
                               <CheckCircle2 size={12} />
                               <span>Clear Due</span>
@@ -1493,6 +2042,54 @@ export default function AccountingPage() {
                   <span>Reconciliation Breakdown</span>
                   <span className="font-mono text-slate-500 text-[11px]">Formula: Opening + Inflow - Outflow ± Transfers = Expected</span>
                 </div>
+
+                {/* ADVANCE CARRY-FORWARD BENTO CARD */}
+                {((reconcileCalc.opening_advance_pool || 0) > 0 || (reconcileCalc.advance_received || 0) > 0 || (reconcileCalc.closing_advance_pool || 0) > 0) ? (
+                  <div className="m-3 p-3.5 bg-teal-50/80 border border-teal-200 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between border-b border-teal-200 pb-1.5">
+                      <span className="text-xs font-bold text-teal-950 flex items-center gap-1.5">
+                        <Wallet size={14} className="text-teal-700" />
+                        <span>Customer Advance Carry-Forward Ledger</span>
+                      </span>
+                      <span className="text-[11px] font-mono text-teal-800 font-bold">
+                        Rolls over to Next Session
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-2 text-xs font-mono">
+                      <div className="bg-white p-2 rounded-lg border border-teal-100">
+                        <span className="text-slate-500 block text-[10px] font-sans">Opening Advance Pool</span>
+                        <span className="font-bold text-slate-900">₹{(reconcileCalc.opening_advance_pool || 0).toFixed(2)}</span>
+                      </div>
+
+                      <div className="bg-white p-2 rounded-lg border border-teal-100 text-emerald-700">
+                        <span className="text-slate-500 block text-[10px] font-sans">(+) Advance Received</span>
+                        <span className="font-bold">+₹{(reconcileCalc.advance_received || 0).toFixed(2)}</span>
+                      </div>
+
+                      <div className="bg-white p-2 rounded-lg border border-teal-100 text-rose-700">
+                        <span className="text-slate-500 block text-[10px] font-sans">(-) Advance Utilized</span>
+                        <span className="font-bold">-₹{(reconcileCalc.advance_utilized || 0).toFixed(2)}</span>
+                      </div>
+
+                      <div className="bg-teal-100/80 p-2 rounded-lg border border-teal-300 text-teal-900 font-bold">
+                        <span className="text-teal-800 block text-[10px] font-sans">(=) Carry-Forward Pool</span>
+                        <span className="text-sm">₹{(reconcileCalc.closing_advance_pool || 0).toFixed(2)}</span>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-teal-800">
+                      ℹ️ The unspent customer advance pool of <strong>₹{(reconcileCalc.closing_advance_pool || 0).toFixed(2)}</strong> will automatically carry forward as the Opening Advance Pool of your new session.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="m-3 px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between text-[11px] text-slate-500 font-medium">
+                    <span className="flex items-center gap-1.5">
+                      <Wallet size={13} className="text-slate-400" />
+                      <span>Customer Advance Pool: <strong>₹0.00</strong> (No customer advances in this period)</span>
+                    </span>
+                    <span className="font-mono text-slate-400 font-semibold">Zero Rollover</span>
+                  </div>
+                )}
 
                 <div className="p-4 grid grid-cols-2 gap-4">
                   {/* CASH COLUMN */}
@@ -1666,104 +2263,558 @@ export default function AccountingPage() {
         </div>
       )}
 
-      {/* MODAL 3: AUDIT / EDIT ENDED SESSION */}
-      {editingClosing && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4">
-            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-              <h2 className="text-base font-bold text-slate-900 flex items-center space-x-2">
-                <Edit3 size={18} className="text-indigo-600" />
-                <span>Audit & Adjust Session {editingClosing.closing_number}</span>
-              </h2>
-              <button onClick={() => setEditingClosing(null)} className="text-slate-400 hover:text-slate-600 cursor-pointer">
-                <X size={18} />
-              </button>
-            </div>
+      {/* MODAL 3: GUIDED RE-OPEN, ADJUST & CASCADE CLOSED SESSION */}
+      {editingClosing && (() => {
+        const subsequentCount = closings.filter(
+          c => c.id !== editingClosing.id && new Date(c.from_date).getTime() >= new Date(editingClosing.to_date).getTime()
+        ).length;
 
-            <form onSubmit={handleSaveAuditSession} className="space-y-4">
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs space-y-1">
-                <div className="flex justify-between text-slate-600">
-                  <span>Period:</span>
-                  <span className="font-bold">{editingClosing.from_date.slice(0, 10)} to {editingClosing.to_date.slice(0, 10)}</span>
-                </div>
-                <div className="flex justify-between text-slate-600">
-                  <span>Expected Cash:</span>
-                  <span className="font-mono">₹{Number(editingClosing.expected_cash).toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between text-slate-600">
-                  <span>Expected UPI:</span>
-                  <span className="font-mono">₹{Number(editingClosing.expected_upi).toFixed(2)}</span>
-                </div>
-              </div>
+        let projectedExpectedCash = Number(editingClosing.expected_cash || 0);
+        let projectedExpectedUpi = Number(editingClosing.expected_upi || 0);
 
-              <div className="grid grid-cols-2 gap-3">
+        if (editActionType === 'EXPENSE') {
+          const amt = Number(editExpenseAmount || 0);
+          if (editExpensePaymentMode === 'Cash') {
+            projectedExpectedCash -= amt;
+          } else if (editExpensePaymentMode === 'UPI') {
+            projectedExpectedUpi -= amt;
+          } else if (editExpensePaymentMode === 'Split') {
+            projectedExpectedCash -= Number(editExpenseCashAmount || 0);
+            projectedExpectedUpi -= Number(editExpenseUpiAmount || 0);
+          }
+        } else if (editActionType === 'TRANSFER') {
+          const amt = Number(editTransferAmount || 0);
+          if (editTransferDirection === 'UPI_TO_CASH') {
+            projectedExpectedCash += amt;
+            projectedExpectedUpi -= amt;
+          } else if (editTransferDirection === 'CASH_TO_UPI') {
+            projectedExpectedCash -= amt;
+            projectedExpectedUpi += amt;
+          }
+        }
+
+        const autoActualCash = Number((editingClosing.actual_cash + (projectedExpectedCash - Number(editingClosing.expected_cash))).toFixed(2));
+        const autoActualUpi = Number((editingClosing.actual_upi + (projectedExpectedUpi - Number(editingClosing.expected_upi))).toFixed(2));
+
+        const finalActualCash = editOverrideActual && editActualCash !== '' ? Number(editActualCash) : autoActualCash;
+        const finalActualUpi = editOverrideActual && editActualUpi !== '' ? Number(editActualUpi) : autoActualUpi;
+
+        const projectedCashDelta = Number((finalActualCash - Number(editingClosing.actual_cash)).toFixed(2));
+        const projectedUpiDelta = Number((finalActualUpi - Number(editingClosing.actual_upi)).toFixed(2));
+
+        const fromIso = editingClosing.from_date ? new Date(editingClosing.from_date).toISOString().slice(0, 16) : '';
+        const toIso = editingClosing.to_date ? new Date(editingClosing.to_date).toISOString().slice(0, 16) : '';
+
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-start justify-center p-4 overflow-y-auto">
+            <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-6 space-y-5 my-8">
+              {/* MODAL HEADER */}
+              <div className="flex justify-between items-start border-b border-slate-100 pb-3">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Audited Actual Cash (₹)</label>
-                  <input
-                    type="number"
-                    required
-                    step="0.01"
-                    value={editActualCash}
-                    onChange={(e) => setEditActualCash(e.target.value === '' ? '' : Number(e.target.value))}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold"
-                  />
+                  <h2 className="text-lg font-bold text-slate-900 flex items-center space-x-2">
+                    <RotateCcw size={20} className="text-amber-600" />
+                    <span>Audit & Adjust Closed Session {editingClosing.closing_number || 'CLOSE'}</span>
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Retroactively record missed expenses or transfers and automatically cascade balance adjustments.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2 mt-2">
+                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                      Period: {editingClosing.from_date.slice(0, 10)} to {editingClosing.to_date.slice(0, 10)}
+                    </span>
+                    {subsequentCount > 0 ? (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                        {subsequentCount} Subsequent Session(s) will Cascade
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        Direct Predecessor of Active Session
+                      </span>
+                    )}
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Audited Actual UPI (₹)</label>
-                  <input
-                    type="number"
-                    required
-                    step="0.01"
-                    value={editActualUpi}
-                    onChange={(e) => setEditActualUpi(e.target.value === '' ? '' : Number(e.target.value))}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Audit Notes / Adjustments</label>
-                <textarea
-                  rows={2}
-                  placeholder="Reason for adjustment / audit clarification..."
-                  value={editDiscrepancyNote}
-                  onChange={(e) => setEditDiscrepancyNote(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 text-xs"
-                />
-              </div>
-
-              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-1.5">
-                <label className="block text-xs font-bold text-amber-900">Super Admin PIN Required *</label>
-                <input
-                  type="password"
-                  required
-                  placeholder="Security PIN"
-                  value={editAdminPin}
-                  onChange={(e) => setEditAdminPin(e.target.value)}
-                  className="w-full bg-white border border-amber-300 rounded-lg px-3 py-1.5 text-xs font-mono tracking-widest"
-                />
-              </div>
-
-              <div className="flex justify-end space-x-2 pt-2 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setEditingClosing(null)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+                  className="text-slate-400 hover:text-slate-600 cursor-pointer p-1"
                 >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="px-5 py-2 text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg shadow-sm disabled:opacity-50 cursor-pointer"
-                >
-                  {submitting ? 'Saving Audit...' : 'Save Audit Changes'}
+                  <X size={20} />
                 </button>
               </div>
-            </form>
+
+              <form onSubmit={handleSaveAuditSession} className="space-y-4">
+                {/* ACTION TYPE SELECTOR TABS */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                    Adjustment Type
+                  </label>
+                  <div className="grid grid-cols-3 gap-2 bg-slate-100 p-1 rounded-xl text-xs font-semibold">
+                    <button
+                      type="button"
+                      onClick={() => setEditActionType('EXPENSE')}
+                      className={`py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                        editActionType === 'EXPENSE'
+                          ? 'bg-white text-rose-700 shadow-xs font-bold'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <Plus size={14} className={editActionType === 'EXPENSE' ? 'text-rose-600' : ''} />
+                      <span>Missed Expense</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setEditActionType('TRANSFER')}
+                      className={`py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                        editActionType === 'TRANSFER'
+                          ? 'bg-white text-indigo-700 shadow-xs font-bold'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <ArrowRightLeft size={14} className={editActionType === 'TRANSFER' ? 'text-indigo-600' : ''} />
+                      <span>Convert UPI ⇄ Cash</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditActionType('BALANCES_ONLY');
+                        setEditOverrideActual(true);
+                      }}
+                      className={`py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                        editActionType === 'BALANCES_ONLY'
+                          ? 'bg-white text-amber-700 shadow-xs font-bold'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <Edit3 size={14} className={editActionType === 'BALANCES_ONLY' ? 'text-amber-600' : ''} />
+                      <span>Balances Only</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* FORM FIELDS: MISSED EXPENSE */}
+                {editActionType === 'EXPENSE' && (
+                  <div className="p-4 bg-rose-50/50 border border-rose-100 rounded-xl space-y-3">
+                    <p className="text-xs font-bold text-rose-900 flex items-center gap-1.5">
+                      <Wallet size={14} className="text-rose-600" />
+                      <span>Add Expense to Closed Session</span>
+                    </p>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">Expense Description *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="e.g. Tea & Refreshments, Shop Supplies"
+                          value={editExpenseTitle}
+                          onChange={(e) => setEditExpenseTitle(e.target.value)}
+                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-medium"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">Expense Category *</label>
+                        <select
+                          value={editExpenseCategory}
+                          onChange={(e) => setEditExpenseCategory(e.target.value)}
+                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-medium"
+                        >
+                          {expenseCategories.map((cat) => (
+                            <option key={cat} value={cat}>{cat}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">Total Expense Amount (₹) *</label>
+                        <input
+                          type="number"
+                          required
+                          min="0.01"
+                          step="0.01"
+                          placeholder="0.00"
+                          value={editExpenseAmount}
+                          onChange={(e) => setEditExpenseAmount(e.target.value === '' ? '' : Number(e.target.value))}
+                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-mono font-bold text-slate-900"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">Paid Via Mode *</label>
+                        <div className="grid grid-cols-3 gap-1 bg-white p-0.5 border border-slate-300 rounded-lg text-xs font-semibold">
+                          {(['Cash', 'UPI', 'Split'] as const).map((m) => (
+                            <button
+                              key={m}
+                              type="button"
+                              onClick={() => setEditExpensePaymentMode(m)}
+                              className={`py-1 rounded text-center cursor-pointer transition ${
+                                editExpensePaymentMode === m
+                                  ? 'bg-rose-600 text-white shadow-xs font-bold'
+                                  : 'text-slate-600 hover:text-slate-900'
+                              }`}
+                            >
+                              {m}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {editExpensePaymentMode === 'Split' && (
+                      <div className="grid grid-cols-2 gap-3 p-2.5 bg-white border border-rose-200 rounded-lg">
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-600 mb-1">Paid in Cash (₹)</label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={editExpenseCashAmount}
+                            onChange={(e) => setEditExpenseCashAmount(e.target.value === '' ? '' : Number(e.target.value))}
+                            placeholder="0.00"
+                            className="w-full bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1 text-xs font-mono font-bold"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-600 mb-1">Paid in UPI (₹)</label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={editExpenseUpiAmount}
+                            onChange={(e) => setEditExpenseUpiAmount(e.target.value === '' ? '' : Number(e.target.value))}
+                            placeholder="0.00"
+                            className="w-full bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1 text-xs font-mono font-bold"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1">Expense Remarks / Notes</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Paid to courier boy, forgot to enter during shift"
+                        value={editExpenseNotes}
+                        onChange={(e) => setEditExpenseNotes(e.target.value)}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* FORM FIELDS: CONTRA TRANSFER (UPI <-> CASH) */}
+                {editActionType === 'TRANSFER' && (
+                  <div className="p-4 bg-indigo-50/50 border border-indigo-100 rounded-xl space-y-3">
+                    <p className="text-xs font-bold text-indigo-900 flex items-center gap-1.5">
+                      <ArrowRightLeft size={14} className="text-indigo-600" />
+                      <span>Convert UPI to Cash / Contra Transfer</span>
+                    </p>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1">Transfer Direction *</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setEditTransferDirection('UPI_TO_CASH')}
+                          className={`p-2.5 rounded-xl border text-left cursor-pointer transition ${
+                            editTransferDirection === 'UPI_TO_CASH'
+                              ? 'bg-white border-indigo-500 ring-2 ring-indigo-500/20 shadow-xs'
+                              : 'bg-white/60 border-slate-200 text-slate-600 hover:bg-white'
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5 font-bold text-xs text-slate-900">
+                            <ArrowDownLeft size={14} className="text-emerald-600" />
+                            <span>UPI to Cash</span>
+                          </div>
+                          <p className="text-[10px] text-slate-500 mt-0.5">ATM / Bank Cash Withdrawal (Cash Drawer + / Bank -)</p>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setEditTransferDirection('CASH_TO_UPI')}
+                          className={`p-2.5 rounded-xl border text-left cursor-pointer transition ${
+                            editTransferDirection === 'CASH_TO_UPI'
+                              ? 'bg-white border-indigo-500 ring-2 ring-indigo-500/20 shadow-xs'
+                              : 'bg-white/60 border-slate-200 text-slate-600 hover:bg-white'
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5 font-bold text-xs text-slate-900">
+                            <ArrowUpRight size={14} className="text-blue-600" />
+                            <span>Cash to UPI</span>
+                          </div>
+                          <p className="text-[10px] text-slate-500 mt-0.5">Cash Deposited into Bank (Cash Drawer - / Bank +)</p>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">Transfer Amount (₹) *</label>
+                        <input
+                          type="number"
+                          required
+                          min="0.01"
+                          step="0.01"
+                          placeholder="0.00"
+                          value={editTransferAmount}
+                          onChange={(e) => setEditTransferAmount(e.target.value === '' ? '' : Number(e.target.value))}
+                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-mono font-bold text-slate-900"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">Transfer Reason</label>
+                        <input
+                          type="text"
+                          value={editTransferReason}
+                          onChange={(e) => setEditTransferReason(e.target.value)}
+                          placeholder="e.g. Bank ATM Withdrawal"
+                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">Reference / UTR # (Optional)</label>
+                        <input
+                          type="text"
+                          value={editTransferRefNo}
+                          onChange={(e) => setEditTransferRefNo(e.target.value)}
+                          placeholder="e.g. ATM-REC-9481"
+                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">Transfer Notes</label>
+                        <input
+                          type="text"
+                          value={editTransferNotes}
+                          onChange={(e) => setEditTransferNotes(e.target.value)}
+                          placeholder="e.g. Cash withdrawn for petty expense"
+                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* TIMESTAMP CONFIGURATION */}
+                {editActionType !== 'BALANCES_ONLY' && (
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={editUseCustomTime}
+                          onChange={(e) => setEditUseCustomTime(e.target.checked)}
+                          className="rounded text-indigo-600 focus:ring-indigo-500 h-4 w-4"
+                        />
+                        <span>Assign Specific Date & Time within this Closed Session</span>
+                      </label>
+                      <span className="text-[11px] text-slate-400 font-mono">
+                        {editUseCustomTime ? 'Custom Timestamp' : 'Defaults to Session End'}
+                      </span>
+                    </div>
+
+                    {editUseCustomTime ? (
+                      <div>
+                        <input
+                          type="datetime-local"
+                          value={editCustomTimestamp}
+                          min={fromIso}
+                          max={toIso}
+                          onChange={(e) => setEditCustomTimestamp(e.target.value)}
+                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-semibold"
+                        />
+                        <p className="text-[10px] text-slate-500 mt-1">
+                          Must be between {editingClosing.from_date.slice(0, 10)} and {editingClosing.to_date.slice(0, 10)}.
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-slate-500">
+                        Transaction will be officially stamped at session closing time (<strong>{new Date(editingClosing.to_date).toLocaleString('en-IN')}</strong>).
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* LIVE RECONCILIATION & CASCADE IMPACT PREVIEW */}
+                <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+                  <div className="bg-slate-100 px-4 py-2 border-b border-slate-200 text-xs font-bold text-slate-700 flex justify-between items-center">
+                    <span>Live Balance Impact & Cascade Preview</span>
+                    <span className="text-[11px] font-mono text-slate-500">Auto-calculated</span>
+                  </div>
+
+                  <div className="p-3.5 grid grid-cols-2 gap-3">
+                    {/* CASH CARD */}
+                    <div className="p-3 bg-amber-50/70 border border-amber-200/80 rounded-xl text-xs space-y-1.5 font-mono">
+                      <div className="flex justify-between font-sans font-bold text-amber-900 border-b border-amber-200 pb-1">
+                        <span className="flex items-center gap-1"><Wallet size={13} /> Cash Drawer</span>
+                        <span className="text-amber-700">Cash</span>
+                      </div>
+                      <div className="flex justify-between text-slate-600 text-[11px]">
+                        <span>Previous Expected:</span>
+                        <span>₹{Number(editingClosing.expected_cash).toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between font-bold text-amber-900 text-[11px]">
+                        <span>New Expected:</span>
+                        <span>₹{projectedExpectedCash.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between font-bold text-slate-900 border-t border-amber-200 pt-1 text-xs">
+                        <span>New Closing Actual:</span>
+                        <span>₹{finalActualCash.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between text-[11px] pt-0.5">
+                        <span className="font-sans text-slate-500">Net Balance Delta:</span>
+                        <span className={`font-bold ${projectedCashDelta >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>
+                          {projectedCashDelta >= 0 ? '+' : ''}₹{projectedCashDelta.toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* UPI CARD */}
+                    <div className="p-3 bg-cyan-50/70 border border-cyan-200/80 rounded-xl text-xs space-y-1.5 font-mono">
+                      <div className="flex justify-between font-sans font-bold text-cyan-900 border-b border-cyan-200 pb-1">
+                        <span className="flex items-center gap-1"><Smartphone size={13} /> UPI / Bank</span>
+                        <span className="text-cyan-700">UPI</span>
+                      </div>
+                      <div className="flex justify-between text-slate-600 text-[11px]">
+                        <span>Previous Expected:</span>
+                        <span>₹{Number(editingClosing.expected_upi).toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between font-bold text-cyan-900 text-[11px]">
+                        <span>New Expected:</span>
+                        <span>₹{projectedExpectedUpi.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between font-bold text-slate-900 border-t border-cyan-200 pt-1 text-xs">
+                        <span>New Closing Actual:</span>
+                        <span>₹{finalActualUpi.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between text-[11px] pt-0.5">
+                        <span className="font-sans text-slate-500">Net Balance Delta:</span>
+                        <span className={`font-bold ${projectedUpiDelta >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>
+                          {projectedUpiDelta >= 0 ? '+' : ''}₹{projectedUpiDelta.toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* OPTIONAL MANUAL OVERRIDE */}
+                  <div className="px-4 pb-3 border-t border-slate-100 pt-2 space-y-2">
+                    <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={editOverrideActual}
+                        onChange={(e) => {
+                          setEditOverrideActual(e.target.checked);
+                          if (e.target.checked) {
+                            setEditActualCash(autoActualCash);
+                            setEditActualUpi(autoActualUpi);
+                          }
+                        }}
+                        className="rounded text-indigo-600 focus:ring-indigo-500 h-4 w-4"
+                      />
+                      <span>Override final counted cash/bank balances manually if physical drawer differed</span>
+                    </label>
+
+                    {editOverrideActual && (
+                      <div className="grid grid-cols-2 gap-3 pt-1">
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-1">Override Counted Cash (₹)</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={editActualCash}
+                            onChange={(e) => setEditActualCash(e.target.value === '' ? '' : Number(e.target.value))}
+                            className="w-full bg-white border border-amber-300 rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-1">Override Counted UPI (₹)</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={editActualUpi}
+                            onChange={(e) => setEditActualUpi(e.target.value === '' ? '' : Number(e.target.value))}
+                            className="w-full bg-white border border-cyan-300 rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* CASCADING NOTICE */}
+                  <div className="bg-indigo-50/70 p-3 border-t border-indigo-100 flex items-start gap-2 text-xs text-indigo-900">
+                    <CheckCircle2 size={16} className="text-indigo-600 shrink-0 mt-0.5" />
+                    <div>
+                      {subsequentCount > 0 ? (
+                        <p>
+                          <strong>Automatic Cascade Enabled:</strong> This adjustment will automatically shift opening &amp; closing balances across <strong>{subsequentCount} subsequent session(s)</strong> and update the <strong>Current Active Session&apos;s</strong> opening cash in hand.
+                        </p>
+                      ) : (
+                        <p>
+                          <strong>Active Session Rollover:</strong> This is the immediate previous session. This adjustment will immediately update your <strong>Current Active Session&apos;s</strong> opening cash by <strong>{projectedCashDelta >= 0 ? '+' : ''}₹{projectedCashDelta.toFixed(2)}</strong> and UPI by <strong>{projectedUpiDelta >= 0 ? '+' : ''}₹{projectedUpiDelta.toFixed(2)}</strong>.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* AUDIT NOTES & SUPER ADMIN SECURITY PIN */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Audit Explanation / Reason</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Forgotten cash payment, reconciled via ATM slip"
+                      value={editDiscrepancyNote}
+                      onChange={(e) => setEditDiscrepancyNote(e.target.value)}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-amber-900 mb-1">Super Admin Security PIN *</label>
+                    <input
+                      type="password"
+                      required
+                      placeholder="Enter Super Admin PIN"
+                      value={editAdminPin}
+                      onChange={(e) => setEditAdminPin(e.target.value)}
+                      className="w-full bg-amber-50/80 border border-amber-300 rounded-lg px-3 py-1.5 text-xs font-mono tracking-widest focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                </div>
+
+                {/* MODAL ACTIONS */}
+                <div className="flex justify-end space-x-2 pt-3 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setEditingClosing(null)}
+                    className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={submitting}
+                    className="px-5 py-2 text-xs font-bold bg-amber-600 hover:bg-amber-500 text-white rounded-lg shadow-sm flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer transition"
+                  >
+                    <RotateCcw size={14} />
+                    <span>{submitting ? 'Applying & Cascading...' : 'Apply Adjustment & Cascade Balances'}</span>
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* MODAL 4: QUICK SETTLE BILL DUE MODAL */}
       {settlingBill && (
@@ -1806,10 +2857,13 @@ export default function AccountingPage() {
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">Payment Method</label>
-                <div className="grid grid-cols-2 gap-2">
+                <div className={`grid gap-2 ${Number(settlingBill.customer_advance || 0) > 0 ? 'grid-cols-3' : 'grid-cols-2'}`}>
                   <button
                     type="button"
-                    onClick={() => setSettlePaymentMethod('Cash')}
+                    onClick={() => {
+                      setSettlePaymentMethod('Cash');
+                      setSettlingAmount(settlingBill.due_amount);
+                    }}
                     className={`p-2 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition ${
                       settlePaymentMethod === 'Cash'
                         ? 'bg-amber-50 border-amber-500 text-amber-900 ring-2 ring-amber-500/20'
@@ -1821,7 +2875,10 @@ export default function AccountingPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setSettlePaymentMethod('UPI')}
+                    onClick={() => {
+                      setSettlePaymentMethod('UPI');
+                      setSettlingAmount(settlingBill.due_amount);
+                    }}
                     className={`p-2 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition ${
                       settlePaymentMethod === 'UPI'
                         ? 'bg-cyan-50 border-cyan-500 text-cyan-900 ring-2 ring-cyan-500/20'
@@ -1831,17 +2888,40 @@ export default function AccountingPage() {
                     <Smartphone size={14} className="text-cyan-600" />
                     <span>UPI / Bank</span>
                   </button>
+                  {Number(settlingBill.customer_advance || 0) > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSettlePaymentMethod('Advance');
+                        setSettlingAmount(Math.min(settlingBill.due_amount, Number(settlingBill.customer_advance || 0)));
+                      }}
+                      className={`p-2 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition ${
+                        settlePaymentMethod === 'Advance'
+                          ? 'bg-teal-50 border-teal-500 text-teal-900 ring-2 ring-teal-500/20'
+                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      <CheckCircle2 size={14} className="text-teal-600" />
+                      <span>Advance (₹{Number(settlingBill.customer_advance).toFixed(0)})</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Amount to Collect (₹) *</label>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  {settlePaymentMethod === 'Advance' ? 'Advance Amount to Apply (₹) *' : 'Amount to Collect (₹) *'}
+                </label>
                 <input
                   type="number"
                   required
                   step="0.01"
                   min="0.01"
-                  max={settlingBill.due_amount}
+                  max={
+                    settlePaymentMethod === 'Advance'
+                      ? Math.min(settlingBill.due_amount, Number(settlingBill.customer_advance || 0))
+                      : settlingBill.due_amount
+                  }
                   value={settlingAmount}
                   onChange={(e) => setSettlingAmount(e.target.value === '' ? '' : Number(e.target.value))}
                   className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"

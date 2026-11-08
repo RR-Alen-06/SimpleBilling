@@ -3,7 +3,11 @@ import { Inter } from 'next/font/google';
 import './globals.css';
 import { ClientLayout } from '@/components/ClientLayout';
 
-const inter = Inter({ subsets: ['latin'] });
+const inter = Inter({ 
+  subsets: ['latin'],
+  display: 'swap',
+  fallback: ['system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif']
+});
 
 export const metadata: Metadata = {
   title: 'PrintPro ERP - Billing & Shop Management',
@@ -17,9 +21,6 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="light">
-      <head>
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" />
-      </head>
       <body className={`${inter.className} bg-background text-on-surface min-h-screen flex flex-col antialiased selection:bg-secondary-fixed-dim`}>
         <ClientLayout>{children}</ClientLayout>
       </body>

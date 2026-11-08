@@ -24,7 +24,6 @@ export default function AuditLogsPage() {
   };
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadAuditLogs();
   }, []);
 
