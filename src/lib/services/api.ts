@@ -5725,13 +5725,13 @@ _(Points will be credited upon bill settlement)_`;
     const expected_cash_in_hand = opening_cash + current_cash_inflow - current_cash_outflow - current_transfers_cash_to_upi + current_transfers_upi_to_cash;
     const expected_upi_in_hand = opening_upi + current_upi_inflow - current_upi_outflow + current_transfers_cash_to_upi - current_transfers_upi_to_cash;
 
-    const current_advance_utilized = bills.reduce((sum, b) => sum + Number(b.advance_used || 0), 0);
-    const current_advance_received = payments
-      .filter(p => !p.bill_id && (p.notes?.toLowerCase().includes('advance') || p.payment_method?.toLowerCase().includes('advance')))
-      .reduce((sum, p) => sum + Number(p.amount || 0), 0);
     const opening_advance_pool = latestClosing && latestClosing.closing_advance_pool !== undefined
       ? Number(latestClosing.closing_advance_pool || 0)
       : 0;
+    const current_advance_received = payments
+      .filter(p => !p.bill_id && (p.notes?.toLowerCase().includes('advance') || p.payment_method?.toLowerCase().includes('advance')))
+      .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+    const current_advance_utilized = Math.max(0, Number((opening_advance_pool + current_advance_received - customer_advances_total).toFixed(2)));
 
     return {
       last_closed_session: latestClosing,
@@ -5860,15 +5860,17 @@ _(Points will be credited upon bill settlement)_`;
       }
     });
 
+    const totalCurrentCustomerAdvance = allCustomers.reduce((sum, c) => sum + Number(c.advance_balance || 0), 0);
     const opening_advance_pool = priorClosing && priorClosing.closing_advance_pool !== undefined
       ? Number(priorClosing.closing_advance_pool || 0)
       : 0;
 
-    const advance_utilized = rangeBills.reduce((s, b) => s + Number(b.advance_used || 0), 0);
     const advance_received = rangePayments
       .filter(p => !p.bill_id && (p.notes?.toLowerCase().includes('advance') || p.payment_method?.toLowerCase().includes('advance')))
       .reduce((s, p) => s + Number(p.amount || 0), 0);
-    const closing_advance_pool = Number(Math.max(0, opening_advance_pool + advance_received - advance_utilized).toFixed(2));
+
+    const closing_advance_pool = totalCurrentCustomerAdvance;
+    const advance_utilized = Math.max(0, Number((opening_advance_pool + advance_received - closing_advance_pool).toFixed(2)));
 
     return {
       from_date: fromDate,
