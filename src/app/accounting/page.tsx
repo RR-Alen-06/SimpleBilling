@@ -1968,42 +1968,52 @@ export default function AccountingPage() {
                 </div>
 
                 {/* ADVANCE CARRY-FORWARD BENTO CARD */}
-                <div className="m-3 p-3.5 bg-teal-50/80 border border-teal-200 rounded-xl space-y-2">
-                  <div className="flex items-center justify-between border-b border-teal-200 pb-1.5">
-                    <span className="text-xs font-bold text-teal-950 flex items-center gap-1.5">
-                      <Wallet size={14} className="text-teal-700" />
-                      <span>Customer Advance Carry-Forward Ledger</span>
-                    </span>
-                    <span className="text-[11px] font-mono text-teal-800 font-bold">
-                      Rolls over to Next Session
-                    </span>
+                {((reconcileCalc.opening_advance_pool || 0) > 0 || (reconcileCalc.advance_received || 0) > 0 || (reconcileCalc.closing_advance_pool || 0) > 0) ? (
+                  <div className="m-3 p-3.5 bg-teal-50/80 border border-teal-200 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between border-b border-teal-200 pb-1.5">
+                      <span className="text-xs font-bold text-teal-950 flex items-center gap-1.5">
+                        <Wallet size={14} className="text-teal-700" />
+                        <span>Customer Advance Carry-Forward Ledger</span>
+                      </span>
+                      <span className="text-[11px] font-mono text-teal-800 font-bold">
+                        Rolls over to Next Session
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-2 text-xs font-mono">
+                      <div className="bg-white p-2 rounded-lg border border-teal-100">
+                        <span className="text-slate-500 block text-[10px] font-sans">Opening Advance Pool</span>
+                        <span className="font-bold text-slate-900">₹{(reconcileCalc.opening_advance_pool || 0).toFixed(2)}</span>
+                      </div>
+
+                      <div className="bg-white p-2 rounded-lg border border-teal-100 text-emerald-700">
+                        <span className="text-slate-500 block text-[10px] font-sans">(+) Advance Received</span>
+                        <span className="font-bold">+₹{(reconcileCalc.advance_received || 0).toFixed(2)}</span>
+                      </div>
+
+                      <div className="bg-white p-2 rounded-lg border border-teal-100 text-rose-700">
+                        <span className="text-slate-500 block text-[10px] font-sans">(-) Advance Utilized</span>
+                        <span className="font-bold">-₹{(reconcileCalc.advance_utilized || 0).toFixed(2)}</span>
+                      </div>
+
+                      <div className="bg-teal-100/80 p-2 rounded-lg border border-teal-300 text-teal-900 font-bold">
+                        <span className="text-teal-800 block text-[10px] font-sans">(=) Carry-Forward Pool</span>
+                        <span className="text-sm">₹{(reconcileCalc.closing_advance_pool || 0).toFixed(2)}</span>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-teal-800">
+                      ℹ️ The unspent customer advance pool of <strong>₹{(reconcileCalc.closing_advance_pool || 0).toFixed(2)}</strong> will automatically carry forward as the Opening Advance Pool of your new session.
+                    </p>
                   </div>
-
-                  <div className="grid grid-cols-4 gap-2 text-xs font-mono">
-                    <div className="bg-white p-2 rounded-lg border border-teal-100">
-                      <span className="text-slate-500 block text-[10px] font-sans">Opening Advance Pool</span>
-                      <span className="font-bold text-slate-900">₹{(reconcileCalc.opening_advance_pool || 0).toFixed(2)}</span>
-                    </div>
-
-                    <div className="bg-white p-2 rounded-lg border border-teal-100 text-emerald-700">
-                      <span className="text-slate-500 block text-[10px] font-sans">(+) Advance Received</span>
-                      <span className="font-bold">+₹{(reconcileCalc.advance_received || 0).toFixed(2)}</span>
-                    </div>
-
-                    <div className="bg-white p-2 rounded-lg border border-teal-100 text-rose-700">
-                      <span className="text-slate-500 block text-[10px] font-sans">(-) Advance Utilized</span>
-                      <span className="font-bold">-₹{(reconcileCalc.advance_utilized || 0).toFixed(2)}</span>
-                    </div>
-
-                    <div className="bg-teal-100/80 p-2 rounded-lg border border-teal-300 text-teal-900 font-bold">
-                      <span className="text-teal-800 block text-[10px] font-sans">(=) Carry-Forward Pool</span>
-                      <span className="text-sm">₹{(reconcileCalc.closing_advance_pool || 0).toFixed(2)}</span>
-                    </div>
+                ) : (
+                  <div className="m-3 px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between text-[11px] text-slate-500 font-medium">
+                    <span className="flex items-center gap-1.5">
+                      <Wallet size={13} className="text-slate-400" />
+                      <span>Customer Advance Pool: <strong>₹0.00</strong> (No customer advances in this period)</span>
+                    </span>
+                    <span className="font-mono text-slate-400 font-semibold">Zero Rollover</span>
                   </div>
-                  <p className="text-[10px] text-teal-800">
-                    ℹ️ The unspent customer advance pool of <strong>₹{(reconcileCalc.closing_advance_pool || 0).toFixed(2)}</strong> will automatically carry forward as the Opening Advance Pool of your new session.
-                  </p>
-                </div>
+                )}
 
                 <div className="p-4 grid grid-cols-2 gap-4">
                   {/* CASH COLUMN */}
