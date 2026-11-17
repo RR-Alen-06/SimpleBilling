@@ -176,8 +176,8 @@ function LoginFormContent() {
       return;
     }
 
-    if (cleanPassword.length < 6) {
-      setErrorMsg('Password must be at least 6 characters long.');
+    if (cleanPassword.length < 8) {
+      setErrorMsg('Password must be at least 8 characters long.');
       return;
     }
 

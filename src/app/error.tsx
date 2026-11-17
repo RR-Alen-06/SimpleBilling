@@ -26,10 +26,15 @@ export default function RootErrorBoundary({
         An unexpected error occurred while processing your request. Please try refreshing or return to the dashboard.
       </p>
 
-      {error?.message && (
+      {process.env.NODE_ENV !== 'production' && error?.message && (
         <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-slate-700 font-mono text-xs max-w-lg mb-6 break-all">
           {error.message}
         </div>
+      )}
+      {process.env.NODE_ENV === 'production' && error?.digest && (
+        <p className="text-[11px] font-mono text-slate-400 mb-6">
+          Error reference: {error.digest}
+        </p>
       )}
 
       <div className="flex items-center space-x-3">

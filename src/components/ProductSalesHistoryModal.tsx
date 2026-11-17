@@ -2,7 +2,11 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { ApiService } from '@/lib/services/api';
-import { Product, ProductSalesAnalytics, DateFilterOption } from '@/lib/types';
+import { Product, ProductSalesAnalytics, DateFilterOption, AccountingClosing } from '@/lib/types';
+import { PRODUCT_ANALYTICS_DATE_FILTER_BUTTONS } from '@/lib/constants/filters';
+import { formatClosingOptionLabel, getPeriodDisplayLabel } from '@/lib/utils/sessionFilter';
+import { downloadCSV } from '@/lib/utils/csv';
+import { buildSimplePdfTable } from '@/lib/utils/pdfTable';
 import { 
   X, 
   Package, 
@@ -15,7 +19,9 @@ import {
   Search,
   Filter,
   ArrowUpDown,
-  BarChart3
+  BarChart3,
+  Download,
+  FileSpreadsheet
 } from 'lucide-react';
 
 interface ProductSalesHistoryModalProps {
@@ -25,7 +31,9 @@ interface ProductSalesHistoryModalProps {
 }
 
 export function ProductSalesHistoryModal({ product, onClose, onViewInvoice }: ProductSalesHistoryModalProps) {
-  const [filter, setFilter] = useState<DateFilterOption>('all_time');
+  const [filter, setFilter] = useState<DateFilterOption>('current_session');
+  const [closings, setClosings] = useState<AccountingClosing[]>([]);
+  const [selectedClosingId, setSelectedClosingId] = useState('');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
   const [analytics, setAnalytics] = useState<ProductSalesAnalytics | null>(null);
@@ -33,11 +41,17 @@ export function ProductSalesHistoryModal({ product, onClose, onViewInvoice }: Pr
   const [searchQuery, setSearchQuery] = useState('');
   const [sortDesc, setSortDesc] = useState(true);
 
-  const fetchAnalytics = useCallback(async (selectedFilter: DateFilterOption, from?: string, to?: string) => {
+  useEffect(() => {
+    ApiService.getAccountingClosings()
+      .then(data => setClosings(data || []))
+      .catch(err => console.error('Failed to load closings:', err));
+  }, []);
+
+  const fetchAnalytics = useCallback(async (selectedFilter: DateFilterOption, from?: string, to?: string, closingId?: string) => {
     setLoading(true);
     try {
       const customRange = (selectedFilter === 'custom' && from && to) ? { from, to } : undefined;
-      const data = await ApiService.getProductSalesAnalytics(product.id, selectedFilter, customRange);
+      const data = await ApiService.getProductSalesAnalytics(product.id, selectedFilter, customRange, closingId || undefined);
       setAnalytics(data);
     } catch (err) {
       console.error('Failed to load product sales analytics:', err);
@@ -52,9 +66,10 @@ export function ProductSalesHistoryModal({ product, onClose, onViewInvoice }: Pr
       if (filter === 'custom' && (!customFrom || !customTo)) {
         return;
       }
+      setLoading(true);
       try {
         const customRange = (filter === 'custom' && customFrom && customTo) ? { from: customFrom, to: customTo } : undefined;
-        const data = await ApiService.getProductSalesAnalytics(product.id, filter, customRange);
+        const data = await ApiService.getProductSalesAnalytics(product.id, filter, customRange, selectedClosingId || undefined);
         if (isMounted) {
           setAnalytics(data);
           setLoading(false);
@@ -68,12 +83,76 @@ export function ProductSalesHistoryModal({ product, onClose, onViewInvoice }: Pr
     return () => {
       isMounted = false;
     };
-  }, [product.id, filter, customFrom, customTo]);
+  }, [product.id, filter, selectedClosingId, customFrom, customTo]);
 
   const handleApplyCustomFilter = () => {
     if (customFrom && customTo) {
-      fetchAnalytics('custom', customFrom, customTo);
+      fetchAnalytics('custom', customFrom, customTo, selectedClosingId);
     }
+  };
+
+  const activePeriodLabel = getPeriodDisplayLabel(filter, {
+    closings,
+    selectedClosingId,
+    customFrom,
+    customTo
+  });
+
+  const handleExportCSV = () => {
+    const headers = ['Date & Time', 'Bill Number', 'Customer', 'Quantity', 'Rate (INR)', 'Net Revenue (INR)'];
+    const rows = filteredTransactions.map(t => [
+      new Date(t.created_at).toLocaleString('en-IN'),
+      t.bill_number,
+      t.customer_name || 'Walk-in Customer',
+      t.quantity,
+      Number(t.price || 0).toFixed(2),
+      Number(t.total || 0).toFixed(2)
+    ]);
+    const safeName = product.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    downloadCSV(`Product_Analytics_${safeName}_${filter}`, headers, rows);
+  };
+
+  const handleExportPDF = () => {
+    const isFilteredBySearch = Boolean(searchQuery.trim());
+    const qty = isFilteredBySearch
+      ? filteredTransactions.reduce((s, t) => s + Number(t.quantity || 0), 0)
+      : (analytics?.total_quantity_sold || 0);
+    const revNum = isFilteredBySearch
+      ? filteredTransactions.reduce((s, t) => s + Number(t.total || 0), 0)
+      : Number(analytics?.total_revenue || 0);
+    const orders = isFilteredBySearch
+      ? new Set(filteredTransactions.map(t => t.bill_id)).size
+      : (analytics?.orders_count || 0);
+    const avg = isFilteredBySearch
+      ? (qty > 0 ? (revNum / qty).toFixed(2) : '0.00')
+      : Number(analytics?.average_selling_rate || 0).toFixed(2);
+    const rev = revNum.toFixed(2);
+
+    const doc = buildSimplePdfTable({
+      title: `Product Sales Analytics: ${product.name}`,
+      subtitle: `Scope: ${activePeriodLabel}${isFilteredBySearch ? ` | Filter: "${searchQuery.trim()}"` : ''} | Generated: ${new Date().toLocaleString('en-IN')}`,
+      summaryLine: `Units Sold: ${qty}   |   Orders: ${orders}   |   Avg Rate: Rs.${avg}   |   Total Revenue: Rs.${rev}`,
+      headerFill: [37, 99, 235],
+      columns: [
+        { header: 'Date & Time', x: 16, maxWidth: 34 },
+        { header: 'Bill #', x: 52, maxWidth: 26 },
+        { header: 'Customer', x: 80, maxWidth: 38 },
+        { header: 'Qty', x: 138, maxWidth: 16, align: 'right' },
+        { header: 'Rate (Rs.)', x: 166, maxWidth: 24, align: 'right' },
+        { header: 'Revenue (Rs.)', x: 194, maxWidth: 26, align: 'right' }
+      ],
+      rows: filteredTransactions.map(t => [
+        new Date(t.created_at).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' }),
+        t.bill_number,
+        t.customer_name || 'Walk-in Customer',
+        String(t.quantity),
+        Number(t.price || 0).toFixed(2),
+        Number(t.total || 0).toFixed(2)
+      ])
+    });
+
+    const safeName = product.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    doc.save(`Product_Analytics_${safeName}_${filter}.pdf`);
   };
 
   const filteredTransactions = (analytics?.transactions || [])
@@ -118,13 +197,35 @@ export function ProductSalesHistoryModal({ product, onClose, onViewInvoice }: Pr
               </p>
             </div>
           </div>
-          <button 
-            onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
-            title="Close"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleExportCSV}
+              disabled={loading || filteredTransactions.length === 0}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 disabled:opacity-40 transition cursor-pointer"
+              title="Export filtered transactions to CSV"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              <span>CSV</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleExportPDF}
+              disabled={loading || filteredTransactions.length === 0}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 disabled:opacity-40 transition cursor-pointer"
+              title="Export filtered analytics to PDF"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>PDF</span>
+            </button>
+            <button 
+              onClick={onClose}
+              className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
+              title="Close"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Filter Toolbar */}
@@ -133,18 +234,14 @@ export function ProductSalesHistoryModal({ product, onClose, onViewInvoice }: Pr
             <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1 mr-1 font-mono">
               <Filter className="w-3 h-3 text-slate-500" /> Period:
             </span>
-            {(
-              [
-                { id: 'all_time', label: 'All Time' },
-                { id: 'today', label: 'Today' },
-                { id: 'monthly', label: 'This Month' },
-                { id: 'custom', label: 'Custom Window' }
-              ] as const
-            ).map(preset => (
+            {PRODUCT_ANALYTICS_DATE_FILTER_BUTTONS.map(preset => (
               <button
                 key={preset.id}
-                onClick={() => setFilter(preset.id)}
-                className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all ${
+                onClick={() => {
+                  setFilter(preset.id);
+                  if (preset.id !== 'closed_sessions') setSelectedClosingId('');
+                }}
+                className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
                   filter === preset.id
                     ? 'bg-blue-600 text-white shadow-xs'
                     : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
@@ -154,6 +251,28 @@ export function ProductSalesHistoryModal({ product, onClose, onViewInvoice }: Pr
               </button>
             ))}
           </div>
+
+          {filter === 'closed_sessions' && (
+            <div className="flex items-center gap-2 bg-white px-3 py-1 rounded-lg border border-slate-200 text-xs">
+              <span className="font-semibold text-slate-600">Session:</span>
+              {closings.length === 0 ? (
+                <span className="text-slate-400 italic">No closed sessions</span>
+              ) : (
+                <select
+                  value={selectedClosingId}
+                  onChange={e => setSelectedClosingId(e.target.value)}
+                  className="bg-transparent text-slate-800 focus:outline-hidden text-xs"
+                >
+                  <option value="">All Closed Sessions ({closings.length})</option>
+                  {closings.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {formatClosingOptionLabel(c)}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
 
           {filter === 'custom' && (
             <div className="flex items-center gap-2 bg-white px-3 py-1 rounded-lg border border-slate-200 text-xs">

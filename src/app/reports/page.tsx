@@ -2,23 +2,30 @@
 
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '@/lib/services/api';
-import { 
-  Bill, 
-  CustomerSummary, 
-  DateFilterOption, 
-  AllSettings, 
-  Expense, 
-  Payment, 
-  InternalTransfer 
+import {
+  Bill,
+  CustomerSummary,
+  DateFilterOption,
+  AllSettings,
+  Expense,
+  Payment,
+  InternalTransfer,
+  AccountingClosing
 } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { downloadCSV } from '@/lib/utils/csv';
 import { REPORTS_DATE_FILTER_BUTTONS } from '@/lib/constants/filters';
+import {
+  matchesSessionOrDateFilter,
+  formatClosingOptionLabel,
+  getPeriodDisplayLabel
+} from '@/lib/utils/sessionFilter';
 import { BusinessReportGenerator } from '@/lib/services/businessReportGenerator';
-import { 
-  BarChart3, 
-  Printer, 
-  Users, 
+import { AccountingStatementGenerator } from '@/lib/services/accountingStatementGenerator';
+import {
+  BarChart3,
+  Printer,
+  Users,
   Receipt,
   FileSpreadsheet,
   Filter,
@@ -42,26 +49,29 @@ export default function ReportsPage() {
   const [allExpenses, setAllExpenses] = useState<Expense[]>([]);
   const [allPayments, setAllPayments] = useState<Payment[]>([]);
   const [allTransfers, setAllTransfers] = useState<InternalTransfer[]>([]);
+  const [closings, setClosings] = useState<AccountingClosing[]>([]);
   const [settings, setSettings] = useState<AllSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [generatingPdf, setGeneratingPdf] = useState(false);
   const [generatingMaster, setGeneratingMaster] = useState(false);
 
   // Date Filter State
-  const [dateFilter, setDateFilter] = useState<DateFilterOption>('today');
+  const [dateFilter, setDateFilter] = useState<DateFilterOption>('current_session');
+  const [selectedClosingId, setSelectedClosingId] = useState('');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
 
   const loadReportData = async () => {
     setLoading(true);
     try {
-      const [filteredBills, custSummaries, fetchedSettings, expensesData, paymentsData, transfersData] = await Promise.all([
-        ApiService.getBillsByDateRange(dateFilter, { from: customFrom, to: customTo }),
+      const [filteredBills, custSummaries, fetchedSettings, expensesData, paymentsData, transfersData, closingsData] = await Promise.all([
+        ApiService.getBillsByDateRange(dateFilter, { from: customFrom, to: customTo }, selectedClosingId || undefined),
         ApiService.getCustomerSummaries(),
         ApiService.getSettings(),
         ApiService.getExpenses(),
         ApiService.getPayments(),
-        ApiService.getInternalTransfers()
+        ApiService.getInternalTransfers(),
+        ApiService.getAccountingClosings()
       ]);
       setBills(filteredBills);
       setCustomers(custSummaries);
@@ -69,6 +79,7 @@ export default function ReportsPage() {
       setAllExpenses(expensesData || []);
       setAllPayments(paymentsData || []);
       setAllTransfers(transfersData || []);
+      setClosings(closingsData || []);
     } catch (err) {
       console.error('Error fetching report data:', err);
     } finally {
@@ -78,54 +89,19 @@ export default function ReportsPage() {
 
   useEffect(() => {
     loadReportData();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateFilter, customFrom, customTo]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateFilter, selectedClosingId, customFrom, customTo]);
 
-  // Helper to filter any time-stamped array by the active date range
+  // Helper to filter any time-stamped array by the active session / date range
   const filterByDate = <T extends { created_at: string }>(items: T[], filter: DateFilterOption, range?: { from?: string; to?: string }) => {
-    if (filter === 'all_time') return items;
-    const now = new Date();
-    return items.filter(it => {
-      const d = new Date(it.created_at);
-      if (isNaN(d.getTime())) return true;
-      if (filter === 'today') return d.toDateString() === now.toDateString();
-      if (filter === 'yesterday') {
-        const y = new Date(now);
-        y.setDate(now.getDate() - 1);
-        return d.toDateString() === y.toDateString();
-      }
-      if (filter === 'weekly') {
-        const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        return d >= sevenDaysAgo && d <= now;
-      }
-      if (filter === 'monthly') {
-        return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-      }
-      if (filter === 'quarterly') {
-        const curQ = Math.floor(now.getMonth() / 3);
-        const expQ = Math.floor(d.getMonth() / 3);
-        return curQ === expQ && d.getFullYear() === now.getFullYear();
-      }
-      if (filter === 'yearly') {
-        return d.getFullYear() === now.getFullYear();
-      }
-      if (filter === 'financial_year') {
-        const curM = now.getMonth();
-        const curY = now.getFullYear();
-        const fyStartY = curM >= 3 ? curY : curY - 1;
-        const start = new Date(fyStartY, 3, 1);
-        const end = new Date(fyStartY + 1, 2, 31, 23, 59, 59, 999);
-        return d >= start && d <= end;
-      }
-      if (filter === 'custom' && range?.from && range?.to) {
-        const fromD = new Date(range.from);
-        fromD.setHours(0, 0, 0, 0);
-        const toD = new Date(range.to);
-        toD.setHours(23, 59, 59, 999);
-        return d >= fromD && d <= toD;
-      }
-      return true;
-    });
+    return items.filter(it =>
+      matchesSessionOrDateFilter(it.created_at, filter, {
+        closings,
+        selectedClosingId: selectedClosingId || undefined,
+        customFrom: range?.from,
+        customTo: range?.to
+      })
+    );
   };
 
   const periodExpenses = filterByDate(allExpenses, dateFilter, { from: customFrom, to: customTo });
@@ -193,7 +169,7 @@ export default function ReportsPage() {
   // Customer due list & total ledger dues
   const dueCustomers = customers.filter(c => c.balance_due > 0);
   const totalDuesAmount = dueCustomers.reduce((sum, c) => sum + c.balance_due, 0);
-  
+
   // Period-scoped pending balance dynamically calculated for the active date filter
   const pendingTotal = bills.reduce((sum, b) => {
     const g = Number(b.grand_total || 0);
@@ -220,6 +196,14 @@ export default function ReportsPage() {
   const itemSales = Array.from(itemMap.values()).sort((a, b) => b.total - a.total);
 
   const getFilterLabel = (filter = dateFilter) => {
+    if (filter === 'current_session' || filter === 'closed_sessions') {
+      return getPeriodDisplayLabel(filter, {
+        closings,
+        selectedClosingId: selectedClosingId || undefined,
+        customFrom,
+        customTo
+      });
+    }
     if (filter === 'today') return 'Today';
     if (filter === 'yesterday') return 'Yesterday';
     if (filter === 'weekly') return 'Last 7 Days';
@@ -424,14 +408,14 @@ export default function ReportsPage() {
       });
     });
     const exportItemSales = Array.from(exportItemSalesMap.values()).sort((a, b) => b.total - a.total);
-    
+
     const lines: string[] = [];
-    
+
     // Header
     lines.push(`"${(settings?.shop?.shop_name || 'SimpleBilling Center').toUpperCase()} - ${isMasterAllTime ? 'MASTER ALL-TIME BUSINESS REPORT' : 'PERIOD BUSINESS REPORT'}"`);
     lines.push(`"Report Scope: ${filterLabel} | Generated: ${new Date().toLocaleString('en-IN')}"`);
     lines.push('');
-    
+
     // 1. Executive Summary & Net Profit
     lines.push('"--- 1. EXECUTIVE FINANCIAL SUMMARY & NET PROFIT ---"');
     lines.push('"Metric","Value (INR / Count)"');
@@ -669,18 +653,65 @@ export default function ReportsPage() {
             {dateFilterButtons.map((btn) => (
               <button
                 key={btn.id}
-                onClick={() => setDateFilter(btn.id)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-                  dateFilter === btn.id
+                onClick={() => {
+                  setDateFilter(btn.id);
+                  if (btn.id !== 'closed_sessions') setSelectedClosingId('');
+                }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${dateFilter === btn.id
                     ? 'bg-blue-600 text-white shadow-sm'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
+                  }`}
               >
                 {btn.label}
               </button>
             ))}
           </div>
         </div>
+
+        {/* Closed Session Picker */}
+        {dateFilter === 'closed_sessions' && (
+          <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center gap-3 text-xs">
+            <span className="font-semibold text-slate-600">Closed Session:</span>
+            {closings.length === 0 ? (
+              <span className="text-slate-400 italic">No closed sessions recorded yet.</span>
+            ) : (
+              <>
+                <select
+                  value={selectedClosingId}
+                  onChange={(e) => setSelectedClosingId(e.target.value)}
+                  className="bg-slate-50 border border-slate-300 rounded px-2.5 py-1 text-xs font-medium text-slate-800"
+                >
+                  <option value="">All Closed Sessions ({closings.length})</option>
+                  {closings.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {formatClosingOptionLabel(c)}
+                    </option>
+                  ))}
+                </select>
+                {selectedClosingId && (() => {
+                  const targetClosing = closings.find(c => c.id === selectedClosingId);
+                  if (!targetClosing) return null;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const doc = AccountingStatementGenerator.generateStatementPdf({
+                          shop_settings: settings?.shop || {},
+                          closing: targetClosing
+                        });
+                        doc.save(`Accounting-Statement-${targetClosing.closing_number || 'Session'}.pdf`);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-semibold transition cursor-pointer"
+                    >
+                      <FileText size={13} />
+                      <span>Download Closing PDF</span>
+                    </button>
+                  );
+                })()}
+              </>
+            )}
+          </div>
+        )}
 
         {/* Custom Date Pickers */}
         {dateFilter === 'custom' && (
@@ -796,11 +827,10 @@ export default function ReportsPage() {
       <div className="bg-white p-2 rounded-xl border border-slate-200 shadow-sm flex flex-wrap gap-2 print:hidden">
         <button
           onClick={() => setActiveTab('sales')}
-          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
-            activeTab === 'sales'
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${activeTab === 'sales'
               ? 'bg-blue-600 text-white shadow'
               : 'text-slate-600 hover:bg-slate-100'
-          }`}
+            }`}
         >
           <Receipt size={16} />
           <span>Sales & Bills ({bills.length})</span>
@@ -808,11 +838,10 @@ export default function ReportsPage() {
 
         <button
           onClick={() => setActiveTab('items')}
-          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
-            activeTab === 'items'
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${activeTab === 'items'
               ? 'bg-blue-600 text-white shadow'
               : 'text-slate-600 hover:bg-slate-100'
-          }`}
+            }`}
         >
           <Package size={16} />
           <span>Item Sales Volume ({itemSales.length})</span>
@@ -820,11 +849,10 @@ export default function ReportsPage() {
 
         <button
           onClick={() => setActiveTab('dues')}
-          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
-            activeTab === 'dues'
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${activeTab === 'dues'
               ? 'bg-blue-600 text-white shadow'
               : 'text-slate-600 hover:bg-slate-100'
-          }`}
+            }`}
         >
           <Users size={16} />
           <span>Customer Due List ({dueCustomers.length})</span>
@@ -832,11 +860,10 @@ export default function ReportsPage() {
 
         <button
           onClick={() => setActiveTab('expenses')}
-          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
-            activeTab === 'expenses'
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${activeTab === 'expenses'
               ? 'bg-blue-600 text-white shadow'
               : 'text-slate-600 hover:bg-slate-100'
-          }`}
+            }`}
         >
           <TrendingUp size={16} className="rotate-180 text-rose-500" />
           <span>Operating Expenses ({periodExpenses.length})</span>
@@ -844,11 +871,10 @@ export default function ReportsPage() {
 
         <button
           onClick={() => setActiveTab('cash_payers')}
-          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
-            activeTab === 'cash_payers'
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${activeTab === 'cash_payers'
               ? 'bg-emerald-600 text-white shadow'
               : 'text-slate-600 hover:bg-slate-100'
-          }`}
+            }`}
         >
           <Wallet size={16} className={activeTab === 'cash_payers' ? 'text-white' : 'text-emerald-600'} />
           <span>Cash Payers ({cashPayers.length})</span>
@@ -856,11 +882,10 @@ export default function ReportsPage() {
 
         <button
           onClick={() => setActiveTab('upi_payers')}
-          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
-            activeTab === 'upi_payers'
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${activeTab === 'upi_payers'
               ? 'bg-indigo-600 text-white shadow'
               : 'text-slate-600 hover:bg-slate-100'
-          }`}
+            }`}
         >
           <CreditCard size={16} className={activeTab === 'upi_payers' ? 'text-white' : 'text-indigo-600'} />
           <span>UPI Payers ({upiPayers.length})</span>
@@ -868,11 +893,10 @@ export default function ReportsPage() {
 
         <button
           onClick={() => setActiveTab('transfers')}
-          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
-            activeTab === 'transfers'
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${activeTab === 'transfers'
               ? 'bg-blue-600 text-white shadow'
               : 'text-slate-600 hover:bg-slate-100'
-          }`}
+            }`}
         >
           <ArrowRightLeft size={16} className={activeTab === 'transfers' ? 'text-white' : 'text-blue-600'} />
           <span>Contra Transfers ({periodTransfers.length})</span>
@@ -881,7 +905,7 @@ export default function ReportsPage() {
 
       {/* REPORT CONTENT CARD */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4 print:shadow-none print:border-none print:p-0">
-        
+
         {/* TAB 1: SALES & BILLS */}
         {activeTab === 'sales' && (
           <div className="space-y-4">
@@ -943,9 +967,8 @@ export default function ReportsPage() {
                             ₹{Number(b.grand_total).toFixed(2)}
                           </td>
                           <td className="py-3 px-4 text-center">
-                            <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase ${
-                              isPaid ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
-                            }`}>
+                            <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase ${isPaid ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                              }`}>
                               {isPaid ? 'Fully Paid' : 'Pending'}
                             </span>
                           </td>
@@ -1266,11 +1289,10 @@ export default function ReportsPage() {
                           {new Date(tr.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true })}
                         </td>
                         <td className="py-3 px-4">
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${
-                            tr.direction === 'CASH_TO_UPI'
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${tr.direction === 'CASH_TO_UPI'
                               ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
                               : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                          }`}>
+                            }`}>
                             {tr.direction === 'CASH_TO_UPI' ? 'Cash -> UPI (Deposit)' : 'UPI -> Cash (Withdrawal)'}
                           </span>
                         </td>

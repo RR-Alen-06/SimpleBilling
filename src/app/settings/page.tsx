@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { ApiService, DEFAULT_SETTINGS } from '@/lib/services/api';
+import { formatSequenceNumber } from '@/lib/utils/format';
 import { AllSettings, RoundingMethod, SequenceConfig, LoyaltyRule, LoyaltyRedemptionRule } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { ChangeEmailForm } from '@/components/ChangeEmailForm';
@@ -733,7 +734,7 @@ export default function SettingsPage() {
                             {seq.current_val}
                           </td>
                           <td className="py-3 px-4 text-center font-mono font-bold text-blue-700 text-xs">
-                            {seq.prefix}-{String(seq.current_val + 1).padStart(seq.padding, '0')}
+                            {formatSequenceNumber(seq.prefix, seq.current_val + 1, seq.padding)}
                           </td>
                           <td className="py-3 px-4 text-center">
                             <button

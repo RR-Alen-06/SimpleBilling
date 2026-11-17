@@ -97,11 +97,11 @@ serve(async (req: Request) => {
       );
     }
 
-    // 4. Authorization check: Caller must be the target user OR have admin privileges
+    // 4. Authorization check: Caller must be the target user OR have server-assigned admin privileges in app_metadata
+    // SECURITY: Never trust user_metadata for roles/permissions because users can modify their own user_metadata.
     const isSelf = callerUser.id === userId;
     const isAdmin =
       callerUser.app_metadata?.role === 'admin' ||
-      callerUser.user_metadata?.role === 'admin' ||
       callerUser.app_metadata?.is_admin === true;
 
     if (!isSelf && !isAdmin) {
@@ -156,7 +156,7 @@ serve(async (req: Request) => {
 
       console.error('Supabase admin updateUserById error:', updateErr);
       return new Response(
-        JSON.stringify({ error: `Failed to update email: ${updateErr.message}` }),
+        JSON.stringify({ error: 'Failed to update email address.' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -199,10 +199,9 @@ serve(async (req: Request) => {
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : 'Unknown server error';
     console.error('Unhandled Edge Function error:', err);
     return new Response(
-      JSON.stringify({ error: `Internal server error: ${errorMsg}` }),
+      JSON.stringify({ error: 'Internal server error.' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
