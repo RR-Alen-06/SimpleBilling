@@ -16,6 +16,7 @@ export type DateFilterOption =
   | 'financial_year' 
   | 'specific_date' 
   | 'current_session'
+  | 'closed_sessions'
   | 'custom';
 
 export interface SequenceConfig {

@@ -1,9 +1,16 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import Link from 'next/link';
 import { ApiService } from '@/lib/services/api';
-import { Bill, AllSettings } from '@/lib/types';
+import { AccountingStatementGenerator } from '@/lib/services/accountingStatementGenerator';
+import { Bill, AllSettings, AccountingClosing, DateFilterOption } from '@/lib/types';
+import { BILLS_DATE_FILTER_BUTTONS } from '@/lib/constants/filters';
+import {
+  matchesSessionOrDateFilter,
+  getBillSessionInfo,
+  formatClosingOptionLabel,
+  getPeriodDisplayLabel
+} from '@/lib/utils/sessionFilter';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { InvoiceModal } from '@/components/InvoiceModal';
 import { EditBillModal } from '@/components/EditBillModal';
@@ -20,15 +27,31 @@ import {
   RotateCcw,
   RefreshCw,
   Wallet,
-  Loader2
+  Loader2,
+  Calendar,
+  Filter
 } from 'lucide-react';
 
 export default function ManageBillsPage() {
   const [bills, setBills] = useState<Bill[]>([]);
+  const [closings, setClosings] = useState<AccountingClosing[]>([]);
   const [settings, setSettings] = useState<AllSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [dateFilter, setDateFilter] = useState<DateFilterOption>('current_session');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'partial' | 'pay_later'>('all');
+  const [selectedClosingId, setSelectedClosingId] = useState('');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
   const [selectedBill, setSelectedBill] = useState<Bill | null>(null);
+
+  // Settle Due Modal State
+  const [settlingBill, setSettlingBill] = useState<Bill | null>(null);
+  const [settleMethod, setSettleMethod] = useState<'Cash' | 'UPI' | 'Split'>('Cash');
+  const [settleCash, setSettleCash] = useState<number | ''>('');
+  const [settleUpi, setSettleUpi] = useState<number | ''>('');
+  const [settleNotes, setSettleNotes] = useState('');
+  const [settling, setSettling] = useState(false);
 
   // Edit Bill Modal
   const [editingBill, setEditingBill] = useState<Bill | null>(null);
@@ -101,12 +124,14 @@ export default function ManageBillsPage() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [billsData, settingsData] = await Promise.all([
+      const [billsData, settingsData, closingsData] = await Promise.all([
         ApiService.getBills(),
-        ApiService.getSettings()
+        ApiService.getSettings(),
+        ApiService.getAccountingClosings()
       ]);
       setBills(billsData);
       setSettings(settingsData);
+      setClosings(closingsData || []);
     } catch (err) {
       console.error('Error fetching bills & settings:', err);
     } finally {
@@ -210,10 +235,95 @@ export default function ManageBillsPage() {
     }
   };
 
-  const filteredBills = bills.filter(b => 
-    b.bill_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (b.customer_name && b.customer_name.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  const handleOpenSettleDue = (bill: Bill) => {
+    const remaining = Math.max(0, Number(bill.grand_total || 0) - Number(bill.paid_total || 0));
+    setSettlingBill(bill);
+    setSettleMethod('Cash');
+    setSettleCash(Number(remaining.toFixed(2)));
+    setSettleUpi('');
+    setSettleNotes('');
+    setErrorMsg('');
+    setSuccessMsg('');
+  };
+
+  const handleSettleDueSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!settlingBill) return;
+    const remaining = Math.max(0, Number(settlingBill.grand_total || 0) - Number(settlingBill.paid_total || 0));
+    const cashAmt = settleMethod === 'UPI' ? 0 : Number(settleCash || 0);
+    const upiAmt = settleMethod === 'Cash' ? 0 : Number(settleUpi || 0);
+    const totalAmt = Number((cashAmt + upiAmt).toFixed(2));
+
+    if (isNaN(totalAmt) || totalAmt <= 0) {
+      setErrorMsg('Please enter a valid payment amount greater than ₹0.00.');
+      return;
+    }
+    if (totalAmt > remaining + 0.01) {
+      setErrorMsg(`Amount ₹${totalAmt.toFixed(2)} exceeds remaining bill due ₹${remaining.toFixed(2)}.`);
+      return;
+    }
+
+    setSettling(true);
+    setErrorMsg('');
+    setSuccessMsg('');
+    try {
+      const note = settleNotes.trim() || `Quick settle for ${settlingBill.bill_number}`;
+      if (cashAmt > 0) {
+        await ApiService.settleBillDue({
+          bill_id: settlingBill.id,
+          customer_id: settlingBill.customer_id,
+          amount: cashAmt,
+          payment_method: 'Cash',
+          notes: note
+        }, 'Admin');
+      }
+      if (upiAmt > 0) {
+        await ApiService.settleBillDue({
+          bill_id: settlingBill.id,
+          customer_id: settlingBill.customer_id,
+          amount: upiAmt,
+          payment_method: 'UPI',
+          notes: note
+        }, 'Admin');
+      }
+      setSuccessMsg(`Settled ₹${totalAmt.toFixed(2)} for ${settlingBill.bill_number}.`);
+      setSettlingBill(null);
+      await loadData();
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to settle bill due');
+    } finally {
+      setSettling(false);
+    }
+  };
+
+  const filteredBills = bills.filter(b => {
+    const matchesSearch =
+      !searchTerm.trim() ||
+      b.bill_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (b.customer_name && b.customer_name.toLowerCase().includes(searchTerm.toLowerCase()));
+    if (!matchesSearch) return false;
+
+    const paid = Number(b.paid_total || 0);
+    const grand = Number(b.grand_total || 0);
+    const remaining = Math.max(0, grand - paid);
+    if (statusFilter === 'paid' && remaining > 0.01) return false;
+    if (statusFilter === 'partial' && (remaining <= 0.01 || paid <= 0.01)) return false;
+    if (statusFilter === 'pay_later' && (remaining <= 0.01 || paid > 0.01)) return false;
+
+    return matchesSessionOrDateFilter(b.created_at, dateFilter, {
+      closings,
+      selectedClosingId,
+      customFrom,
+      customTo
+    });
+  });
+
+  const activePeriodLabel = getPeriodDisplayLabel(dateFilter, {
+    closings,
+    selectedClosingId,
+    customFrom,
+    customTo
+  });
 
   return (
     <div className="space-y-6">
@@ -253,16 +363,151 @@ export default function ManageBillsPage() {
         </div>
       )}
 
-      {/* Search Bar */}
-      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center space-x-3">
-        <Search size={18} className="text-slate-400" />
-        <input
-          type="text"
-          placeholder="Search by Bill Number or Customer Name..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          className="w-full bg-transparent text-sm focus:outline-none text-slate-800"
-        />
+      {/* Session / Time Range Filter & Search Bar */}
+      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1 mr-1">
+              <Filter size={13} /> Scope:
+            </span>
+            {BILLS_DATE_FILTER_BUTTONS.map(btn => (
+              <button
+                key={btn.id}
+                type="button"
+                onClick={() => {
+                  setDateFilter(btn.id);
+                  if (btn.id !== 'closed_sessions') setSelectedClosingId('');
+                }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  dateFilter === btn.id
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                }`}
+              >
+                {btn.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2 text-xs text-slate-600">
+            <span className="px-2.5 py-1 rounded-full bg-slate-100 border border-slate-200 font-medium">
+              {activePeriodLabel}
+            </span>
+            <span className="px-2.5 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200 font-bold">
+              {filteredBills.length} {filteredBills.length === 1 ? 'bill' : 'bills'}
+            </span>
+          </div>
+        </div>
+
+        {dateFilter === 'closed_sessions' && (
+          <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-100">
+            <span className="text-xs font-medium text-slate-600">Closed Session:</span>
+            {closings.length === 0 ? (
+              <span className="text-xs text-slate-400 italic">No closed sessions recorded yet.</span>
+            ) : (
+              <>
+                <select
+                  value={selectedClosingId}
+                  onChange={(e) => setSelectedClosingId(e.target.value)}
+                  className="text-xs bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">All Closed Sessions ({closings.length})</option>
+                  {closings.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {formatClosingOptionLabel(c)}
+                    </option>
+                  ))}
+                </select>
+                {selectedClosingId && (() => {
+                  const targetClosing = closings.find(c => c.id === selectedClosingId);
+                  if (!targetClosing) return null;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const doc = AccountingStatementGenerator.generateStatementPdf({
+                          shop_settings: settings?.shop || {},
+                          closing: targetClosing
+                        });
+                        doc.save(`Accounting-Statement-${targetClosing.closing_number || 'Session'}.pdf`);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 transition cursor-pointer"
+                    >
+                      <FileText size={13} />
+                      <span>Download Closing PDF</span>
+                    </button>
+                  );
+                })()}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Payment Status Filter Pills */}
+        <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-100">
+          <span className="text-xs font-bold text-slate-500 uppercase tracking-wider mr-1">Status:</span>
+          {(
+            [
+              { id: 'all', label: 'All' },
+              { id: 'paid', label: 'Paid' },
+              { id: 'partial', label: 'Partial' },
+              { id: 'pay_later', label: 'Pay Later' }
+            ] as const
+          ).map(st => (
+            <button
+              key={st.id}
+              type="button"
+              onClick={() => setStatusFilter(st.id)}
+              className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                statusFilter === st.id
+                  ? 'bg-slate-800 text-white shadow-xs'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              {st.label}
+            </button>
+          ))}
+        </div>
+
+        {dateFilter === 'custom' && (
+          <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-100 text-xs">
+            <Calendar size={14} className="text-blue-600" />
+            <span className="font-medium text-slate-600">From:</span>
+            <input
+              type="date"
+              value={customFrom}
+              onChange={(e) => setCustomFrom(e.target.value)}
+              className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <span className="text-slate-400">to</span>
+            <input
+              type="date"
+              value={customTo}
+              onChange={(e) => setCustomTo(e.target.value)}
+              className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            {(customFrom || customTo) && (
+              <button
+                type="button"
+                onClick={() => { setCustomFrom(''); setCustomTo(''); }}
+                className="text-slate-500 hover:text-slate-800 underline ml-1 cursor-pointer"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+
+        <div className="flex items-center space-x-3 pt-2 border-t border-slate-100">
+          <Search size={18} className="text-slate-400" />
+          <input
+            type="text"
+            placeholder="Search by Bill Number or Customer Name..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full bg-transparent text-sm focus:outline-none text-slate-800"
+          />
+        </div>
       </div>
 
       {/* BILLS TABLE */}
@@ -296,11 +541,23 @@ export default function ManageBillsPage() {
                   const remaining = Math.max(0, grand - paid);
                   const isFullyPaid = remaining <= 0.01;
                   const isPartiallyPaid = !isFullyPaid && paid > 0.01;
+                  const sessionInfo = getBillSessionInfo(b.created_at, closings);
 
                   return (
                     <tr key={b.id} className="hover:bg-slate-50/80 transition-colors">
                       <td className="px-6 py-4 font-data-mono font-bold text-slate-900">
-                        {b.bill_number}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span>{b.bill_number}</span>
+                          <span
+                            className={`text-[10px] font-sans font-semibold px-2 py-0.5 rounded-full border ${
+                              sessionInfo.isClosed
+                                ? 'bg-slate-100 text-slate-600 border-slate-200'
+                                : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            }`}
+                          >
+                            {sessionInfo.label}
+                          </span>
+                        </div>
                         {b.edited_at && (
                           <span className="block text-[10px] text-amber-600 font-sans font-normal flex items-center space-x-0.5 mt-0.5">
                             <Clock size={10} />
@@ -377,22 +634,22 @@ export default function ManageBillsPage() {
                     <td className="px-6 py-4 text-center">
                       <div className="flex items-center justify-center space-x-1.5">
                         {!isFullyPaid && b.customer_id && (
-                          <>
-                            <button
-                              onClick={() => handleOpenAllocateAdvance(b)}
-                              className="p-1.5 text-teal-700 hover:text-teal-900 hover:bg-teal-50 rounded transition"
-                              title="Apply Customer Advance Credit to this Bill"
-                            >
-                              <Wallet size={16} />
-                            </button>
-                            <Link
-                              href={`/payments?customerId=${b.customer_id}`}
-                              className="p-1.5 text-emerald-700 hover:text-emerald-800 hover:bg-emerald-50 rounded transition"
-                              title="Collect Payment"
-                            >
-                              <CreditCard size={16} />
-                            </Link>
-                          </>
+                          <button
+                            onClick={() => handleOpenAllocateAdvance(b)}
+                            className="p-1.5 text-teal-700 hover:text-teal-900 hover:bg-teal-50 rounded transition cursor-pointer"
+                            title="Apply Customer Advance Credit to this Bill"
+                          >
+                            <Wallet size={16} />
+                          </button>
+                        )}
+                        {!isFullyPaid && (
+                          <button
+                            onClick={() => handleOpenSettleDue(b)}
+                            className="p-1.5 text-emerald-700 hover:text-emerald-800 hover:bg-emerald-50 rounded transition cursor-pointer"
+                            title="Settle Due / Record Payment"
+                          >
+                            <CreditCard size={16} />
+                          </button>
                         )}
                         <button
                           onClick={() => handleViewBill(b.id)}
@@ -741,6 +998,121 @@ export default function ManageBillsPage() {
           </div>
         </div>
       )}
+
+      {/* Quick Settle Due Modal */}
+      {settlingBill && (() => {
+        const remainingDue = Math.max(0, Number(settlingBill.grand_total || 0) - Number(settlingBill.paid_total || 0));
+        return (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-md w-full overflow-hidden">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 bg-emerald-50/70">
+                <div className="flex items-center space-x-2">
+                  <CreditCard className="text-emerald-600" size={18} />
+                  <h3 className="font-bold text-slate-900 text-sm">Settle Due — {settlingBill.bill_number}</h3>
+                </div>
+                <button onClick={() => setSettlingBill(null)} className="text-slate-400 hover:text-slate-600 p-1 rounded-lg">
+                  <X size={18} />
+                </button>
+              </div>
+              <form onSubmit={handleSettleDueSubmit} className="p-5 space-y-4">
+                <div className="flex justify-between text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                  <span className="text-slate-600">{settlingBill.customer_name || 'Walk-in Customer'}</span>
+                  <span className="font-bold text-amber-700 font-data-mono">Remaining Due: ₹{remainingDue.toFixed(2)}</span>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5">Payment Method</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(['Cash', 'UPI', 'Split'] as const).map(m => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => {
+                          setSettleMethod(m);
+                          if (m === 'Cash') {
+                            setSettleCash(Number(remainingDue.toFixed(2)));
+                            setSettleUpi('');
+                          } else if (m === 'UPI') {
+                            setSettleCash('');
+                            setSettleUpi(Number(remainingDue.toFixed(2)));
+                          } else {
+                            setSettleCash(Number((remainingDue / 2).toFixed(2)));
+                            setSettleUpi(Number((remainingDue - Number((remainingDue / 2).toFixed(2))).toFixed(2)));
+                          }
+                        }}
+                        className={`py-2 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                          settleMethod === m
+                            ? 'bg-emerald-600 text-white border-emerald-600'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {settleMethod !== 'UPI' && (
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Cash Amount (₹)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={settleCash}
+                      onChange={e => setSettleCash(e.target.value === '' ? '' : Number(e.target.value))}
+                      className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-data-mono font-bold text-slate-900"
+                    />
+                  </div>
+                )}
+
+                {settleMethod !== 'Cash' && (
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">UPI Amount (₹)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={settleUpi}
+                      onChange={e => setSettleUpi(e.target.value === '' ? '' : Number(e.target.value))}
+                      className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-data-mono font-bold text-slate-900"
+                    />
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Notes (Optional)</label>
+                  <input
+                    type="text"
+                    value={settleNotes}
+                    onChange={e => setSettleNotes(e.target.value)}
+                    placeholder="e.g. Received at counter"
+                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800"
+                  />
+                </div>
+
+                <div className="flex justify-end space-x-2 pt-3 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setSettlingBill(null)}
+                    className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg transition"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={settling}
+                    className="px-5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg shadow transition flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
+                  >
+                    {settling ? <Loader2 size={14} className="animate-spin" /> : <CreditCard size={14} />}
+                    <span>{settling ? 'Recording...' : 'Record Payment'}</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Invoice Modal */}
       {selectedBill && (

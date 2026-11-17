@@ -20,6 +20,13 @@ export interface BookReportData {
   entries: BookEntry[];
 }
 
+function formatRs(amount: number): string {
+  return `Rs.${Number(amount || 0).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  })}`;
+}
+
 export class CashBankBookPdfGenerator {
   static generateBookPdf(data: BookReportData): jsPDF {
     const doc = new jsPDF({
@@ -31,56 +38,52 @@ export class CashBankBookPdfGenerator {
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
     const margin = 12;
-    const contentWidth = pageWidth - margin * 2;
+    const contentWidth = pageWidth - margin * 2; // 186mm
     let y = margin;
 
     const isCash = data.book_type === 'CASH';
     const bookTitle = isCash ? 'CASH BOOK LEDGER' : 'BANK & UPI BOOK LEDGER';
-    const primaryColor = isCash ? [16, 185, 129] : [79, 70, 229]; // emerald or indigo
+    const primaryColor: [number, number, number] = isCash ? [16, 185, 129] : [79, 70, 229];
 
     const totalInflow = data.entries.reduce((sum, e) => sum + Number(e.inflow || 0), 0);
     const totalOutflow = data.entries.reduce((sum, e) => sum + Number(e.outflow || 0), 0);
-    const _netChange = totalInflow - totalOutflow;
 
     const renderHeader = () => {
-      // Top Accent Bar
       doc.setFillColor(primaryColor[0], primaryColor[1], primaryColor[2]);
       doc.rect(margin, y, contentWidth, 2, 'F');
       y += 6;
 
-      // Shop Information
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(15);
-      doc.setTextColor(15, 23, 42); // slate-900
+      doc.setFontSize(14);
+      doc.setTextColor(15, 23, 42);
       doc.text(data.shop_settings.shop_name || 'SimBilling Store', margin, y);
 
-      // Document Title
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(13);
+      doc.setFontSize(12);
       doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
       doc.text(bookTitle, pageWidth - margin, y, { align: 'right' });
       y += 5;
 
-      // Sub-details
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(8);
-      doc.setTextColor(100, 116, 139); // slate-500
+      doc.setTextColor(100, 116, 139);
 
       let addressStr = data.shop_settings.address || '';
       const metaParts: string[] = [];
-      if (data.shop_settings.phone) metaParts.push(`Phone: ${data.shop_settings.phone}`);
+      if (data.shop_settings.phone) metaParts.push(`Ph: ${data.shop_settings.phone}`);
       if (data.shop_settings.gst_number) metaParts.push(`GSTIN: ${data.shop_settings.gst_number}`);
       if (metaParts.length > 0) {
         addressStr = addressStr ? `${addressStr} | ${metaParts.join(' | ')}` : metaParts.join(' | ');
       }
       if (addressStr) {
-        doc.text(addressStr, margin, y);
+        const addrLines = doc.splitTextToSize(addressStr, 105);
+        doc.text(addrLines[0] || '', margin, y);
       }
 
       doc.text(`Period: ${data.period_label}`, pageWidth - margin, y, { align: 'right' });
       y += 4;
       doc.text(`Generated: ${new Date().toLocaleString('en-IN')}`, pageWidth - margin, y, { align: 'right' });
-      y += 4;
+      y += 3.5;
 
       doc.setDrawColor(226, 232, 240);
       doc.setLineWidth(0.3);
@@ -90,9 +93,10 @@ export class CashBankBookPdfGenerator {
 
     renderHeader();
 
-    // Opening Balance & Summary KPI Cards
-    const cardWidth = (contentWidth - 6) / 3;
-    const cardHeight = 15;
+    // 3 Summary KPI Cards
+    const cardGap = 3;
+    const cardWidth = (contentWidth - cardGap * 2) / 3;
+    const cardHeight = 16;
 
     // Card 1: Opening Balance
     doc.setFillColor(248, 250, 252);
@@ -102,70 +106,91 @@ export class CashBankBookPdfGenerator {
     doc.setFontSize(7.5);
     doc.setTextColor(100, 116, 139);
     doc.text(`OPENING ${isCash ? 'CASH' : 'BANK / UPI'}`, margin + 3, y + 5);
-    doc.setFontSize(11);
+    doc.setFontSize(10.5);
     doc.setTextColor(15, 23, 42);
-    doc.text(`₹${Number(data.opening_balance || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, margin + 3, y + 11.5);
+    doc.text(formatRs(data.opening_balance), margin + 3, y + 12);
 
-    // Card 2: Total Inflows & Outflows
-    doc.roundedRect(margin + cardWidth + 3, y, cardWidth, cardHeight, 1.5, 1.5, 'FD');
+    // Card 2: Total Inflow & Outflow
+    const card2X = margin + cardWidth + cardGap;
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(card2X, y, cardWidth, cardHeight, 1.5, 1.5, 'FD');
     doc.setFontSize(7.5);
     doc.setTextColor(100, 116, 139);
-    doc.text('TOTAL INFLOW / OUTFLOW', margin + cardWidth + 6, y + 5);
-    doc.setFontSize(9);
-    doc.setTextColor(16, 185, 129); // green
-    doc.text(`+₹${totalInflow.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, margin + cardWidth + 6, y + 11.5);
-    doc.setTextColor(239, 68, 68); // red
-    doc.text(`-₹${totalOutflow.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, margin + cardWidth + cardWidth - 3, y + 11.5, { align: 'right' });
+    doc.text('INFLOW / OUTFLOW', card2X + 3, y + 5);
+    doc.setFontSize(8.5);
+    doc.setTextColor(16, 185, 129);
+    doc.text(`+${formatRs(totalInflow)}`, card2X + 3, y + 10.2);
+    doc.setTextColor(239, 68, 68);
+    doc.text(`-${formatRs(totalOutflow)}`, card2X + 3, y + 14.2);
 
     // Card 3: Closing Balance
-    doc.roundedRect(margin + (cardWidth * 2) + 6, y, cardWidth, cardHeight, 1.5, 1.5, 'FD');
+    const card3X = margin + (cardWidth + cardGap) * 2;
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(card3X, y, cardWidth, cardHeight, 1.5, 1.5, 'FD');
     doc.setFontSize(7.5);
     doc.setTextColor(100, 116, 139);
-    doc.text(`CLOSING ${isCash ? 'CASH' : 'BANK / UPI'}`, margin + (cardWidth * 2) + 9, y + 5);
-    doc.setFontSize(11);
+    doc.text(`CLOSING ${isCash ? 'CASH' : 'BANK / UPI'}`, card3X + 3, y + 5);
+    doc.setFontSize(10.5);
     doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
-    doc.text(`₹${Number(data.closing_balance || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, margin + (cardWidth * 2) + 9, y + 11.5);
+    doc.text(formatRs(data.closing_balance), card3X + 3, y + 12);
 
     y += cardHeight + 6;
 
-    // Table Header
-    const colX = {
-      date: margin,
-      ref: margin + 28,
-      desc: margin + 55,
-      party: margin + 115,
-      inflow: margin + 145,
-      outflow: margin + 165,
-      balance: pageWidth - margin
+    // 6-Column Layout (186mm total width, well-spaced numeric columns)
+    const col = {
+      date: margin + 1.5,       // 13.5..40.5 (27mm)
+      ref: margin + 29,         // 41..64 (23mm)
+      desc: margin + 53,        // 65..124 (59mm)
+      inflowRight: margin + 136,  // right-aligned (22mm)
+      outflowRight: margin + 160, // right-aligned (22mm)
+      balanceRight: pageWidth - margin - 1.5 // right-aligned at 196.5 (24mm)
     };
 
     const renderTableHeader = () => {
-      doc.setFillColor(241, 245, 249); // slate-100
+      doc.setFillColor(primaryColor[0], primaryColor[1], primaryColor[2]);
       doc.rect(margin, y, contentWidth, 7, 'F');
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(7.5);
-      doc.setTextColor(51, 65, 85);
+      doc.setTextColor(255, 255, 255);
 
-      doc.text('Date & Time', colX.date + 1, y + 4.8);
-      doc.text('Ref #', colX.ref, y + 4.8);
-      doc.text('Particulars / Description', colX.desc, y + 4.8);
-      doc.text('Party / Customer', colX.party, y + 4.8);
-      doc.text('Inflow (₹)', colX.inflow + 15, y + 4.8, { align: 'right' });
-      doc.text('Outflow (₹)', colX.outflow + 15, y + 4.8, { align: 'right' });
-      doc.text('Balance (₹)', colX.balance - 1, y + 4.8, { align: 'right' });
+      doc.text('Date & Time', col.date, y + 4.8);
+      doc.text('Ref #', col.ref, y + 4.8);
+      doc.text('Particulars / Description', col.desc, y + 4.8);
+      doc.text('Inflow (Rs.)', col.inflowRight, y + 4.8, { align: 'right' });
+      doc.text('Outflow (Rs.)', col.outflowRight, y + 4.8, { align: 'right' });
+      doc.text('Balance (Rs.)', col.balanceRight, y + 4.8, { align: 'right' });
 
       y += 7;
     };
 
     renderTableHeader();
 
-    // Table Rows
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7);
+    // Opening Balance Row
+    doc.setFillColor(241, 245, 249);
+    doc.rect(margin, y, contentWidth, 6.5, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(71, 85, 105);
+    doc.text('—', col.date, y + 4.4);
+    doc.text('OPENING', col.ref, y + 4.4);
+    doc.text('Opening Balance Brought Forward', col.desc, y + 4.4);
+    doc.setTextColor(148, 163, 184);
+    doc.text('—', col.inflowRight, y + 4.4, { align: 'right' });
+    doc.text('—', col.outflowRight, y + 4.4, { align: 'right' });
+    doc.setTextColor(15, 23, 42);
+    doc.text(formatRs(data.opening_balance), col.balanceRight, y + 4.4, { align: 'right' });
+    y += 6.5;
 
+    // Ledger Rows
     data.entries.forEach((entry, index) => {
-      // Check page break
-      if (y + 7 > pageHeight - 20) {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+
+      const sanitizedDesc = (entry.description || '—').replace(/₹/g, 'Rs.');
+      const descLines = doc.splitTextToSize(sanitizedDesc, 58);
+      const rowHeight = Math.max(6.2, descLines.length * 3.6 + 2.6);
+
+      if (y + rowHeight > pageHeight - 20) {
         doc.addPage();
         y = margin;
         renderHeader();
@@ -174,10 +199,9 @@ export class CashBankBookPdfGenerator {
 
       if (index % 2 === 1) {
         doc.setFillColor(248, 250, 252);
-        doc.rect(margin, y, contentWidth, 6, 'F');
+        doc.rect(margin, y, contentWidth, rowHeight, 'F');
       }
 
-      // Format date
       let dateDisplay = entry.date;
       try {
         const d = new Date(entry.date);
@@ -186,70 +210,70 @@ export class CashBankBookPdfGenerator {
         dateDisplay = entry.date.slice(0, 16);
       }
 
+      const textY = y + 4.1;
+      doc.setFont('helvetica', 'normal');
       doc.setTextColor(71, 85, 105);
-      doc.text(dateDisplay, colX.date + 1, y + 4.2);
+      doc.text(dateDisplay, col.date, textY);
 
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(30, 41, 59);
-      doc.text(entry.ref_number || '—', colX.ref, y + 4.2);
+      const refText = doc.splitTextToSize(entry.ref_number || '—', 22)[0] || '—';
+      doc.text(refText, col.ref, textY);
 
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(51, 65, 85);
-      const truncatedDesc = entry.description.length > 36 ? `${entry.description.slice(0, 34)}...` : entry.description;
-      doc.text(truncatedDesc, colX.desc, y + 4.2);
+      doc.text(descLines, col.desc, textY);
 
-      const truncatedParty = (entry.party_name || '—').length > 18 ? `${(entry.party_name || '—').slice(0, 16)}...` : (entry.party_name || '—');
-      doc.text(truncatedParty, colX.party, y + 4.2);
-
-      // Inflow
       if (entry.inflow > 0) {
         doc.setTextColor(16, 185, 129);
-        doc.text(`+${entry.inflow.toFixed(2)}`, colX.inflow + 15, y + 4.2, { align: 'right' });
+        doc.text(`+${Number(entry.inflow).toFixed(2)}`, col.inflowRight, textY, { align: 'right' });
       } else {
         doc.setTextColor(148, 163, 184);
-        doc.text('—', colX.inflow + 15, y + 4.2, { align: 'right' });
+        doc.text('—', col.inflowRight, textY, { align: 'right' });
       }
 
-      // Outflow
       if (entry.outflow > 0) {
         doc.setTextColor(239, 68, 68);
-        doc.text(`-${entry.outflow.toFixed(2)}`, colX.outflow + 15, y + 4.2, { align: 'right' });
+        doc.text(`-${Number(entry.outflow).toFixed(2)}`, col.outflowRight, textY, { align: 'right' });
       } else {
         doc.setTextColor(148, 163, 184);
-        doc.text('—', colX.outflow + 15, y + 4.2, { align: 'right' });
+        doc.text('—', col.outflowRight, textY, { align: 'right' });
       }
 
-      // Running Balance
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(15, 23, 42);
-      doc.text(`₹${Number(entry.running_balance || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, colX.balance - 1, y + 4.2, { align: 'right' });
+      doc.text(formatRs(entry.running_balance), col.balanceRight, textY, { align: 'right' });
 
-      y += 6;
+      doc.setDrawColor(241, 245, 249);
+      doc.setLineWidth(0.2);
+      doc.line(margin, y + rowHeight, pageWidth - margin, y + rowHeight);
+
+      y += rowHeight;
     });
 
     // Final Totals Bar
-    if (y + 12 > pageHeight - 20) {
+    if (y + 14 > pageHeight - 20) {
       doc.addPage();
-      y = margin + 10;
+      y = margin + 8;
     }
 
     doc.setFillColor(241, 245, 249);
     doc.setDrawColor(203, 213, 225);
-    doc.rect(margin, y, contentWidth, 7, 'FD');
+    doc.rect(margin, y, contentWidth, 7.5, 'FD');
 
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(8);
+    doc.setFontSize(7.5);
     doc.setTextColor(15, 23, 42);
-    doc.text('TOTAL MOVEMENTS & CLOSING BALANCE', margin + 3, y + 4.8);
+    doc.text(`TOTAL (${data.entries.length} ENTRIES) & CLOSING`, col.date, y + 5);
 
     doc.setTextColor(16, 185, 129);
-    doc.text(`+₹${totalInflow.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, colX.inflow + 15, y + 4.8, { align: 'right' });
+    doc.text(`+${formatRs(totalInflow)}`, col.inflowRight, y + 5, { align: 'right' });
 
     doc.setTextColor(239, 68, 68);
-    doc.text(`-₹${totalOutflow.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, colX.outflow + 15, y + 4.8, { align: 'right' });
+    doc.text(`-${formatRs(totalOutflow)}`, col.outflowRight, y + 5, { align: 'right' });
 
     doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
-    doc.text(`₹${Number(data.closing_balance || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, colX.balance - 1, y + 4.8, { align: 'right' });
+    doc.text(formatRs(data.closing_balance), col.balanceRight, y + 5, { align: 'right' });
 
     y += 18;
 
@@ -263,16 +287,14 @@ export class CashBankBookPdfGenerator {
     doc.setDrawColor(148, 163, 184);
     doc.setLineWidth(0.4);
 
-    // Left Signature: Prepared By
     doc.line(margin + 5, y, margin + 5 + sigWidth, y);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7.5);
     doc.setTextColor(100, 116, 139);
-    doc.text('Prepared By (Cashier / Accountant)', margin + 5 + (sigWidth / 2), y + 4, { align: 'center' });
+    doc.text('Prepared By (Cashier / Accountant)', margin + 5 + sigWidth / 2, y + 4, { align: 'center' });
 
-    // Right Signature: Verified By Super Admin / Auditor
     doc.line(pageWidth - margin - 5 - sigWidth, y, pageWidth - margin - 5, y);
-    doc.text('Certified By (Super Admin / Auditor)', pageWidth - margin - 5 - (sigWidth / 2), y + 4, { align: 'center' });
+    doc.text('Certified By (Super Admin / Auditor)', pageWidth - margin - 5 - sigWidth / 2, y + 4, { align: 'center' });
 
     // Page numbers
     const totalPages = doc.getNumberOfPages();

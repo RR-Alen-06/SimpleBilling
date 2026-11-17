@@ -43,3 +43,6 @@ next-env.d.ts
 # supabase temp
 supabase/.temp/
 .temp/
+
+# local notes
+SKILL (1).md

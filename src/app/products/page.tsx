@@ -2,7 +2,11 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { ApiService } from '@/lib/services/api';
-import { Product, Bill, CustomItemAnalytics, DateFilterOption } from '@/lib/types';
+import { Product, Bill, CustomItemAnalytics, DateFilterOption, AccountingClosing } from '@/lib/types';
+import { PRODUCT_ANALYTICS_DATE_FILTER_BUTTONS } from '@/lib/constants/filters';
+import { formatClosingOptionLabel, getPeriodDisplayLabel } from '@/lib/utils/sessionFilter';
+import { downloadCSV } from '@/lib/utils/csv';
+import { buildSimplePdfTable } from '@/lib/utils/pdfTable';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { ProductSalesHistoryModal } from '@/components/ProductSalesHistoryModal';
 import { InvoiceModal } from '@/components/InvoiceModal';
@@ -22,7 +26,9 @@ import {
   IndianRupee,
   ShoppingCart,
   FolderPlus,
-  Filter
+  Filter,
+  Download,
+  FileSpreadsheet
 } from 'lucide-react';
 
 const CATEGORIES = ['Xerox & Print', 'Lamination & Binding', 'Stationery', 'Paper & Envelopes', 'Other Services'];
@@ -39,7 +45,9 @@ export default function ProductsPage() {
   const [customItems, setCustomItems] = useState<CustomItemAnalytics[]>([]);
   const [loadingCustom, setLoadingCustom] = useState(false);
   const [customSearchTerm, setCustomSearchTerm] = useState('');
-  const [customDateFilter, setCustomDateFilter] = useState<DateFilterOption>('all_time');
+  const [customDateFilter, setCustomDateFilter] = useState<DateFilterOption>('current_session');
+  const [closings, setClosings] = useState<AccountingClosing[]>([]);
+  const [selectedClosingId, setSelectedClosingId] = useState('');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
 
@@ -74,11 +82,11 @@ export default function ProductsPage() {
     }
   };
 
-  const loadCustomItems = useCallback(async (filter: DateFilterOption, from?: string, to?: string) => {
+  const loadCustomItems = useCallback(async (filter: DateFilterOption, from?: string, to?: string, closingId?: string) => {
     setLoadingCustom(true);
     try {
       const customRange = (filter === 'custom' && from && to) ? { from, to } : undefined;
-      const data = await ApiService.getCustomItemsAnalytics(filter, customRange);
+      const data = await ApiService.getCustomItemsAnalytics(filter, customRange, closingId || undefined);
       setCustomItems(data);
     } catch (err) {
       console.error('Failed to fetch custom items analytics:', err);
@@ -89,20 +97,72 @@ export default function ProductsPage() {
 
   useEffect(() => {
     loadProducts();
-    loadCustomItems('all_time');
+    loadCustomItems('current_session');
+    ApiService.getAccountingClosings()
+      .then(data => setClosings(data || []))
+      .catch(err => console.error('Failed to load closings:', err));
   }, [loadCustomItems]);
 
   const handleApplyCustomDateFilter = () => {
     if (customFrom && customTo) {
-      loadCustomItems('custom', customFrom, customTo);
+      loadCustomItems('custom', customFrom, customTo, selectedClosingId);
     }
   };
 
   const handleFilterChange = (filter: DateFilterOption) => {
     setCustomDateFilter(filter);
-    if (filter !== 'custom') {
-      loadCustomItems(filter);
+    if (filter !== 'closed_sessions') {
+      setSelectedClosingId('');
     }
+    if (filter !== 'custom') {
+      loadCustomItems(filter, undefined, undefined, filter === 'closed_sessions' ? selectedClosingId : '');
+    }
+  };
+
+  const handleExportCustomAnalyticsCSV = () => {
+    const headers = ['Service / Item Name', 'Quantity Sold', 'Orders', 'Avg Rate (INR)', 'Total Revenue (INR)'];
+    const rows = filteredCustomItems.map(it => [
+      it.name,
+      it.total_quantity,
+      it.orders_count,
+      Number(it.average_selling_rate || 0).toFixed(2),
+      Number(it.total_revenue || 0).toFixed(2)
+    ]);
+    downloadCSV(`Custom_Services_Analytics_${customDateFilter}`, headers, rows);
+  };
+
+  const handleExportCustomAnalyticsPDF = () => {
+    const periodLabel = getPeriodDisplayLabel(customDateFilter, {
+      closings,
+      selectedClosingId,
+      customFrom,
+      customTo
+    });
+    const totalQty = filteredCustomItems.reduce((s, i) => s + Number(i.total_quantity || 0), 0);
+    const totalRev = filteredCustomItems.reduce((s, i) => s + Number(i.total_revenue || 0), 0);
+
+    const doc = buildSimplePdfTable({
+      title: 'Custom & Ad-Hoc Services Analytics',
+      subtitle: `Scope: ${periodLabel} | Generated: ${new Date().toLocaleString('en-IN')}`,
+      summaryLine: `Services: ${filteredCustomItems.length}   |   Total Qty: ${totalQty}   |   Total Revenue: Rs.${totalRev.toFixed(2)}`,
+      headerFill: [217, 119, 6],
+      columns: [
+        { header: 'Service / Item Name', x: 16, maxWidth: 74 },
+        { header: 'Qty Sold', x: 112, maxWidth: 20, align: 'right' },
+        { header: 'Orders', x: 134, maxWidth: 18, align: 'right' },
+        { header: 'Avg Rate (Rs.)', x: 164, maxWidth: 26, align: 'right' },
+        { header: 'Revenue (Rs.)', x: 194, maxWidth: 28, align: 'right' }
+      ],
+      rows: filteredCustomItems.map(it => [
+        it.name,
+        String(it.total_quantity),
+        String(it.orders_count),
+        Number(it.average_selling_rate || 0).toFixed(2),
+        Number(it.total_revenue || 0).toFixed(2)
+      ])
+    });
+
+    doc.save(`Custom_Services_Analytics_${customDateFilter}.pdf`);
   };
 
   const handleOpenAdd = (prefillName?: string, prefillPrice?: number) => {
@@ -462,21 +522,43 @@ export default function ProductsPage() {
           {/* Filter Toolbar for Custom Items */}
           <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
             
-            {/* Search */}
-            <div className="flex items-center bg-white border border-slate-200 rounded-lg px-3 py-1.5 shadow-2xs w-full sm:w-72">
-              <Search size={14} className="text-slate-400 mr-2 shrink-0" />
-              <input
-                type="text"
-                placeholder="Search custom services..."
-                value={customSearchTerm}
-                onChange={(e) => setCustomSearchTerm(e.target.value)}
-                className="w-full text-xs text-slate-800 placeholder-slate-400 bg-transparent focus:outline-hidden"
-              />
-              {customSearchTerm && (
-                <button onClick={() => setCustomSearchTerm('')} className="text-xs text-slate-400 hover:text-slate-600">
-                  Clear
-                </button>
-              )}
+            {/* Search & Export */}
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <div className="flex items-center bg-white border border-slate-200 rounded-lg px-3 py-1.5 shadow-2xs w-full sm:w-64">
+                <Search size={14} className="text-slate-400 mr-2 shrink-0" />
+                <input
+                  type="text"
+                  placeholder="Search custom services..."
+                  value={customSearchTerm}
+                  onChange={(e) => setCustomSearchTerm(e.target.value)}
+                  className="w-full text-xs text-slate-800 placeholder-slate-400 bg-transparent focus:outline-hidden"
+                />
+                {customSearchTerm && (
+                  <button onClick={() => setCustomSearchTerm('')} className="text-xs text-slate-400 hover:text-slate-600">
+                    Clear
+                  </button>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={handleExportCustomAnalyticsCSV}
+                disabled={loadingCustom || filteredCustomItems.length === 0}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 disabled:opacity-40 transition cursor-pointer shrink-0"
+                title="Export filtered custom services to CSV"
+              >
+                <FileSpreadsheet size={14} />
+                <span>CSV</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleExportCustomAnalyticsPDF}
+                disabled={loadingCustom || filteredCustomItems.length === 0}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 disabled:opacity-40 transition cursor-pointer shrink-0"
+                title="Export filtered custom services to PDF"
+              >
+                <Download size={14} />
+                <span>PDF</span>
+              </button>
             </div>
 
             {/* Date Filters */}
@@ -484,18 +566,11 @@ export default function ProductsPage() {
               <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1 mr-1 font-mono">
                 <Filter className="w-3 h-3 text-slate-500" /> Period:
               </span>
-              {(
-                [
-                  { id: 'all_time', label: 'All Time' },
-                  { id: 'today', label: 'Today' },
-                  { id: 'monthly', label: 'This Month' },
-                  { id: 'custom', label: 'Custom' }
-                ] as const
-              ).map(preset => (
+              {PRODUCT_ANALYTICS_DATE_FILTER_BUTTONS.map(preset => (
                 <button
                   key={preset.id}
                   onClick={() => handleFilterChange(preset.id)}
-                  className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all ${
+                  className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
                     customDateFilter === preset.id
                       ? 'bg-amber-600 text-white shadow-2xs'
                       : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
@@ -504,6 +579,32 @@ export default function ProductsPage() {
                   {preset.label}
                 </button>
               ))}
+
+              {customDateFilter === 'closed_sessions' && (
+                <div className="flex items-center gap-2 bg-white px-2.5 py-1 rounded-lg border border-slate-200 text-xs">
+                  <span className="font-semibold text-slate-600">Session:</span>
+                  {closings.length === 0 ? (
+                    <span className="text-slate-400 italic">No closed sessions</span>
+                  ) : (
+                    <select
+                      value={selectedClosingId}
+                      onChange={e => {
+                        const nextId = e.target.value;
+                        setSelectedClosingId(nextId);
+                        loadCustomItems('closed_sessions', undefined, undefined, nextId);
+                      }}
+                      className="bg-transparent text-slate-800 focus:outline-hidden text-xs"
+                    >
+                      <option value="">All Closed Sessions ({closings.length})</option>
+                      {closings.map(c => (
+                        <option key={c.id} value={c.id}>
+                          {formatClosingOptionLabel(c)}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              )}
 
               {customDateFilter === 'custom' && (
                 <div className="flex items-center gap-2 bg-white px-2.5 py-1 rounded-lg border border-slate-200 text-xs">
