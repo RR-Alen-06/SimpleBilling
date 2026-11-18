@@ -51,7 +51,7 @@ Traditional billing software is rigid when handling dynamic printing jobs (such 
 
 ### How Data Flows Through SimpleBilling
 
-1. **Authentication Guard (`src/middleware.ts`)**:
+1. **Authentication Guard (`src/proxy.ts`)**:
    - Server-side verification via Supabase SSR (`supabase.auth.getUser()`).
    - Unauthenticated requests are redirected to `/login`.
 2. **POS Billing Workflow (`/billing`)**:
@@ -124,6 +124,16 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
+### Available Scripts
+
+| Script | Description |
+| :--- | :--- |
+| `npm run dev` | Start Next.js development server |
+| `npm run build` | Build production bundle |
+| `npm run start` | Start production server |
+| `npm run lint` | Run ESLint checks |
+| `npm run check:secrets` | Scan staged changes for accidental secrets |
+
 ---
 
 ## 📁 Project Structure
@@ -132,7 +142,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 SimpleBilling/
 ├── schema.sql                 # PostgreSQL DDL, triggers, and multi-tenant RLS policies
 ├── src/
-│   ├── middleware.ts          # Server-side Supabase SSR session validation
+│   ├── proxy.ts               # Server-side Supabase SSR session validation
 │   ├── app/
 │   │   ├── accounting/        # Cash sessions, drawer reconciliation & P&L ledger
 │   │   ├── audit/             # Immutable audit log viewer
