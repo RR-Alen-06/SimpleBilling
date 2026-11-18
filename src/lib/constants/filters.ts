@@ -20,12 +20,30 @@ export const DATE_FILTER_BUTTONS: DateFilterButtonConfig[] = [
 
 export const REPORTS_DATE_FILTER_BUTTONS: DateFilterButtonConfig[] = [
   { id: 'current_session', label: 'Current Session' },
+  { id: 'closed_sessions', label: 'Closed Sessions' },
   { id: 'today', label: 'Today' },
   { id: 'yesterday', label: 'Yesterday' },
   { id: 'weekly', label: 'This Week' },
   { id: 'monthly', label: 'This Month' },
   { id: 'quarterly', label: 'Quarter' },
   { id: 'financial_year', label: 'Financial Year' },
+  { id: 'all_time', label: 'All Time' },
+  { id: 'custom', label: 'Custom' },
+];
+
+export const BILLS_DATE_FILTER_BUTTONS: DateFilterButtonConfig[] = [
+  { id: 'current_session', label: 'Current Session' },
+  { id: 'closed_sessions', label: 'Closed Sessions' },
+  { id: 'all_time', label: 'All Time' },
+  { id: 'custom', label: 'Custom Range' },
+];
+
+export const PRODUCT_ANALYTICS_DATE_FILTER_BUTTONS: DateFilterButtonConfig[] = [
+  { id: 'current_session', label: 'Current Session' },
+  { id: 'closed_sessions', label: 'Closed Sessions' },
+  { id: 'all_time', label: 'All Time' },
+  { id: 'today', label: 'Today' },
+  { id: 'monthly', label: 'This Month' },
   { id: 'custom', label: 'Custom' },
 ];
 

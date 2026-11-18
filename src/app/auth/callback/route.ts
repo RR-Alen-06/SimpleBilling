@@ -1,6 +1,7 @@
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { NextResponse, type NextRequest } from 'next/server';
+import { sanitizeRedirectPath } from '@/lib/utils/security';
 
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url);
@@ -14,7 +15,11 @@ export async function GET(request: NextRequest) {
     | 'email_change'
     | 'magiclink'
     | null;
-  const next = searchParams.get('next') ?? (type === 'recovery' ? '/reset-password' : '/');
+  const rawNext = searchParams.get('next');
+  const next = sanitizeRedirectPath(
+    rawNext,
+    type === 'recovery' ? '/reset-password' : '/'
+  );
   const errorParam = searchParams.get('error_description') || searchParams.get('error');
 
   if (errorParam) {

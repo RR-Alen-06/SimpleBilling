@@ -2,23 +2,30 @@
 
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '@/lib/services/api';
-import { 
-  Bill, 
-  CustomerSummary, 
-  DateFilterOption, 
-  AllSettings, 
-  Expense, 
-  Payment, 
-  InternalTransfer 
+import {
+  Bill,
+  CustomerSummary,
+  DateFilterOption,
+  AllSettings,
+  Expense,
+  Payment,
+  InternalTransfer,
+  AccountingClosing
 } from '@/lib/types';
 import { SupabaseBanner } from '@/components/SupabaseBanner';
 import { downloadCSV } from '@/lib/utils/csv';
 import { REPORTS_DATE_FILTER_BUTTONS } from '@/lib/constants/filters';
+import {
+  matchesSessionOrDateFilter,
+  formatClosingOptionLabel,
+  getPeriodDisplayLabel
+} from '@/lib/utils/sessionFilter';
 import { BusinessReportGenerator } from '@/lib/services/businessReportGenerator';
-import { 
-  BarChart3, 
-  Printer, 
-  Users, 
+import { AccountingStatementGenerator } from '@/lib/services/accountingStatementGenerator';
+import {
+  BarChart3,
+  Printer,
+  Users,
   Receipt,
   FileSpreadsheet,
   Filter,
@@ -42,26 +49,29 @@ export default function ReportsPage() {
   const [allExpenses, setAllExpenses] = useState<Expense[]>([]);
   const [allPayments, setAllPayments] = useState<Payment[]>([]);
   const [allTransfers, setAllTransfers] = useState<InternalTransfer[]>([]);
+  const [closings, setClosings] = useState<AccountingClosing[]>([]);
   const [settings, setSettings] = useState<AllSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [generatingPdf, setGeneratingPdf] = useState(false);
   const [generatingMaster, setGeneratingMaster] = useState(false);
 
   // Date Filter State
-  const [dateFilter, setDateFilter] = useState<DateFilterOption>('today');
+  const [dateFilter, setDateFilter] = useState<DateFilterOption>('current_session');
+  const [selectedClosingId, setSelectedClosingId] = useState('');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
 
   const loadReportData = async () => {
     setLoading(true);
     try {
-      const [filteredBills, custSummaries, fetchedSettings, expensesData, paymentsData, transfersData] = await Promise.all([
-        ApiService.getBillsByDateRange(dateFilter, { from: customFrom, to: customTo }),
+      const [filteredBills, custSummaries, fetchedSettings, expensesData, paymentsData, transfersData, closingsData] = await Promise.all([
+        ApiService.getBillsByDateRange(dateFilter, { from: customFrom, to: customTo }, selectedClosingId || undefined),
         ApiService.getCustomerSummaries(),
         ApiService.getSettings(),
         ApiService.getExpenses(),
         ApiService.getPayments(),
-        ApiService.getInternalTransfers()
+        ApiService.getInternalTransfers(),
+        ApiService.getAccountingClosings()
       ]);
       setBills(filteredBills);
       setCustomers(custSummaries);
@@ -69,6 +79,7 @@ export default function ReportsPage() {
       setAllExpenses(expensesData || []);
       setAllPayments(paymentsData || []);
       setAllTransfers(transfersData || []);
+      setClosings(closingsData || []);
     } catch (err) {
       console.error('Error fetching report data:', err);
     } finally {
@@ -78,113 +89,82 @@ export default function ReportsPage() {
 
   useEffect(() => {
     loadReportData();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateFilter, customFrom, customTo]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateFilter, selectedClosingId, customFrom, customTo]);
 
-  // Helper to filter any time-stamped array by the active date range
+  // Helper to filter any time-stamped array by the active session / date range
   const filterByDate = <T extends { created_at: string }>(items: T[], filter: DateFilterOption, range?: { from?: string; to?: string }) => {
-    if (filter === 'all_time') return items;
-    const now = new Date();
-    return items.filter(it => {
-      const d = new Date(it.created_at);
-      if (isNaN(d.getTime())) return true;
-      if (filter === 'today') return d.toDateString() === now.toDateString();
-      if (filter === 'yesterday') {
-        const y = new Date(now);
-        y.setDate(now.getDate() - 1);
-        return d.toDateString() === y.toDateString();
-      }
-      if (filter === 'weekly') {
-        const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        return d >= sevenDaysAgo && d <= now;
-      }
-      if (filter === 'monthly') {
-        return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-      }
-      if (filter === 'quarterly') {
-        const curQ = Math.floor(now.getMonth() / 3);
-        const expQ = Math.floor(d.getMonth() / 3);
-        return curQ === expQ && d.getFullYear() === now.getFullYear();
-      }
-      if (filter === 'yearly') {
-        return d.getFullYear() === now.getFullYear();
-      }
-      if (filter === 'financial_year') {
-        const curM = now.getMonth();
-        const curY = now.getFullYear();
-        const fyStartY = curM >= 3 ? curY : curY - 1;
-        const start = new Date(fyStartY, 3, 1);
-        const end = new Date(fyStartY + 1, 2, 31, 23, 59, 59, 999);
-        return d >= start && d <= end;
-      }
-      if (filter === 'custom' && range?.from && range?.to) {
-        const fromD = new Date(range.from);
-        fromD.setHours(0, 0, 0, 0);
-        const toD = new Date(range.to);
-        toD.setHours(23, 59, 59, 999);
-        return d >= fromD && d <= toD;
-      }
-      return true;
-    });
+    return items.filter(it =>
+      matchesSessionOrDateFilter(it.created_at, filter, {
+        closings,
+        selectedClosingId: selectedClosingId || undefined,
+        customFrom: range?.from,
+        customTo: range?.to
+      })
+    );
   };
 
   const periodExpenses = filterByDate(allExpenses, dateFilter, { from: customFrom, to: customTo });
-  const periodPayments = filterByDate(allPayments.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED'), dateFilter, { from: customFrom, to: customTo });
   const periodTransfers = filterByDate(allTransfers, dateFilter, { from: customFrom, to: customTo });
 
-  // Cash Payers: customer bills paid in cash + standalone / dues payments in cash
-  const cashPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
-  bills.forEach(b => {
-    if (Number(b.cash_paid || 0) > 0) {
-      cashPayers.push({
-        customer_name: b.customer_name || 'Walk-in Customer',
-        ref: b.bill_number,
-        date: b.created_at,
-        amount: Number(b.cash_paid || 0)
-      });
-    }
-  });
-  periodPayments.forEach(p => {
-    if (p.payment_method === 'Cash' && !p.notes?.toLowerCase().includes('initial')) {
-      cashPayers.push({
-        customer_name: p.customer_name || 'Customer',
-        ref: p.payment_number || 'PAY-—',
-        date: p.created_at,
-        amount: Number(p.amount || 0)
-      });
-    }
-  });
-  cashPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  // Payment-voucher based Cash & UPI collections (matches Dashboard / Accounting page)
+  const periodPayments = filterByDate(
+    allPayments.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED'),
+    dateFilter,
+    { from: customFrom, to: customTo }
+  );
 
-  // UPI Payers: customer bills paid via UPI + standalone / dues payments via UPI
+  const billsMap = new Map(bills.map(b => [b.id, b]));
+  const paymentBillIds = new Set(periodPayments.map(p => p.bill_id).filter(Boolean));
+
+  const cashPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
   const upiPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
-  bills.forEach(b => {
-    if (Number(b.upi_paid || 0) > 0) {
-      upiPayers.push({
-        customer_name: b.customer_name || 'Walk-in Customer',
-        ref: b.bill_number,
-        date: b.created_at,
-        amount: Number(b.upi_paid || 0)
-      });
-    }
-  });
+
+  let cashTotal = 0;
+  let upiTotal = 0;
+
   periodPayments.forEach(p => {
-    if (p.payment_method === 'UPI' && !p.notes?.toLowerCase().includes('initial')) {
-      upiPayers.push({
-        customer_name: p.customer_name || 'Customer',
-        ref: p.payment_number || 'PAY-—',
-        date: p.created_at,
-        amount: Number(p.amount || 0)
-      });
+    const amt = Number(p.amount || 0);
+    if (p.payment_method === 'Cash') {
+      cashTotal += amt;
+      cashPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || p.bill_id || 'PAY', date: p.created_at, amount: amt });
+    } else if (p.payment_method === 'UPI') {
+      upiTotal += amt;
+      upiPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || p.bill_id || 'PAY', date: p.created_at, amount: amt });
+    } else if (p.payment_method === 'Split Payment') {
+      const linked = p.bill_id ? billsMap.get(p.bill_id) : undefined;
+      const splitCash = linked ? Number(linked.cash_paid || 0) : 0;
+      const splitUpi = linked ? Number(linked.upi_paid || 0) : 0;
+      if (splitCash > 0 || splitUpi > 0) {
+        cashTotal += splitCash;
+        upiTotal += splitUpi;
+        if (splitCash > 0) cashPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || 'PAY', date: p.created_at, amount: splitCash });
+        if (splitUpi > 0) upiPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || 'PAY', date: p.created_at, amount: splitUpi });
+      } else {
+        cashTotal += amt;
+        cashPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || 'PAY', date: p.created_at, amount: amt });
+      }
     }
   });
+
+  // Walk-in bills with no payment voucher
+  bills.forEach(b => {
+    if (!b.customer_id && !paymentBillIds.has(b.id)) {
+      const c = Number(b.cash_paid || 0);
+      const u = Number(b.upi_paid || 0);
+      cashTotal += c;
+      upiTotal += u;
+      if (c > 0) cashPayers.push({ customer_name: b.customer_name || 'Walk-in Customer', ref: b.bill_number, date: b.created_at, amount: c });
+      if (u > 0) upiPayers.push({ customer_name: b.customer_name || 'Walk-in Customer', ref: b.bill_number, date: b.created_at, amount: u });
+    }
+  });
+
+  cashPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   upiPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   // Aggregate Metrics for Current Filter
   const totalSales = bills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
   const totalPaid = bills.reduce((sum, b) => sum + Math.min(Number(b.grand_total || 0), Number(b.paid_total || 0)), 0);
-  const cashTotal = bills.reduce((sum, b) => sum + Number(b.cash_paid || 0), 0);
-  const upiTotal = bills.reduce((sum, b) => sum + Number(b.upi_paid || 0), 0);
   const advanceUsedTotal = bills.reduce((sum, b) => sum + Number(b.advance_used || 0), 0);
   const totalTax = bills.reduce((sum, b) => sum + Number(b.gst_amount || 0), 0);
   const totalExpenses = periodExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
@@ -193,7 +173,7 @@ export default function ReportsPage() {
   // Customer due list & total ledger dues
   const dueCustomers = customers.filter(c => c.balance_due > 0);
   const totalDuesAmount = dueCustomers.reduce((sum, c) => sum + c.balance_due, 0);
-  
+
   // Period-scoped pending balance dynamically calculated for the active date filter
   const pendingTotal = bills.reduce((sum, b) => {
     const g = Number(b.grand_total || 0);
@@ -220,6 +200,14 @@ export default function ReportsPage() {
   const itemSales = Array.from(itemMap.values()).sort((a, b) => b.total - a.total);
 
   const getFilterLabel = (filter = dateFilter) => {
+    if (filter === 'current_session' || filter === 'closed_sessions') {
+      return getPeriodDisplayLabel(filter, {
+        closings,
+        selectedClosingId: selectedClosingId || undefined,
+        customFrom,
+        customTo
+      });
+    }
     if (filter === 'today') return 'Today';
     if (filter === 'yesterday') return 'Yesterday';
     if (filter === 'weekly') return 'Last 7 Days';
@@ -288,8 +276,53 @@ export default function ReportsPage() {
 
       const masterSales = allBills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
       const masterPaid = allBills.reduce((sum, b) => sum + Math.min(Number(b.grand_total || 0), Number(b.paid_total || 0)), 0);
-      const masterCash = allBills.reduce((sum, b) => sum + Number(b.cash_paid || 0), 0);
-      const masterUpi = allBills.reduce((sum, b) => sum + Number(b.upi_paid || 0), 0);
+      const masterCashPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
+      const masterUpiPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
+      let masterCash = 0;
+      let masterUpi = 0;
+
+      const masterBillsMap = new Map(allBills.map(b => [b.id, b]));
+      const masterPaymentBillIds = new Set(allPayments.map(p => p.bill_id).filter(Boolean));
+      const masterActivePayments = allPayments.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
+
+      masterActivePayments.forEach(p => {
+        const amt = Number(p.amount || 0);
+        if (p.payment_method === 'Cash') {
+          masterCash += amt;
+          masterCashPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || p.bill_id || 'PAY', date: p.created_at, amount: amt });
+        } else if (p.payment_method === 'UPI') {
+          masterUpi += amt;
+          masterUpiPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || p.bill_id || 'PAY', date: p.created_at, amount: amt });
+        } else if (p.payment_method === 'Split Payment') {
+          const linked = p.bill_id ? masterBillsMap.get(p.bill_id) : undefined;
+          const splitCash = linked ? Number(linked.cash_paid || 0) : 0;
+          const splitUpi = linked ? Number(linked.upi_paid || 0) : 0;
+          if (splitCash > 0 || splitUpi > 0) {
+            masterCash += splitCash;
+            masterUpi += splitUpi;
+            if (splitCash > 0) masterCashPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || 'PAY', date: p.created_at, amount: splitCash });
+            if (splitUpi > 0) masterUpiPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || 'PAY', date: p.created_at, amount: splitUpi });
+          } else {
+            masterCash += amt;
+            masterCashPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || 'PAY', date: p.created_at, amount: amt });
+          }
+        }
+      });
+
+      // Walk-in bills without any payment voucher
+      allBills.forEach(b => {
+        if (!b.customer_id && !masterPaymentBillIds.has(b.id)) {
+          const c = Number(b.cash_paid || 0);
+          const u = Number(b.upi_paid || 0);
+          masterCash += c;
+          masterUpi += u;
+          if (c > 0) masterCashPayers.push({ customer_name: b.customer_name || 'Walk-in Customer', ref: b.bill_number, date: b.created_at, amount: c });
+          if (u > 0) masterUpiPayers.push({ customer_name: b.customer_name || 'Walk-in Customer', ref: b.bill_number, date: b.created_at, amount: u });
+        }
+      });
+
+      masterCashPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      masterUpiPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
       const masterTax = allBills.reduce((sum, b) => sum + Number(b.gst_amount || 0), 0);
       const masterExpenses = allExp.reduce((sum, e) => sum + Number(e.amount || 0), 0);
       const masterNetProfit = masterSales - masterExpenses;
@@ -317,48 +350,6 @@ export default function ReportsPage() {
       const masterItemSales = Array.from(masterItemMap.values()).sort((a, b) => b.total - a.total);
       const masterDueCust = custSummaries.filter(c => c.balance_due > 0);
       const masterTotalDues = masterDueCust.reduce((sum, c) => sum + c.balance_due, 0);
-
-      const masterCashPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
-      const masterUpiPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
-      allBills.forEach(b => {
-        if (Number(b.cash_paid || 0) > 0) {
-          masterCashPayers.push({
-            customer_name: b.customer_name || 'Walk-in Customer',
-            ref: b.bill_number,
-            date: b.created_at,
-            amount: Number(b.cash_paid || 0)
-          });
-        }
-        if (Number(b.upi_paid || 0) > 0) {
-          masterUpiPayers.push({
-            customer_name: b.customer_name || 'Walk-in Customer',
-            ref: b.bill_number,
-            date: b.created_at,
-            amount: Number(b.upi_paid || 0)
-          });
-        }
-      });
-      allPayments.forEach(p => {
-        if (p.status !== 'CANCELLED' && p.status !== 'REVERSED' && !p.notes?.toLowerCase().includes('initial')) {
-          if (p.payment_method === 'Cash') {
-            masterCashPayers.push({
-              customer_name: p.customer_name || 'Customer',
-              ref: p.payment_number || 'PAY-—',
-              date: p.created_at,
-              amount: Number(p.amount || 0)
-            });
-          } else if (p.payment_method === 'UPI') {
-            masterUpiPayers.push({
-              customer_name: p.customer_name || 'Customer',
-              ref: p.payment_number || 'PAY-—',
-              date: p.created_at,
-              amount: Number(p.amount || 0)
-            });
-          }
-        }
-      });
-      masterCashPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-      masterUpiPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
       const doc = BusinessReportGenerator.generateReportPdf({
         shop_settings: shopSettings,
@@ -405,8 +396,34 @@ export default function ReportsPage() {
     const exportSales = exportBills.reduce((s, b) => s + Number(b.grand_total || 0), 0);
     const exportPaid = exportBills.reduce((s, b) => s + Number(b.paid_total || 0), 0);
     const exportTax = exportBills.reduce((s, b) => s + Number(b.gst_amount || 0), 0);
-    const exportCash = exportBills.reduce((s, b) => s + Number(b.cash_paid || 0), 0);
-    const exportUpi = exportBills.reduce((s, b) => s + Number(b.upi_paid || 0), 0);
+
+    // Cash & UPI Collections via payment-voucher engine (matches Dashboard/Accounting)
+    const exportPaymentsSource = isMasterAllTime
+      ? allPayments.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED')
+      : periodPayments;
+    const exportBillsMap = new Map(exportBills.map(b => [b.id, b]));
+    const exportPaymentBillIds = new Set(exportPaymentsSource.map(p => p.bill_id).filter(Boolean));
+    let exportCash = 0;
+    let exportUpi = 0;
+    exportPaymentsSource.forEach(p => {
+      const amt = Number(p.amount || 0);
+      if (p.payment_method === 'Cash') {
+        exportCash += amt;
+      } else if (p.payment_method === 'UPI') {
+        exportUpi += amt;
+      } else if (p.payment_method === 'Split Payment') {
+        const linked = p.bill_id ? exportBillsMap.get(p.bill_id) : undefined;
+        const sc = linked ? Number(linked.cash_paid || 0) : 0;
+        const su = linked ? Number(linked.upi_paid || 0) : 0;
+        if (sc > 0 || su > 0) { exportCash += sc; exportUpi += su; } else { exportCash += amt; }
+      }
+    });
+    exportBills.forEach(b => {
+      if (!b.customer_id && !exportPaymentBillIds.has(b.id)) {
+        exportCash += Number(b.cash_paid || 0);
+        exportUpi += Number(b.upi_paid || 0);
+      }
+    });
     const exportPending = exportBills.reduce((s, b) => s + Math.max(0, Number(b.grand_total || 0) - Number(b.paid_total || 0)), 0);
     const exportExpTotal = exportExpenses.reduce((s, e) => s + Number(e.amount || 0), 0);
     const exportNetProfit = exportPaid - exportExpTotal;
@@ -424,14 +441,14 @@ export default function ReportsPage() {
       });
     });
     const exportItemSales = Array.from(exportItemSalesMap.values()).sort((a, b) => b.total - a.total);
-    
+
     const lines: string[] = [];
-    
+
     // Header
     lines.push(`"${(settings?.shop?.shop_name || 'SimpleBilling Center').toUpperCase()} - ${isMasterAllTime ? 'MASTER ALL-TIME BUSINESS REPORT' : 'PERIOD BUSINESS REPORT'}"`);
     lines.push(`"Report Scope: ${filterLabel} | Generated: ${new Date().toLocaleString('en-IN')}"`);
     lines.push('');
-    
+
     // 1. Executive Summary & Net Profit
     lines.push('"--- 1. EXECUTIVE FINANCIAL SUMMARY & NET PROFIT ---"');
     lines.push('"Metric","Value (INR / Count)"');
@@ -669,18 +686,65 @@ export default function ReportsPage() {
             {dateFilterButtons.map((btn) => (
               <button
                 key={btn.id}
-                onClick={() => setDateFilter(btn.id)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-                  dateFilter === btn.id
+                onClick={() => {
+                  setDateFilter(btn.id);
+                  if (btn.id !== 'closed_sessions') setSelectedClosingId('');
+                }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${dateFilter === btn.id
                     ? 'bg-blue-600 text-white shadow-sm'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
+                  }`}
               >
                 {btn.label}
               </button>
             ))}
           </div>
         </div>
+
+        {/* Closed Session Picker */}
+        {dateFilter === 'closed_sessions' && (
+          <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center gap-3 text-xs">
+            <span className="font-semibold text-slate-600">Closed Session:</span>
+            {closings.length === 0 ? (
+              <span className="text-slate-400 italic">No closed sessions recorded yet.</span>
+            ) : (
+              <>
+                <select
+                  value={selectedClosingId}
+                  onChange={(e) => setSelectedClosingId(e.target.value)}
+                  className="bg-slate-50 border border-slate-300 rounded px-2.5 py-1 text-xs font-medium text-slate-800"
+                >
+                  <option value="">All Closed Sessions ({closings.length})</option>
+                  {closings.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {formatClosingOptionLabel(c)}
+                    </option>
+                  ))}
+                </select>
+                {selectedClosingId && (() => {
+                  const targetClosing = closings.find(c => c.id === selectedClosingId);
+                  if (!targetClosing) return null;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const doc = AccountingStatementGenerator.generateStatementPdf({
+                          shop_settings: settings?.shop || {},
+                          closing: targetClosing
+                        });
+                        doc.save(`Accounting-Statement-${targetClosing.closing_number || 'Session'}.pdf`);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-semibold transition cursor-pointer"
+                    >
+                      <FileText size={13} />
+                      <span>Download Closing PDF</span>
+                    </button>
+                  );
+                })()}
+              </>
+            )}
+          </div>
+        )}
 
         {/* Custom Date Pickers */}
         {dateFilter === 'custom' && (
@@ -745,7 +809,7 @@ export default function ReportsPage() {
         <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-1">
           <div className="text-emerald-700 text-[11px] font-bold uppercase tracking-wider flex items-center space-x-1">
             <Wallet size={13} className="text-emerald-600" />
-            <span>Cash Paid</span>
+            <span>Cash Collected</span>
           </div>
           <div className="text-base sm:text-lg font-extrabold text-emerald-700">₹{cashTotal.toFixed(2)}</div>
           <div className="text-[10px] text-slate-400 font-medium">Direct cash in period</div>
@@ -755,7 +819,7 @@ export default function ReportsPage() {
         <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-1">
           <div className="text-indigo-700 text-[11px] font-bold uppercase tracking-wider flex items-center space-x-1">
             <CreditCard size={13} className="text-indigo-600" />
-            <span>UPI Paid</span>
+            <span>UPI Collected</span>
           </div>
           <div className="text-base sm:text-lg font-extrabold text-indigo-700">₹{upiTotal.toFixed(2)}</div>
           <div className="text-[10px] text-slate-400 font-medium">Digital collections</div>
@@ -796,11 +860,10 @@ export default function ReportsPage() {
       <div className="bg-white p-2 rounded-xl border border-slate-200 shadow-sm flex flex-wrap gap-2 print:hidden">
         <button
           onClick={() => setActiveTab('sales')}
-          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
-            activeTab === 'sales'
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${activeTab === 'sales'
               ? 'bg-blue-600 text-white shadow'
               : 'text-slate-600 hover:bg-slate-100'
-          }`}
+            }`}
         >
           <Receipt size={16} />
           <span>Sales & Bills ({bills.length})</span>
@@ -808,11 +871,10 @@ export default function ReportsPage() {
 
         <button
           onClick={() => setActiveTab('items')}
-          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
-            activeTab === 'items'
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${activeTab === 'items'
               ? 'bg-blue-600 text-white shadow'
               : 'text-slate-600 hover:bg-slate-100'
-          }`}
+            }`}
         >
           <Package size={16} />
           <span>Item Sales Volume ({itemSales.length})</span>
@@ -820,11 +882,10 @@ export default function ReportsPage() {
 
         <button
           onClick={() => setActiveTab('dues')}
-          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
-            activeTab === 'dues'
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${activeTab === 'dues'
               ? 'bg-blue-600 text-white shadow'
               : 'text-slate-600 hover:bg-slate-100'
-          }`}
+            }`}
         >
           <Users size={16} />
           <span>Customer Due List ({dueCustomers.length})</span>
@@ -832,11 +893,10 @@ export default function ReportsPage() {
 
         <button
           onClick={() => setActiveTab('expenses')}
-          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
-            activeTab === 'expenses'
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${activeTab === 'expenses'
               ? 'bg-blue-600 text-white shadow'
               : 'text-slate-600 hover:bg-slate-100'
-          }`}
+            }`}
         >
           <TrendingUp size={16} className="rotate-180 text-rose-500" />
           <span>Operating Expenses ({periodExpenses.length})</span>
@@ -844,11 +904,10 @@ export default function ReportsPage() {
 
         <button
           onClick={() => setActiveTab('cash_payers')}
-          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
-            activeTab === 'cash_payers'
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${activeTab === 'cash_payers'
               ? 'bg-emerald-600 text-white shadow'
               : 'text-slate-600 hover:bg-slate-100'
-          }`}
+            }`}
         >
           <Wallet size={16} className={activeTab === 'cash_payers' ? 'text-white' : 'text-emerald-600'} />
           <span>Cash Payers ({cashPayers.length})</span>
@@ -856,11 +915,10 @@ export default function ReportsPage() {
 
         <button
           onClick={() => setActiveTab('upi_payers')}
-          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
-            activeTab === 'upi_payers'
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${activeTab === 'upi_payers'
               ? 'bg-indigo-600 text-white shadow'
               : 'text-slate-600 hover:bg-slate-100'
-          }`}
+            }`}
         >
           <CreditCard size={16} className={activeTab === 'upi_payers' ? 'text-white' : 'text-indigo-600'} />
           <span>UPI Payers ({upiPayers.length})</span>
@@ -868,11 +926,10 @@ export default function ReportsPage() {
 
         <button
           onClick={() => setActiveTab('transfers')}
-          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${
-            activeTab === 'transfers'
+          className={`flex-1 sm:flex-none flex items-center justify-center space-x-2 px-5 py-2.5 rounded-lg font-semibold text-xs transition ${activeTab === 'transfers'
               ? 'bg-blue-600 text-white shadow'
               : 'text-slate-600 hover:bg-slate-100'
-          }`}
+            }`}
         >
           <ArrowRightLeft size={16} className={activeTab === 'transfers' ? 'text-white' : 'text-blue-600'} />
           <span>Contra Transfers ({periodTransfers.length})</span>
@@ -881,7 +938,7 @@ export default function ReportsPage() {
 
       {/* REPORT CONTENT CARD */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4 print:shadow-none print:border-none print:p-0">
-        
+
         {/* TAB 1: SALES & BILLS */}
         {activeTab === 'sales' && (
           <div className="space-y-4">
@@ -943,9 +1000,8 @@ export default function ReportsPage() {
                             ₹{Number(b.grand_total).toFixed(2)}
                           </td>
                           <td className="py-3 px-4 text-center">
-                            <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase ${
-                              isPaid ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
-                            }`}>
+                            <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase ${isPaid ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                              }`}>
                               {isPaid ? 'Fully Paid' : 'Pending'}
                             </span>
                           </td>
@@ -1127,11 +1183,11 @@ export default function ReportsPage() {
             <div className="flex justify-between items-center pb-3 border-b border-slate-200">
               <div>
                 <h2 className="text-lg font-bold text-slate-900">Cash Collections by Customer</h2>
-                <p className="text-xs text-slate-500">Detailed list of all customers and payers who paid in Cash</p>
+                <p className="text-xs text-slate-500">Detailed list of all customers and sales paid in Cash</p>
               </div>
               <div className="text-right">
                 <span className="text-xs text-slate-500 uppercase font-semibold">Total Cash Collected</span>
-                <p className="text-xl font-extrabold text-emerald-600">₹{cashPayers.reduce((s, c) => s + c.amount, 0).toFixed(2)}</p>
+                <p className="text-xl font-extrabold text-emerald-600">₹{cashTotal.toFixed(2)}</p>
               </div>
             </div>
 
@@ -1178,12 +1234,12 @@ export default function ReportsPage() {
           <div className="space-y-4">
             <div className="flex justify-between items-center pb-3 border-b border-slate-200">
               <div>
-                <h2 className="text-lg font-bold text-slate-900">UPI & Bank Collections by Customer</h2>
-                <p className="text-xs text-slate-500">Detailed list of all customers and payers who paid via UPI / Bank</p>
+                <h2 className="text-lg font-bold text-slate-900">UPI &amp; Bank Collections by Customer</h2>
+                <p className="text-xs text-slate-500">Detailed list of all customers and sales paid via UPI / Bank</p>
               </div>
               <div className="text-right">
                 <span className="text-xs text-slate-500 uppercase font-semibold">Total UPI Collected</span>
-                <p className="text-xl font-extrabold text-indigo-600">₹{upiPayers.reduce((s, u) => s + u.amount, 0).toFixed(2)}</p>
+                <p className="text-xl font-extrabold text-indigo-600">₹{upiTotal.toFixed(2)}</p>
               </div>
             </div>
 
@@ -1266,11 +1322,10 @@ export default function ReportsPage() {
                           {new Date(tr.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true })}
                         </td>
                         <td className="py-3 px-4">
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${
-                            tr.direction === 'CASH_TO_UPI'
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${tr.direction === 'CASH_TO_UPI'
                               ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
                               : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                          }`}>
+                            }`}>
                             {tr.direction === 'CASH_TO_UPI' ? 'Cash -> UPI (Deposit)' : 'UPI -> Cash (Withdrawal)'}
                           </span>
                         </td>

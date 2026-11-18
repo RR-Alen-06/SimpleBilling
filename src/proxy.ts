@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
+import { isUserEmailVerified } from '@/lib/utils/security';
 
 export async function proxy(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
@@ -16,13 +17,19 @@ export async function proxy(request: NextRequest) {
     pathname === '/reset-password' ||
     pathname === '/verify-email';
 
-  // If Supabase credentials are missing or placeholder, permit access
+  // If Supabase credentials are missing or placeholder:
+  // Fail-closed in production for protected routes; permit local dev preview when unconfigured.
   if (
     !supabaseUrl ||
     !supabaseKey ||
     supabaseUrl.includes('placeholder') ||
     supabaseUrl === 'https://your-supabase-project.supabase.co'
   ) {
+    if (process.env.NODE_ENV === 'production' && !isPublicAuthRoute) {
+      const url = request.nextUrl.clone();
+      url.pathname = '/login';
+      return NextResponse.redirect(url);
+    }
     return supabaseResponse;
   }
 
@@ -40,12 +47,6 @@ export async function proxy(request: NextRequest) {
 
   // If on a public auth route and no auth token present, serve immediately
   if (isPublicAuthRoute && !hasAuthToken) {
-    return supabaseResponse;
-  }
-
-  // Fast path for prefetch requests: skip remote getUser() roundtrip if auth cookie is present
-  const isPrefetch = request.headers.get('next-router-prefetch') === '1' || request.headers.get('purpose') === 'prefetch';
-  if (isPrefetch && hasAuthToken) {
     return supabaseResponse;
   }
 
@@ -87,9 +88,7 @@ export async function proxy(request: NextRequest) {
 
     // Determine verification status
     // Existing accounts with email_confirmed_at / confirmed_at remain fully verified and usable
-    const isVerified = Boolean(
-      user && (user.email_confirmed_at || user.confirmed_at || user.app_metadata?.provider !== 'email')
-    );
+    const isVerified = isUserEmailVerified(user);
 
     // Unverified user attempting to access protected route -> redirect to /verify-email
     if (user && !isVerified && !isPublicAuthRoute) {

@@ -1,4 +1,7 @@
 import { supabase, isSupabaseConfigured } from '../supabase/client';
+import { parseCustomDateBounds } from '../utils/sessionFilter';
+import { escapeHtml } from '../utils/security';
+import { formatSequenceNumber } from '../utils/format';
 import {
   Customer,
   Product,
@@ -138,7 +141,7 @@ export class ApiService {
     const { data: seq } = await query.maybeSingle();
 
     const prefix = seq?.prefix || key.slice(0, 3).toUpperCase();
-    const padding = seq?.padding || 6;
+    const padding = seq?.padding || 4;
     const nextVal = (seq?.current_val || 0) + 1;
 
     await supabase.from('sequences').upsert({
@@ -150,7 +153,7 @@ export class ApiService {
       updated_at: new Date().toISOString()
     }, { onConflict: 'key' });
 
-    return `${prefix}-${String(nextVal).padStart(padding, '0')}`;
+    return formatSequenceNumber(prefix, nextVal, padding);
   }
 
 
@@ -1681,29 +1684,28 @@ export class ApiService {
   }
 
 
-  static async getBillsByDateRange(filter: DateFilterOption, customRange?: { from: string; to: string }): Promise<Bill[]> {
+  static async getBillsByDateRange(
+    filter: DateFilterOption,
+    customRange?: { from: string; to: string },
+    closingId?: string
+  ): Promise<Bill[]> {
     if (!isSupabaseConfigured) return [];
+
+    const { startDate, endDate, exclusiveStart, emptyResult } = await this.resolveSessionDateBounds(
+      filter,
+      customRange,
+      closingId
+    );
+    if (emptyResult) return [];
 
     let query = supabase
       .from('bills')
       .select('*, customers(name, mobile, email), bill_items(*)');
 
-    let startDate: Date | undefined;
-    let endDate: Date | undefined;
-
-    if (filter === 'current_session') {
-      const latestClosing = await this.getLatestAccountingClosing();
-      if (latestClosing?.to_date) {
-        startDate = new Date(latestClosing.to_date);
-      }
-    } else {
-      const bounds = this.getDateRangeBounds(filter, customRange);
-      startDate = bounds.startDate;
-      endDate = bounds.endDate;
-    }
-
     if (startDate) {
-      query = query.gte('created_at', startDate.toISOString());
+      query = exclusiveStart
+        ? query.gt('created_at', startDate.toISOString())
+        : query.gte('created_at', startDate.toISOString());
     }
     if (endDate) {
       query = query.lte('created_at', endDate.toISOString());
@@ -1743,6 +1745,59 @@ export class ApiService {
     });
   }
 
+
+  /**
+   * Attributes non-initial payment vouchers to bills so INVOICE/BILL rows do not
+   * double-count dues settlements that already appear as separate PAYMENT rows.
+   */
+  private static computeLaterPaidByBillId(
+    bills: { id: string; created_at: string; paid_total?: number | null; advance_used?: number | null }[],
+    activePayments: { id: string; bill_id?: string | null; amount?: number | null; created_at: string }[],
+    initialPaymentByBillId: Map<string, unknown>,
+    mergedPaymentIds: Set<string>
+  ): Map<string, number> {
+    const billMap = new Map(bills.map(b => [b.id, b]));
+    const laterPaidByBillId = new Map<string, number>();
+    const unlinkedLaterVouchers: typeof activePayments = [];
+
+    for (const p of activePayments) {
+      if (mergedPaymentIds.has(p.id)) continue;
+      if (p.bill_id && billMap.has(p.bill_id)) {
+        laterPaidByBillId.set(p.bill_id, (laterPaidByBillId.get(p.bill_id) || 0) + Number(p.amount || 0));
+      } else {
+        unlinkedLaterVouchers.push(p);
+      }
+    }
+
+    const billsNewestFirst = [...bills].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+    const vouchersNewestFirst = [...unlinkedLaterVouchers].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+
+    for (const v of vouchersNewestFirst) {
+      let remVoucher = Number(v.amount || 0);
+      const vTime = new Date(v.created_at).getTime();
+      for (const b of billsNewestFirst) {
+        if (remVoucher <= 0.001) break;
+        if (initialPaymentByBillId.has(b.id)) continue;
+        if (new Date(b.created_at).getTime() > vTime) continue;
+
+        const advUsed = Number(b.advance_used || 0);
+        const rawDirectPaid = Math.max(0, Number(b.paid_total || 0) - advUsed);
+        const alreadyAttributed = laterPaidByBillId.get(b.id) || 0;
+        const availableToAttribute = Math.max(0, rawDirectPaid - alreadyAttributed);
+        if (availableToAttribute <= 0.001) continue;
+
+        const take = Math.min(remVoucher, availableToAttribute);
+        laterPaidByBillId.set(b.id, Number((alreadyAttributed + take).toFixed(2)));
+        remVoucher = Number((remVoucher - take).toFixed(2));
+      }
+    }
+
+    return laterPaidByBillId;
+  }
 
   static async getCustomerLedger(customerId: string): Promise<{
     customer: Customer | null;
@@ -1830,6 +1885,13 @@ export class ApiService {
       }
     }
 
+    const laterPaidByBillId = this.computeLaterPaidByBillId(
+      bills || [],
+      activePayments,
+      initialPaymentByBillId,
+      mergedPaymentIds
+    );
+
     const rawEvents: {
       date: string;
       type: 'BILL' | 'PAYMENT' | 'ADVANCE_USED' | 'OPENING_BALANCE' | 'LOYALTY_REDEEM';
@@ -1867,8 +1929,11 @@ export class ApiService {
         paidAmount = Number(initialPayment.amount || 0);
         payMethod = initialPayment.payment_method || payMethod;
         payRef = initialPayment.payment_number;
+      } else if (payMethod === 'Pay Later') {
+        paidAmount = 0;
       } else {
-        paidAmount = Math.max(0, Number(b.paid_total || 0) - advUsed);
+        const laterSettled = laterPaidByBillId.get(b.id) || 0;
+        paidAmount = Math.max(0, Number((Number(b.paid_total || 0) - advUsed - laterSettled).toFixed(2)));
       }
 
       const directPaid = Math.min(grand, paidAmount);
@@ -3251,34 +3316,24 @@ export class ApiService {
         .order('created_at', { ascending: false });
 
       // Identify portion of this specific payment that was credited to advance vs applied to bills
-      let advanceCreditedFromThisPayment = 0;
+      let explicitAdvanceCredited: number | null = null;
       if (payment.notes) {
         const advMatch = payment.notes.match(/Advance Credited:\s*₹?([0-9.]+)/i);
         if (advMatch) {
-          advanceCreditedFromThisPayment = Number(advMatch[1]) || 0;
-        }
-      }
-      if (advanceCreditedFromThisPayment === 0 && !payment.bill_id) {
-        const totalDuesAcrossBills = (custBills || []).reduce(
-          (s, b) => s + Math.max(0, Number(b.grand_total || 0) - Number(b.paid_total || 0)),
-          0
-        );
-        if (amount > totalDuesAcrossBills) {
-          advanceCreditedFromThisPayment = Number((amount - totalDuesAcrossBills).toFixed(2));
+          explicitAdvanceCredited = Number(advMatch[1]) || 0;
+        } else {
+          const duesMatch = payment.notes.match(/Dues Settled:\s*₹?([0-9.]+)/i);
+          if (duesMatch) {
+            const duesSettled = Number(duesMatch[1]) || 0;
+            explicitAdvanceCredited = Number(Math.max(0, amount - duesSettled).toFixed(2));
+          }
         }
       }
 
-      // Rollback only the advance amount created by THIS payment; never touch customer's separate advance or applied advance on bills
-      const deductFromAdvance = Math.min(currentAdvance, advanceCreditedFromThisPayment);
-      let remainingToReverseFromBills = Number((amount - advanceCreditedFromThisPayment).toFixed(2));
-
-      if (cust && deductFromAdvance > 0) {
-        const newAdvance = Number(Math.max(0, currentAdvance - deductFromAdvance).toFixed(2));
-        await supabase
-          .from('customers')
-          .update({ advance_balance: newAdvance })
-          .eq('id', payment.customer_id);
-      }
+      let remainingToReverseFromBills =
+        explicitAdvanceCredited !== null
+          ? Number(Math.max(0, amount - explicitAdvanceCredited).toFixed(2))
+          : amount;
 
       if (remainingToReverseFromBills > 0.009) {
         for (const b of (custBills || [])) {
@@ -3296,11 +3351,15 @@ export class ApiService {
           let newCash = bCash;
           let newUpi = bUpi;
           if (payment.payment_method === 'UPI') {
-            newUpi = Math.max(0, bUpi - deduct);
-          } else if (payment.payment_method === 'Cash') {
-            newCash = Math.max(0, bCash - deduct);
-          } else if (bDirect > 0) {
-            newCash = Math.max(0, bCash - deduct);
+            const fromUpi = Math.min(bUpi, deduct);
+            newUpi = Number((bUpi - fromUpi).toFixed(2));
+            const rem = Number((deduct - fromUpi).toFixed(2));
+            if (rem > 0) newCash = Number(Math.max(0, bCash - rem).toFixed(2));
+          } else if (payment.payment_method === 'Cash' || bDirect > 0) {
+            const fromCash = Math.min(bCash, deduct);
+            newCash = Number((bCash - fromCash).toFixed(2));
+            const rem = Number((deduct - fromCash).toFixed(2));
+            if (rem > 0) newUpi = Number(Math.max(0, bUpi - rem).toFixed(2));
           }
 
           const grandTotal = Number(b.grand_total || 0);
@@ -3330,6 +3389,20 @@ export class ApiService {
 
           remainingToReverseFromBills = Number((remainingToReverseFromBills - deduct).toFixed(2));
         }
+      }
+
+      const advanceToRollback =
+        explicitAdvanceCredited !== null
+          ? explicitAdvanceCredited
+          : Number(Math.max(0, remainingToReverseFromBills).toFixed(2));
+      const deductFromAdvance = Math.min(currentAdvance, advanceToRollback);
+
+      if (cust && deductFromAdvance > 0) {
+        const newAdvance = Number(Math.max(0, currentAdvance - deductFromAdvance).toFixed(2));
+        await supabase
+          .from('customers')
+          .update({ advance_balance: newAdvance })
+          .eq('id', payment.customer_id);
       }
     }
 
@@ -4023,15 +4096,52 @@ export class ApiService {
         return { startDate: fyStart, endDate };
       case 'custom':
         if (customRange?.from && customRange?.to) {
+          const { startMs, endMs } = parseCustomDateBounds(customRange.from, customRange.to);
           return {
-            startDate: new Date(customRange.from),
-            endDate: new Date(customRange.to)
+            startDate: startMs !== undefined ? new Date(startMs) : undefined,
+            endDate: endMs !== undefined ? new Date(endMs) : undefined
           };
         }
         return {};
       default:
         return {};
     }
+  }
+
+  static async resolveSessionDateBounds(
+    filter: DateFilterOption,
+    customRange?: { from: string; to: string },
+    closingId?: string
+  ): Promise<{
+    startDate?: Date;
+    endDate?: Date;
+    exclusiveStart?: boolean;
+    emptyResult?: boolean;
+  }> {
+    if (filter === 'current_session') {
+      const latestClosing = await this.getLatestAccountingClosing();
+      if (latestClosing?.to_date) {
+        return { startDate: new Date(latestClosing.to_date), exclusiveStart: true };
+      }
+      return {};
+    }
+
+    if (filter === 'closed_sessions') {
+      const closings = await this.getAccountingClosings();
+      if (closings.length === 0) return { emptyResult: true };
+      if (closingId) {
+        const target = closings.find(c => c.id === closingId || c.closing_number === closingId);
+        if (!target) return { emptyResult: true };
+        return {
+          startDate: new Date(target.from_date),
+          endDate: new Date(target.to_date)
+        };
+      }
+      const latestClosing = closings[0];
+      return latestClosing?.to_date ? { endDate: new Date(latestClosing.to_date) } : { emptyResult: true };
+    }
+
+    return this.getDateRangeBounds(filter, customRange);
   }
 
   // --- WHATSAPP TEXT RECEIPT GENERATOR ---
@@ -4191,16 +4301,18 @@ _(Points will be credited upon bill settlement)_`;
     financialSummary?: BillFinancialSummary,
     shopSettings?: Partial<ShopSettings>
   ): string {
-    const shopName = shopSettings?.shop_name || 'SimpleBilling Center';
-    const shopPhone = shopSettings?.phone || '';
-    const shopAddress = shopSettings?.address || '';
-    const shopGstin = shopSettings?.gst_number || '';
-    const footerMsg = shopSettings?.footer_message || 'Thank you for your business!';
+    const shopName = escapeHtml(shopSettings?.shop_name || 'SimpleBilling Center');
+    const shopPhone = escapeHtml(shopSettings?.phone || '');
+    const shopAddress = escapeHtml(shopSettings?.address || '');
+    const shopGstin = escapeHtml(shopSettings?.gst_number || '');
+    const footerMsg = escapeHtml(shopSettings?.footer_message || 'Thank you for your business!');
+    const safeBillNumber = escapeHtml(bill.bill_number);
+    const safeCustomerName = escapeHtml(bill.customer_name || 'Valued Customer');
 
     const itemsRows = (bill.items || []).map((item, idx) => `
       <tr style="border-bottom: 1px solid #e2e8f0; font-size: 13px;">
-        <td style="padding: 8px 4px; text-align: left;">${idx + 1}. ${item.product_name}</td>
-        <td style="padding: 8px 4px; text-align: center;">${item.quantity}</td>
+        <td style="padding: 8px 4px; text-align: left;">${idx + 1}. ${escapeHtml(item.product_name)}</td>
+        <td style="padding: 8px 4px; text-align: center;">${Number(item.quantity)}</td>
         <td style="padding: 8px 4px; text-align: right;">₹${Number(item.price).toFixed(2)}</td>
         <td style="padding: 8px 4px; text-align: right; font-weight: bold;">₹${Number(item.total).toFixed(2)}</td>
       </tr>
@@ -4233,8 +4345,8 @@ _(Points will be credited upon bill settlement)_`;
         <div style="padding: 20px;">
           <div style="background: #f8fafc; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; display: flex; justify-content: space-between; font-size: 13px;">
             <div>
-              <p style="margin: 0; font-weight: bold; color: #0f172a;">Invoice #${bill.bill_number}</p>
-              <p style="margin: 2px 0 0 0; color: #64748b; font-size: 12px;">Customer: ${bill.customer_name || 'Valued Customer'}</p>
+              <p style="margin: 0; font-weight: bold; color: #0f172a;">Invoice #${safeBillNumber}</p>
+              <p style="margin: 2px 0 0 0; color: #64748b; font-size: 12px;">Customer: ${safeCustomerName}</p>
             </div>
             <div style="text-align: right;">
               <p style="margin: 0; color: #64748b; font-size: 12px;">Date: ${new Date(bill.created_at || Date.now()).toLocaleDateString('en-IN')}</p>
@@ -4347,7 +4459,8 @@ _(Points will be credited upon bill settlement)_`;
   static async getProductSalesAnalytics(
     productId: string,
     filter: DateFilterOption = 'all_time',
-    customRange?: { from: string; to: string }
+    customRange?: { from: string; to: string },
+    closingId?: string
   ): Promise<ProductSalesAnalytics> {
     if (!isSupabaseConfigured) throw new Error('Supabase not configured');
 
@@ -4384,7 +4497,22 @@ _(Points will be credited upon bill settlement)_`;
       product = p;
     }
 
-    const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
+    const { startDate, endDate, exclusiveStart, emptyResult } = await this.resolveSessionDateBounds(
+      filter,
+      customRange,
+      closingId
+    );
+
+    if (emptyResult) {
+      return {
+        product,
+        total_quantity_sold: 0,
+        total_revenue: 0,
+        average_selling_rate: product.price,
+        orders_count: 0,
+        transactions: []
+      };
+    }
 
     let query = supabase
       .from('bill_items')
@@ -4430,7 +4558,7 @@ _(Points will be credited upon bill settlement)_`;
       const createdAt = bill?.created_at || item.created_at || new Date().toISOString();
       const itemTime = new Date(createdAt).getTime();
 
-      if (startDate && itemTime < startDate.getTime()) continue;
+      if (startDate && (exclusiveStart ? itemTime <= startDate.getTime() : itemTime < startDate.getTime())) continue;
       if (endDate && itemTime > endDate.getTime()) continue;
 
       const qty = Number(item.quantity || 0);
@@ -4487,11 +4615,18 @@ _(Points will be credited upon bill settlement)_`;
 
   static async getCustomItemsAnalytics(
     filter: DateFilterOption = 'all_time',
-    customRange?: { from: string; to: string }
+    customRange?: { from: string; to: string },
+    closingId?: string
   ): Promise<CustomItemAnalytics[]> {
     if (!isSupabaseConfigured) return [];
 
-    const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
+    const { startDate, endDate, exclusiveStart, emptyResult } = await this.resolveSessionDateBounds(
+      filter,
+      customRange,
+      closingId
+    );
+
+    if (emptyResult) return [];
 
     const query = supabase
       .from('bill_items')
@@ -4517,7 +4652,7 @@ _(Points will be credited upon bill settlement)_`;
 
     for (const item of customItems) {
       const itemTime = new Date(item.created_at).getTime();
-      if (startDate && itemTime < startDate.getTime()) continue;
+      if (startDate && (exclusiveStart ? itemTime <= startDate.getTime() : itemTime < startDate.getTime())) continue;
       if (endDate && itemTime > endDate.getTime()) continue;
 
       const name = (item.product_name || 'Ad-hoc Service').trim();
@@ -4614,7 +4749,26 @@ _(Points will be credited upon bill settlement)_`;
     ]);
 
     const bills = billsRes.data || [];
-    const payments = paymentsRes.data || [];
+    const billIds = bills.map(b => b.id).filter(Boolean);
+    let payments = paymentsRes.data || [];
+
+    if (billIds.length > 0) {
+      const { data: billLinkedPayments } = await supabase
+        .from('payments')
+        .select('*')
+        .in('bill_id', billIds)
+        .order('created_at', { ascending: true });
+      if (billLinkedPayments && billLinkedPayments.length > 0) {
+        const seenPayIds = new Set(payments.map(p => p.id));
+        const extra = billLinkedPayments.filter(p => !seenPayIds.has(p.id));
+        if (extra.length > 0) {
+          payments = [...payments, ...extra].sort(
+            (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+          );
+        }
+      }
+    }
+
     const activePayments = payments.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
 
     const totalAllTimeBilled = Number((bills || []).reduce((sum, b) => sum + Number(b.grand_total || 0), 0).toFixed(2));
@@ -4646,6 +4800,13 @@ _(Points will be credited upon bill settlement)_`;
         }
       }
     }
+
+    const laterPaidByBillId = this.computeLaterPaidByBillId(
+      bills || [],
+      activePayments,
+      stmtInitialPaymentByBillId,
+      stmtMergedPaymentIds
+    );
 
     const { startDate, endDate } = this.getDateRangeBounds(filter, customRange);
 
@@ -4690,8 +4851,11 @@ _(Points will be credited upon bill settlement)_`;
         paidAmount = Number(initialPayment.amount || 0);
         payMethod = initialPayment.payment_method || payMethod;
         payRef = initialPayment.payment_number;
+      } else if (payMethod === 'Pay Later') {
+        paidAmount = 0;
       } else {
-        paidAmount = Math.max(0, Number(b.paid_total || 0) - advUsed);
+        const laterSettled = laterPaidByBillId.get(b.id) || 0;
+        paidAmount = Math.max(0, Number((Number(b.paid_total || 0) - advUsed - laterSettled).toFixed(2)));
       }
 
       const directPaid = Math.min(grandTotal, paidAmount);
@@ -4989,7 +5153,27 @@ _(Points will be credited upon bill settlement)_`;
         if (typeof window !== 'undefined') {
           try { window.sessionStorage?.removeItem('sb_table_internal_transfers'); } catch { }
         }
-        return data || [];
+        const remoteTransfers = data || [];
+        const localTransfers = this.getLocalTransfers();
+        if (localTransfers.length === 0) return remoteTransfers;
+
+        const seenIds = new Set(remoteTransfers.map(t => t.id));
+        const missingLocal = localTransfers.filter(t => !seenIds.has(t.id));
+        if (missingLocal.length === 0) return remoteTransfers;
+
+        for (const localRow of missingLocal) {
+          try {
+            const syncPayload: Record<string, unknown> = { ...localRow };
+            if (syncPayload.notes === null) delete syncPayload.notes;
+            await supabase.from('internal_transfers').insert([syncPayload]);
+          } catch {
+            // Non-blocking
+          }
+        }
+
+        return [...remoteTransfers, ...missingLocal].sort(
+          (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
       } catch {
         return this.getLocalTransfers();
       } finally {
@@ -5024,11 +5208,20 @@ _(Points will be credited upon bill settlement)_`;
 
     if (isSupabaseConfigured && this.hasInternalTransfersTable !== false) {
       try {
-        const { data, error } = await supabase
+        const payload: Record<string, unknown> = { ...record };
+        if (payload.notes === null) delete payload.notes;
+        let { data, error } = await supabase
           .from('internal_transfers')
-          .insert([record])
+          .insert([payload])
           .select()
           .maybeSingle();
+
+        if (error && (error.message?.includes('column') || error.code === '42703' || error.code === 'PGRST204')) {
+          delete payload.notes;
+          const retry = await supabase.from('internal_transfers').insert([payload]).select().maybeSingle();
+          data = retry.data;
+          error = retry.error;
+        }
 
         if (!error && data) {
           await this.logAudit({
@@ -5157,7 +5350,32 @@ _(Points will be credited upon bill settlement)_`;
         if (typeof window !== 'undefined') {
           try { window.sessionStorage?.removeItem('sb_table_accounting_closings'); } catch { }
         }
-        return (data || []).map(c => this.normalizeClosingRecord(c));
+        const remoteClosings = (data || []).map(c => this.normalizeClosingRecord(c));
+        const localClosings = this.getLocalClosings();
+        if (localClosings.length === 0) return remoteClosings;
+
+        const seenIds = new Set(remoteClosings.map(c => c.id));
+        const seenNumbers = new Set(remoteClosings.map(c => c.closing_number).filter(Boolean));
+        const missingLocal = localClosings.filter(
+          c => !seenIds.has(c.id) && (!c.closing_number || !seenNumbers.has(c.closing_number))
+        );
+        if (missingLocal.length === 0) return remoteClosings;
+
+        for (const localRow of missingLocal) {
+          try {
+            const syncPayload: Record<string, unknown> = { ...localRow };
+            if (syncPayload.last_audited_at === null) delete syncPayload.last_audited_at;
+            if (syncPayload.last_audited_by === null) delete syncPayload.last_audited_by;
+            if (syncPayload.audit_notes === null) delete syncPayload.audit_notes;
+            await supabase.from('accounting_closings').insert([syncPayload]);
+          } catch {
+            // Non-blocking
+          }
+        }
+
+        return [...remoteClosings, ...missingLocal].sort(
+          (a, b) => new Date(b.closed_at || b.to_date).getTime() - new Date(a.closed_at || a.to_date).getTime()
+        );
       } catch {
         return this.getLocalClosings();
       } finally {
@@ -5238,17 +5456,24 @@ _(Points will be credited upon bill settlement)_`;
     if (isSupabaseConfigured && this.hasAccountingClosingsTable !== false) {
       try {
         const payload: Record<string, unknown> = { ...record };
+        if (payload.last_audited_at === null) delete payload.last_audited_at;
+        if (payload.last_audited_by === null) delete payload.last_audited_by;
+        if (payload.audit_notes === null) delete payload.audit_notes;
+
         let { data, error } = await supabase
           .from('accounting_closings')
           .insert([payload])
           .select()
           .maybeSingle();
 
-        if (error && (error.message?.includes('column') || error.code === '42703')) {
+        if (error && (error.message?.includes('column') || error.code === '42703' || error.code === 'PGRST204')) {
           delete payload.opening_advance_pool;
           delete payload.advance_received;
           delete payload.advance_utilized;
           delete payload.closing_advance_pool;
+          delete payload.last_audited_at;
+          delete payload.last_audited_by;
+          delete payload.audit_notes;
           const retry = await supabase.from('accounting_closings').insert([payload]).select().maybeSingle();
           data = retry.data;
           error = retry.error;
@@ -5518,27 +5743,51 @@ _(Points will be credited upon bill settlement)_`;
     // 4. Update target session in Supabase & Local
     if (isSupabaseConfigured && this.hasAccountingClosingsTable !== false) {
       try {
-        await supabase
+        const updatePayload: Record<string, unknown> = {
+          cash_inflow: updatedTarget.cash_inflow,
+          upi_inflow: updatedTarget.upi_inflow,
+          cash_outflow: updatedTarget.cash_outflow,
+          upi_outflow: updatedTarget.upi_outflow,
+          transfers_cash_to_upi: updatedTarget.transfers_cash_to_upi,
+          transfers_upi_to_cash: updatedTarget.transfers_upi_to_cash,
+          expected_cash: updatedTarget.expected_cash,
+          expected_upi: updatedTarget.expected_upi,
+          actual_cash: updatedTarget.actual_cash,
+          actual_upi: updatedTarget.actual_upi,
+          cash_difference: updatedTarget.cash_difference,
+          upi_difference: updatedTarget.upi_difference,
+          discrepancy_note: updatedTarget.discrepancy_note,
+          last_audited_at: updatedTarget.last_audited_at,
+          last_audited_by: updatedTarget.last_audited_by,
+          audit_notes: updatedTarget.audit_notes
+        };
+
+        let { data: updatedRemote, error: updateErr } = await supabase
           .from('accounting_closings')
-          .update({
-            cash_inflow: updatedTarget.cash_inflow,
-            upi_inflow: updatedTarget.upi_inflow,
-            cash_outflow: updatedTarget.cash_outflow,
-            upi_outflow: updatedTarget.upi_outflow,
-            transfers_cash_to_upi: updatedTarget.transfers_cash_to_upi,
-            transfers_upi_to_cash: updatedTarget.transfers_upi_to_cash,
-            expected_cash: updatedTarget.expected_cash,
-            expected_upi: updatedTarget.expected_upi,
-            actual_cash: updatedTarget.actual_cash,
-            actual_upi: updatedTarget.actual_upi,
-            cash_difference: updatedTarget.cash_difference,
-            upi_difference: updatedTarget.upi_difference,
-            discrepancy_note: updatedTarget.discrepancy_note,
-            last_audited_at: updatedTarget.last_audited_at,
-            last_audited_by: updatedTarget.last_audited_by,
-            audit_notes: updatedTarget.audit_notes
-          })
-          .eq('id', target.id);
+          .update(updatePayload)
+          .eq('id', target.id)
+          .select()
+          .maybeSingle();
+
+        if (updateErr && (updateErr.message?.includes('column') || updateErr.code === '42703' || updateErr.code === 'PGRST204')) {
+          delete updatePayload.last_audited_at;
+          delete updatePayload.last_audited_by;
+          delete updatePayload.audit_notes;
+          const retry = await supabase
+            .from('accounting_closings')
+            .update(updatePayload)
+            .eq('id', target.id)
+            .select()
+            .maybeSingle();
+          updatedRemote = retry.data;
+          updateErr = retry.error;
+        }
+
+        if (!updateErr && !updatedRemote) {
+          await supabase.from('accounting_closings').insert([updatedTarget]);
+        } else if (updateErr) {
+          console.warn('Supabase update failed for target closing:', updateErr);
+        }
       } catch (err) {
         console.warn('Supabase update failed for target closing:', err);
       }
@@ -5668,8 +5917,9 @@ _(Points will be credited upon bill settlement)_`;
       }
     }
 
-    const opening_cash = latestClosing ? Number(latestClosing.actual_cash !== undefined ? latestClosing.actual_cash : (latestClosing.expected_cash || 0)) : 0;
-    const opening_upi = latestClosing ? Number(latestClosing.actual_upi !== undefined ? latestClosing.actual_upi : (latestClosing.expected_upi || 0)) : 0;
+    // New session starts Cash & UPI at 0 after a closing; only Customer Advance carries forward
+    const opening_cash = 0;
+    const opening_upi = 0;
 
     const sessionStartMs = new Date(session_start_date).getTime();
 
@@ -5792,8 +6042,8 @@ _(Points will be credited upon bill settlement)_`;
     const closings = await this.getAccountingClosings();
     // Prior closing ending at or before fromDate
     const priorClosing = closings.find(c => new Date(c.to_date).getTime() <= fromMs);
-    const opening_cash = priorClosing ? Number(priorClosing.actual_cash !== undefined ? priorClosing.actual_cash : (priorClosing.expected_cash || 0)) : 0;
-    const opening_upi = priorClosing ? Number(priorClosing.actual_upi !== undefined ? priorClosing.actual_upi : (priorClosing.expected_upi || 0)) : 0;
+    const opening_cash = 0;
+    const opening_upi = 0;
     const isExactPriorBoundary = priorClosing ? new Date(priorClosing.to_date).getTime() === fromMs : false;
 
     const [allBills, allPayments, allExpenses, allTransfers, allCustomers] = await Promise.all([

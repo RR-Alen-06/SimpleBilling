@@ -116,7 +116,7 @@ export class AccountingStatementGenerator {
     y += 4;
 
     const colWidths = [62, 40, 40, 40];
-    const headers = ['Financial Parameter', 'Physical Cash (₹)', 'Bank / UPI (₹)', 'Combined Total (₹)'];
+    const headers = ['Financial Parameter', 'Physical Cash (Rs.)', 'Bank / UPI (Rs.)', 'Combined Total (Rs.)'];
 
     doc.setFillColor(30, 41, 59); // slate-800
     doc.rect(margin, y, contentWidth, 7, 'F');
@@ -194,16 +194,16 @@ export class AccountingStatementGenerator {
       doc.text(r.label, rowX + 3, y + 4.8);
       rowX += colWidths[0];
 
-      const cashStr = (r.cash >= 0 ? '' : '-') + '₹' + Math.abs(r.cash).toFixed(2);
+      const cashStr = (r.cash >= 0 ? '' : '-') + 'Rs.' + Math.abs(r.cash).toFixed(2);
       doc.text(cashStr, rowX + colWidths[1] - 3, y + 4.8, { align: 'right' });
       rowX += colWidths[1];
 
-      const upiStr = (r.upi >= 0 ? '' : '-') + '₹' + Math.abs(r.upi).toFixed(2);
+      const upiStr = (r.upi >= 0 ? '' : '-') + 'Rs.' + Math.abs(r.upi).toFixed(2);
       doc.text(upiStr, rowX + colWidths[2] - 3, y + 4.8, { align: 'right' });
       rowX += colWidths[2];
 
       const totalVal = r.cash + r.upi;
-      const totalStr = (totalVal >= 0 ? '' : '-') + '₹' + Math.abs(totalVal).toFixed(2);
+      const totalStr = (totalVal >= 0 ? '' : '-') + 'Rs.' + Math.abs(totalVal).toFixed(2);
       doc.text(totalStr, rowX + colWidths[3] - 3, y + 4.8, { align: 'right' });
 
       y += rowHeight;

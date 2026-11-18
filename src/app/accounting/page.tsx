@@ -35,6 +35,7 @@ import {
   ShieldCheck, 
   Clock, 
   FileSpreadsheet, 
+  FileText,
   Search, 
   Edit3, 
   X,
@@ -76,6 +77,13 @@ export default function AccountingPage() {
   const [customTo, setCustomTo] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [ledgerTypeFilter, setLedgerTypeFilter] = useState<string>('ALL');
+
+  // PDF Preview Modal State
+  const [pdfPreview, setPdfPreview] = useState<{
+    title: string;
+    filename: string;
+    url: string;
+  } | null>(null);
 
   // Record Shop Expense Modal State
   const [showExpenseModal, setShowExpenseModal] = useState(false);
@@ -982,26 +990,47 @@ export default function AccountingPage() {
     });
   }, [ledgerRows, sessionStatus, dateFilter, customFrom, customTo, ledgerTypeFilter, searchQuery]);
 
-  // Export Cash Book PDF
+  const closePdfPreview = () => {
+    setPdfPreview(prev => {
+      if (prev?.url) URL.revokeObjectURL(prev.url);
+      return null;
+    });
+  };
+
+  const openPdfPreview = (doc: ReturnType<typeof CashBankBookPdfGenerator.generateBookPdf>, title: string, filename: string) => {
+    const blob = doc.output('blob');
+    const url = URL.createObjectURL(blob);
+    setPdfPreview(prev => {
+      if (prev?.url) URL.revokeObjectURL(prev.url);
+      return { title, filename, url };
+    });
+  };
+
+  // Export Cash Book PDF (Preview First, Chronological Oldest-First)
   const handleExportCashBookPdf = () => {
     try {
-      const entries = filteredLedger
+      const isSubsetFiltered = Boolean(searchQuery.trim()) || ledgerTypeFilter !== 'ALL';
+      let runningFiltered = 0;
+      const entries = [...filteredLedger]
+        .reverse()
         .filter(r => (r.cashIn > 0 || r.cashOut > 0))
-        .map(r => ({
-          date: r.date,
-          ref_number: r.refNumber,
-          description: r.description,
-          inflow: r.cashIn,
-          outflow: r.cashOut,
-          running_balance: r.runningCash !== undefined ? r.runningCash : 0
-        }));
+        .map(r => {
+          if (isSubsetFiltered) {
+            runningFiltered = Number((runningFiltered + r.cashIn - r.cashOut).toFixed(2));
+          }
+          return {
+            date: r.date,
+            ref_number: r.refNumber,
+            description: r.description,
+            inflow: r.cashIn,
+            outflow: r.cashOut,
+            running_balance: isSubsetFiltered ? runningFiltered : (r.runningCash !== undefined ? r.runningCash : 0)
+          };
+        });
 
-      let openingBalance = 0;
-      if (entries.length > 0) {
-        openingBalance = Number((entries[0].running_balance - entries[0].inflow + entries[0].outflow).toFixed(2));
-      } else if (sessionStatus) {
-        openingBalance = sessionStatus.last_closed_session?.actual_cash ?? sessionStatus.expected_cash_in_hand;
-      }
+      const openingBalance = !isSubsetFiltered && entries.length > 0
+        ? Number((entries[0].running_balance - entries[0].inflow + entries[0].outflow).toFixed(2))
+        : 0;
       const closingBalance = entries.length > 0 ? entries[entries.length - 1].running_balance : openingBalance;
 
       const filterLabel = dateFilter === 'current_session' 
@@ -1019,33 +1048,38 @@ export default function AccountingPage() {
         entries
       });
 
-      doc.save(`Cash-Book-${new Date().toISOString().slice(0, 10)}.pdf`);
+      openPdfPreview(doc, 'Cash Book Ledger Preview', `Cash-Book-${new Date().toISOString().slice(0, 10)}.pdf`);
     } catch (err) {
       console.error('Failed to generate Cash Book PDF:', err);
       setFeedback({ type: 'error', message: 'Failed to generate Cash Book PDF' });
     }
   };
 
-  // Export Bank/UPI Book PDF
+  // Export Bank/UPI Book PDF (Preview First, Chronological Oldest-First)
   const handleExportBankBookPdf = () => {
     try {
-      const entries = filteredLedger
+      const isSubsetFiltered = Boolean(searchQuery.trim()) || ledgerTypeFilter !== 'ALL';
+      let runningFiltered = 0;
+      const entries = [...filteredLedger]
+        .reverse()
         .filter(r => (r.upiIn > 0 || r.upiOut > 0))
-        .map(r => ({
-          date: r.date,
-          ref_number: r.refNumber,
-          description: r.description,
-          inflow: r.upiIn,
-          outflow: r.upiOut,
-          running_balance: r.runningUpi !== undefined ? r.runningUpi : 0
-        }));
+        .map(r => {
+          if (isSubsetFiltered) {
+            runningFiltered = Number((runningFiltered + r.upiIn - r.upiOut).toFixed(2));
+          }
+          return {
+            date: r.date,
+            ref_number: r.refNumber,
+            description: r.description,
+            inflow: r.upiIn,
+            outflow: r.upiOut,
+            running_balance: isSubsetFiltered ? runningFiltered : (r.runningUpi !== undefined ? r.runningUpi : 0)
+          };
+        });
 
-      let openingBalance = 0;
-      if (entries.length > 0) {
-        openingBalance = Number((entries[0].running_balance - entries[0].inflow + entries[0].outflow).toFixed(2));
-      } else if (sessionStatus) {
-        openingBalance = sessionStatus.last_closed_session?.actual_upi ?? sessionStatus.expected_upi_in_hand;
-      }
+      const openingBalance = !isSubsetFiltered && entries.length > 0
+        ? Number((entries[0].running_balance - entries[0].inflow + entries[0].outflow).toFixed(2))
+        : 0;
       const closingBalance = entries.length > 0 ? entries[entries.length - 1].running_balance : openingBalance;
 
       const filterLabel = dateFilter === 'current_session' 
@@ -1063,7 +1097,7 @@ export default function AccountingPage() {
         entries
       });
 
-      doc.save(`Bank-UPI-Book-${new Date().toISOString().slice(0, 10)}.pdf`);
+      openPdfPreview(doc, 'Bank & UPI Book Ledger Preview', `Bank-UPI-Book-${new Date().toISOString().slice(0, 10)}.pdf`);
     } catch (err) {
       console.error('Failed to generate Bank/UPI Book PDF:', err);
       setFeedback({ type: 'error', message: 'Failed to generate Bank/UPI Book PDF' });
@@ -3123,6 +3157,44 @@ export default function AccountingPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* PDF Preview Modal (Cash Book & Bank/UPI Book) */}
+      {pdfPreview && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-xs z-50 flex items-center justify-center p-3 sm:p-6">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-5xl h-[90vh] flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200 bg-slate-50 shrink-0">
+              <div className="flex items-center space-x-2">
+                <FileText size={18} className="text-indigo-600" />
+                <h3 className="font-bold text-slate-900 text-sm">{pdfPreview.title}</h3>
+              </div>
+              <div className="flex items-center space-x-2">
+                <a
+                  href={pdfPreview.url}
+                  download={pdfPreview.filename}
+                  className="inline-flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs transition cursor-pointer"
+                >
+                  <Download size={14} />
+                  <span>Download PDF</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={closePdfPreview}
+                  className="inline-flex items-center space-x-1 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-200 transition cursor-pointer"
+                >
+                  <X size={15} />
+                  <span>Close</span>
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 bg-slate-200">
+              <iframe
+                src={pdfPreview.url}
+                title={pdfPreview.title}
+                className="w-full h-full border-0"
+              />
+            </div>
           </div>
         </div>
       )}
