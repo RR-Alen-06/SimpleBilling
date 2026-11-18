@@ -199,14 +199,14 @@ export class BusinessReportGenerator {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7);
     doc.setTextColor(100, 116, 139);
-    doc.text('CASH / UPI SPLIT', margin + 3, y + 3.5);
+    doc.text('CASH / UPI COLLECTED', margin + 3, y + 3.5);
     doc.text('INVOICES GENERATED', margin + kpiColWidth + 3, y + 3.5);
     doc.text('AVERAGE BILL VALUE', margin + kpiColWidth * 2 + 3, y + 3.5);
 
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(9);
+    doc.setFontSize(8.5);
     doc.setTextColor(15, 23, 42);
-    doc.text(`Cash: ${data.kpi.cash_total.toFixed(0)} | UPI: ${data.kpi.upi_total.toFixed(0)}`, margin + 3, y + 8.5);
+    doc.text(`Cash: ${data.kpi.cash_total.toFixed(2)} | UPI: ${data.kpi.upi_total.toFixed(2)}`, margin + 3, y + 8.5);
     doc.text(`${data.kpi.total_bills} Invoices`, margin + kpiColWidth + 3, y + 8.5);
     doc.text(`INR ${data.kpi.avg_bill_value.toFixed(2)}`, margin + kpiColWidth * 2 + 3, y + 8.5);
 
@@ -473,7 +473,7 @@ export class BusinessReportGenerator {
       doc.setFontSize(9.5);
       doc.setTextColor(15, 23, 42);
       const totalCashAmount = data.cash_payers.reduce((s, c) => s + Number(c.amount || 0), 0);
-      doc.text(`6. CASH PAYMENTS BREAKDOWN (${data.cash_payers.length} Payers — Total: INR ${totalCashAmount.toFixed(2)})`, margin, y);
+      doc.text(`6. CASH COLLECTIONS (${data.cash_payers.length} Invoices — Total: INR ${totalCashAmount.toFixed(2)})`, margin, y);
       y += 4;
 
       doc.setFillColor(241, 245, 249);
@@ -531,7 +531,7 @@ export class BusinessReportGenerator {
       doc.setFontSize(9.5);
       doc.setTextColor(15, 23, 42);
       const totalUpiAmount = data.upi_payers.reduce((s, u) => s + Number(u.amount || 0), 0);
-      doc.text(`7. UPI / BANK PAYMENTS BREAKDOWN (${data.upi_payers.length} Payers — Total: INR ${totalUpiAmount.toFixed(2)})`, margin, y);
+      doc.text(`7. UPI / BANK COLLECTIONS (${data.upi_payers.length} Invoices — Total: INR ${totalUpiAmount.toFixed(2)})`, margin, y);
       y += 4;
 
       doc.setFillColor(241, 245, 249);

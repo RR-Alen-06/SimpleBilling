@@ -105,62 +105,66 @@ export default function ReportsPage() {
   };
 
   const periodExpenses = filterByDate(allExpenses, dateFilter, { from: customFrom, to: customTo });
-  const periodPayments = filterByDate(allPayments.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED'), dateFilter, { from: customFrom, to: customTo });
   const periodTransfers = filterByDate(allTransfers, dateFilter, { from: customFrom, to: customTo });
 
-  // Cash Payers: customer bills paid in cash + standalone / dues payments in cash
-  const cashPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
-  bills.forEach(b => {
-    if (Number(b.cash_paid || 0) > 0) {
-      cashPayers.push({
-        customer_name: b.customer_name || 'Walk-in Customer',
-        ref: b.bill_number,
-        date: b.created_at,
-        amount: Number(b.cash_paid || 0)
-      });
-    }
-  });
-  periodPayments.forEach(p => {
-    if (p.payment_method === 'Cash' && !p.notes?.toLowerCase().includes('initial')) {
-      cashPayers.push({
-        customer_name: p.customer_name || 'Customer',
-        ref: p.payment_number || 'PAY-—',
-        date: p.created_at,
-        amount: Number(p.amount || 0)
-      });
-    }
-  });
-  cashPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  // Payment-voucher based Cash & UPI collections (matches Dashboard / Accounting page)
+  const periodPayments = filterByDate(
+    allPayments.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED'),
+    dateFilter,
+    { from: customFrom, to: customTo }
+  );
 
-  // UPI Payers: customer bills paid via UPI + standalone / dues payments via UPI
+  const billsMap = new Map(bills.map(b => [b.id, b]));
+  const paymentBillIds = new Set(periodPayments.map(p => p.bill_id).filter(Boolean));
+
+  const cashPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
   const upiPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
-  bills.forEach(b => {
-    if (Number(b.upi_paid || 0) > 0) {
-      upiPayers.push({
-        customer_name: b.customer_name || 'Walk-in Customer',
-        ref: b.bill_number,
-        date: b.created_at,
-        amount: Number(b.upi_paid || 0)
-      });
-    }
-  });
+
+  let cashTotal = 0;
+  let upiTotal = 0;
+
   periodPayments.forEach(p => {
-    if (p.payment_method === 'UPI' && !p.notes?.toLowerCase().includes('initial')) {
-      upiPayers.push({
-        customer_name: p.customer_name || 'Customer',
-        ref: p.payment_number || 'PAY-—',
-        date: p.created_at,
-        amount: Number(p.amount || 0)
-      });
+    const amt = Number(p.amount || 0);
+    if (p.payment_method === 'Cash') {
+      cashTotal += amt;
+      cashPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || p.bill_id || 'PAY', date: p.created_at, amount: amt });
+    } else if (p.payment_method === 'UPI') {
+      upiTotal += amt;
+      upiPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || p.bill_id || 'PAY', date: p.created_at, amount: amt });
+    } else if (p.payment_method === 'Split Payment') {
+      const linked = p.bill_id ? billsMap.get(p.bill_id) : undefined;
+      const splitCash = linked ? Number(linked.cash_paid || 0) : 0;
+      const splitUpi = linked ? Number(linked.upi_paid || 0) : 0;
+      if (splitCash > 0 || splitUpi > 0) {
+        cashTotal += splitCash;
+        upiTotal += splitUpi;
+        if (splitCash > 0) cashPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || 'PAY', date: p.created_at, amount: splitCash });
+        if (splitUpi > 0) upiPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || 'PAY', date: p.created_at, amount: splitUpi });
+      } else {
+        cashTotal += amt;
+        cashPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || 'PAY', date: p.created_at, amount: amt });
+      }
     }
   });
+
+  // Walk-in bills with no payment voucher
+  bills.forEach(b => {
+    if (!b.customer_id && !paymentBillIds.has(b.id)) {
+      const c = Number(b.cash_paid || 0);
+      const u = Number(b.upi_paid || 0);
+      cashTotal += c;
+      upiTotal += u;
+      if (c > 0) cashPayers.push({ customer_name: b.customer_name || 'Walk-in Customer', ref: b.bill_number, date: b.created_at, amount: c });
+      if (u > 0) upiPayers.push({ customer_name: b.customer_name || 'Walk-in Customer', ref: b.bill_number, date: b.created_at, amount: u });
+    }
+  });
+
+  cashPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   upiPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   // Aggregate Metrics for Current Filter
   const totalSales = bills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
   const totalPaid = bills.reduce((sum, b) => sum + Math.min(Number(b.grand_total || 0), Number(b.paid_total || 0)), 0);
-  const cashTotal = bills.reduce((sum, b) => sum + Number(b.cash_paid || 0), 0);
-  const upiTotal = bills.reduce((sum, b) => sum + Number(b.upi_paid || 0), 0);
   const advanceUsedTotal = bills.reduce((sum, b) => sum + Number(b.advance_used || 0), 0);
   const totalTax = bills.reduce((sum, b) => sum + Number(b.gst_amount || 0), 0);
   const totalExpenses = periodExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
@@ -272,8 +276,53 @@ export default function ReportsPage() {
 
       const masterSales = allBills.reduce((sum, b) => sum + Number(b.grand_total || 0), 0);
       const masterPaid = allBills.reduce((sum, b) => sum + Math.min(Number(b.grand_total || 0), Number(b.paid_total || 0)), 0);
-      const masterCash = allBills.reduce((sum, b) => sum + Number(b.cash_paid || 0), 0);
-      const masterUpi = allBills.reduce((sum, b) => sum + Number(b.upi_paid || 0), 0);
+      const masterCashPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
+      const masterUpiPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
+      let masterCash = 0;
+      let masterUpi = 0;
+
+      const masterBillsMap = new Map(allBills.map(b => [b.id, b]));
+      const masterPaymentBillIds = new Set(allPayments.map(p => p.bill_id).filter(Boolean));
+      const masterActivePayments = allPayments.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED');
+
+      masterActivePayments.forEach(p => {
+        const amt = Number(p.amount || 0);
+        if (p.payment_method === 'Cash') {
+          masterCash += amt;
+          masterCashPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || p.bill_id || 'PAY', date: p.created_at, amount: amt });
+        } else if (p.payment_method === 'UPI') {
+          masterUpi += amt;
+          masterUpiPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || p.bill_id || 'PAY', date: p.created_at, amount: amt });
+        } else if (p.payment_method === 'Split Payment') {
+          const linked = p.bill_id ? masterBillsMap.get(p.bill_id) : undefined;
+          const splitCash = linked ? Number(linked.cash_paid || 0) : 0;
+          const splitUpi = linked ? Number(linked.upi_paid || 0) : 0;
+          if (splitCash > 0 || splitUpi > 0) {
+            masterCash += splitCash;
+            masterUpi += splitUpi;
+            if (splitCash > 0) masterCashPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || 'PAY', date: p.created_at, amount: splitCash });
+            if (splitUpi > 0) masterUpiPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || 'PAY', date: p.created_at, amount: splitUpi });
+          } else {
+            masterCash += amt;
+            masterCashPayers.push({ customer_name: p.customer_name || 'Customer', ref: p.payment_number || 'PAY', date: p.created_at, amount: amt });
+          }
+        }
+      });
+
+      // Walk-in bills without any payment voucher
+      allBills.forEach(b => {
+        if (!b.customer_id && !masterPaymentBillIds.has(b.id)) {
+          const c = Number(b.cash_paid || 0);
+          const u = Number(b.upi_paid || 0);
+          masterCash += c;
+          masterUpi += u;
+          if (c > 0) masterCashPayers.push({ customer_name: b.customer_name || 'Walk-in Customer', ref: b.bill_number, date: b.created_at, amount: c });
+          if (u > 0) masterUpiPayers.push({ customer_name: b.customer_name || 'Walk-in Customer', ref: b.bill_number, date: b.created_at, amount: u });
+        }
+      });
+
+      masterCashPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      masterUpiPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
       const masterTax = allBills.reduce((sum, b) => sum + Number(b.gst_amount || 0), 0);
       const masterExpenses = allExp.reduce((sum, e) => sum + Number(e.amount || 0), 0);
       const masterNetProfit = masterSales - masterExpenses;
@@ -301,48 +350,6 @@ export default function ReportsPage() {
       const masterItemSales = Array.from(masterItemMap.values()).sort((a, b) => b.total - a.total);
       const masterDueCust = custSummaries.filter(c => c.balance_due > 0);
       const masterTotalDues = masterDueCust.reduce((sum, c) => sum + c.balance_due, 0);
-
-      const masterCashPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
-      const masterUpiPayers: { customer_name: string; ref: string; date: string; amount: number }[] = [];
-      allBills.forEach(b => {
-        if (Number(b.cash_paid || 0) > 0) {
-          masterCashPayers.push({
-            customer_name: b.customer_name || 'Walk-in Customer',
-            ref: b.bill_number,
-            date: b.created_at,
-            amount: Number(b.cash_paid || 0)
-          });
-        }
-        if (Number(b.upi_paid || 0) > 0) {
-          masterUpiPayers.push({
-            customer_name: b.customer_name || 'Walk-in Customer',
-            ref: b.bill_number,
-            date: b.created_at,
-            amount: Number(b.upi_paid || 0)
-          });
-        }
-      });
-      allPayments.forEach(p => {
-        if (p.status !== 'CANCELLED' && p.status !== 'REVERSED' && !p.notes?.toLowerCase().includes('initial')) {
-          if (p.payment_method === 'Cash') {
-            masterCashPayers.push({
-              customer_name: p.customer_name || 'Customer',
-              ref: p.payment_number || 'PAY-—',
-              date: p.created_at,
-              amount: Number(p.amount || 0)
-            });
-          } else if (p.payment_method === 'UPI') {
-            masterUpiPayers.push({
-              customer_name: p.customer_name || 'Customer',
-              ref: p.payment_number || 'PAY-—',
-              date: p.created_at,
-              amount: Number(p.amount || 0)
-            });
-          }
-        }
-      });
-      masterCashPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-      masterUpiPayers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
       const doc = BusinessReportGenerator.generateReportPdf({
         shop_settings: shopSettings,
@@ -389,8 +396,34 @@ export default function ReportsPage() {
     const exportSales = exportBills.reduce((s, b) => s + Number(b.grand_total || 0), 0);
     const exportPaid = exportBills.reduce((s, b) => s + Number(b.paid_total || 0), 0);
     const exportTax = exportBills.reduce((s, b) => s + Number(b.gst_amount || 0), 0);
-    const exportCash = exportBills.reduce((s, b) => s + Number(b.cash_paid || 0), 0);
-    const exportUpi = exportBills.reduce((s, b) => s + Number(b.upi_paid || 0), 0);
+
+    // Cash & UPI Collections via payment-voucher engine (matches Dashboard/Accounting)
+    const exportPaymentsSource = isMasterAllTime
+      ? allPayments.filter(p => p.status !== 'CANCELLED' && p.status !== 'REVERSED')
+      : periodPayments;
+    const exportBillsMap = new Map(exportBills.map(b => [b.id, b]));
+    const exportPaymentBillIds = new Set(exportPaymentsSource.map(p => p.bill_id).filter(Boolean));
+    let exportCash = 0;
+    let exportUpi = 0;
+    exportPaymentsSource.forEach(p => {
+      const amt = Number(p.amount || 0);
+      if (p.payment_method === 'Cash') {
+        exportCash += amt;
+      } else if (p.payment_method === 'UPI') {
+        exportUpi += amt;
+      } else if (p.payment_method === 'Split Payment') {
+        const linked = p.bill_id ? exportBillsMap.get(p.bill_id) : undefined;
+        const sc = linked ? Number(linked.cash_paid || 0) : 0;
+        const su = linked ? Number(linked.upi_paid || 0) : 0;
+        if (sc > 0 || su > 0) { exportCash += sc; exportUpi += su; } else { exportCash += amt; }
+      }
+    });
+    exportBills.forEach(b => {
+      if (!b.customer_id && !exportPaymentBillIds.has(b.id)) {
+        exportCash += Number(b.cash_paid || 0);
+        exportUpi += Number(b.upi_paid || 0);
+      }
+    });
     const exportPending = exportBills.reduce((s, b) => s + Math.max(0, Number(b.grand_total || 0) - Number(b.paid_total || 0)), 0);
     const exportExpTotal = exportExpenses.reduce((s, e) => s + Number(e.amount || 0), 0);
     const exportNetProfit = exportPaid - exportExpTotal;
@@ -776,7 +809,7 @@ export default function ReportsPage() {
         <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-1">
           <div className="text-emerald-700 text-[11px] font-bold uppercase tracking-wider flex items-center space-x-1">
             <Wallet size={13} className="text-emerald-600" />
-            <span>Cash Paid</span>
+            <span>Cash Collected</span>
           </div>
           <div className="text-base sm:text-lg font-extrabold text-emerald-700">₹{cashTotal.toFixed(2)}</div>
           <div className="text-[10px] text-slate-400 font-medium">Direct cash in period</div>
@@ -786,7 +819,7 @@ export default function ReportsPage() {
         <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-1">
           <div className="text-indigo-700 text-[11px] font-bold uppercase tracking-wider flex items-center space-x-1">
             <CreditCard size={13} className="text-indigo-600" />
-            <span>UPI Paid</span>
+            <span>UPI Collected</span>
           </div>
           <div className="text-base sm:text-lg font-extrabold text-indigo-700">₹{upiTotal.toFixed(2)}</div>
           <div className="text-[10px] text-slate-400 font-medium">Digital collections</div>
@@ -1150,11 +1183,11 @@ export default function ReportsPage() {
             <div className="flex justify-between items-center pb-3 border-b border-slate-200">
               <div>
                 <h2 className="text-lg font-bold text-slate-900">Cash Collections by Customer</h2>
-                <p className="text-xs text-slate-500">Detailed list of all customers and payers who paid in Cash</p>
+                <p className="text-xs text-slate-500">Detailed list of all customers and sales paid in Cash</p>
               </div>
               <div className="text-right">
                 <span className="text-xs text-slate-500 uppercase font-semibold">Total Cash Collected</span>
-                <p className="text-xl font-extrabold text-emerald-600">₹{cashPayers.reduce((s, c) => s + c.amount, 0).toFixed(2)}</p>
+                <p className="text-xl font-extrabold text-emerald-600">₹{cashTotal.toFixed(2)}</p>
               </div>
             </div>
 
@@ -1201,12 +1234,12 @@ export default function ReportsPage() {
           <div className="space-y-4">
             <div className="flex justify-between items-center pb-3 border-b border-slate-200">
               <div>
-                <h2 className="text-lg font-bold text-slate-900">UPI & Bank Collections by Customer</h2>
-                <p className="text-xs text-slate-500">Detailed list of all customers and payers who paid via UPI / Bank</p>
+                <h2 className="text-lg font-bold text-slate-900">UPI &amp; Bank Collections by Customer</h2>
+                <p className="text-xs text-slate-500">Detailed list of all customers and sales paid via UPI / Bank</p>
               </div>
               <div className="text-right">
                 <span className="text-xs text-slate-500 uppercase font-semibold">Total UPI Collected</span>
-                <p className="text-xl font-extrabold text-indigo-600">₹{upiPayers.reduce((s, u) => s + u.amount, 0).toFixed(2)}</p>
+                <p className="text-xl font-extrabold text-indigo-600">₹{upiTotal.toFixed(2)}</p>
               </div>
             </div>
 
